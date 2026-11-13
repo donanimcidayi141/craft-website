@@ -2,8 +2,10 @@ import React, { useRef, useState } from 'react';
 import {
   Plus, FolderOpen, Clock, Smartphone, Search, X,
   ArrowRight, Layers, FileCode, CheckCircle2, ChevronRight,
-  Trash2, FilePlus, Keyboard, LayoutGrid
+  Trash2, FilePlus, Keyboard, LayoutGrid, RotateCcw
 } from 'lucide-react';
+import { formatSavedDateLabel, countProjectElements } from '../utils/projectStorage';
+import { importSiteCodeToProjectSchema } from '../utils/codeFileImporter';
 
 export default function WelcomeScreen({
   onNewProject,
@@ -12,10 +14,14 @@ export default function WelcomeScreen({
   onOpenProjectFolder,
   onOpenRecentProject,
   onDeleteRecentProject = null,
-  recentProjects = []
+  recentProjects = [],
+  autosaveDraft = null,
+  onRestoreAutosave = null,
+  onDismissAutosave = null,
 }) {
   const fileInputRef = useRef(null);
   const [recentQuery, setRecentQuery] = useState('');
+  const [fileError, setFileError] = useState(null);
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -23,10 +29,11 @@ export default function WelcomeScreen({
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const parsed = JSON.parse(event.target?.result);
-        onOpenProject(parsed);
+        const schema = importSiteCodeToProjectSchema(event.target?.result, file.name);
+        setFileError(null);
+        onOpenProject(schema);
       } catch (err) {
-        alert('Geçersiz proje dosyası! Lütfen geçerli bir .craft.json veya .json dosyası seçin.');
+        setFileError(`Dosya içe aktarılamadı (${file.name}): ${err?.message || 'Lütfen geçerli bir .html, .jsx, .tsx veya .craft.json dosyası seçin.'}`);
       }
     };
     reader.readAsText(file);
@@ -100,22 +107,22 @@ export default function WelcomeScreen({
     },
     {
       id: 'open',
-      title: 'Kayıtlı Projeyi Aç',
-      spec: '.craft.json / Workspace',
-      description: 'Bilgisayarınızdaki .craft.json dosyasını veya dışa aktarılmış bir React proje klasörünü içe aktarın.',
+      title: 'Koddan Site / Proje Aç',
+      spec: '.html · .jsx · .tsx · .craft.json',
+      description: 'Mevcut bir HTML sayfasını, React bileşenini (.jsx/.tsx) veya .craft.json projesini doğrudan tuvalde açıp düzenleyin.',
       icon: FolderOpen,
-      btnText: 'Dosya (.craft.json) Seç',
+      btnText: 'Site / Dosya Seç',
       primary: false,
       action: triggerOpenProjectFile,
       wireframe: (
         <div className="h-20 rounded bg-[#0f0f12] border border-[#27272d] p-2.5 flex flex-col justify-center gap-1.5 font-mono text-[10px]">
           <div className="flex items-center gap-2 text-zinc-300">
-            <FileCode size={12} className="text-[#38bdf8] shrink-0" />
-            <span className="truncate">project.craft.json</span>
+            <FileCode size={12} className="text-amber-400 shrink-0" />
+            <span className="truncate">index.html · App.jsx</span>
           </div>
           <div className="flex items-center gap-2 text-zinc-500 pl-3">
             <ChevronRight size={10} />
-            <span className="truncate">src/App.jsx · craft.project.json</span>
+            <span className="truncate">proje.craft.json</span>
           </div>
         </div>
       ),
@@ -124,12 +131,12 @@ export default function WelcomeScreen({
 
   return (
     <div className="min-h-screen w-full bg-[#111113] text-zinc-200 flex flex-col overflow-y-auto select-none">
-      {/* Hidden file input for opening projects */}
+      {/* Hidden file input for opening HTML/JSX/craft.json websites */}
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileChange}
-        accept=".json,.craft"
+        accept=".json,.craft,.craft.json,.html,.htm,.jsx,.tsx"
         className="hidden"
       />
 
@@ -153,8 +160,8 @@ export default function WelcomeScreen({
             onClick={triggerOpenProjectFile}
             className="h-8 flex items-center gap-1.5 px-3 rounded bg-[#1c1c21] hover:bg-[#24242a] text-zinc-200 text-[11px] font-medium border border-[#2c2c33] transition-colors"
           >
-            <FilePlus size={13} className="text-zinc-400" />
-            <span>.craft.json Aç</span>
+            <FilePlus size={13} className="text-amber-400" />
+            <span>Site / Dosya Aç</span>
           </button>
           {onOpenProjectFolder && (
             <button
@@ -179,6 +186,19 @@ export default function WelcomeScreen({
 
       {/* Workstation Workspace Container */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-7 space-y-7">
+        {fileError && (
+          <div className="bg-red-950/50 border border-red-500/40 rounded-md px-4 py-2.5 flex items-center justify-between gap-3 text-[11px] text-red-200">
+            <span>{fileError}</span>
+            <button
+              type="button"
+              onClick={() => setFileError(null)}
+              className="text-red-300 hover:text-white p-0.5 rounded"
+              title="Kapat"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
         {/* Compact Workspace Heading */}
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 border-b border-[#222227] pb-4">
           <div>
@@ -195,6 +215,52 @@ export default function WelcomeScreen({
             <span>Desktop · Tablet · Mobile</span>
           </div>
         </div>
+
+        {/* 0. Autosave Draft Recovery Banner (if an unsaved local session exists) */}
+        {autosaveDraft && (
+          <div className="bg-[#151820] border border-[#0d99ff]/40 rounded-md px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-3 min-w-0">
+              <div className="w-8 h-8 rounded bg-[#0d99ff]/15 border border-[#0d99ff]/35 flex items-center justify-center text-[#38bdf8] shrink-0">
+                <RotateCcw size={14} />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[12px] font-semibold text-zinc-100 truncate">
+                    Kurtarılabilir Otomatik Taslak: {autosaveDraft.name || 'Adsız Proje'}
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                    ● Kaydedilmemiş Oturum
+                  </span>
+                </div>
+                <p className="text-[11px] font-mono text-zinc-400 mt-0.5 truncate">
+                  {formatSavedDateLabel(autosaveDraft.updatedAt)} • {autosaveDraft.tabs?.length || 1} sayfa • {countProjectElements(autosaveDraft.tabs)} bileşen
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {onDismissAutosave && (
+                <button
+                  type="button"
+                  onClick={onDismissAutosave}
+                  className="h-8 px-3 rounded bg-[#1d2029] hover:bg-red-500/15 hover:text-red-300 border border-[#2c313f] hover:border-red-500/30 text-zinc-400 text-[11px] font-medium transition-colors"
+                >
+                  Taslağı Sil
+                </button>
+              )}
+              {onRestoreAutosave && (
+                <button
+                  type="button"
+                  onClick={() => onRestoreAutosave(autosaveDraft)}
+                  className="h-8 px-3.5 rounded bg-[#0d99ff] hover:bg-[#1fa3ff] text-white text-[11px] font-semibold flex items-center gap-1.5 transition-colors"
+                >
+                  <RotateCcw size={12} />
+                  <span>Kaldığım Yerden Kurtar</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* 1. Workspace Presets Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">

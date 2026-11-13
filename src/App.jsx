@@ -8,7 +8,10 @@ import TutorialModal from './components/TutorialModal';
 import ExportModal from './components/ExportModal';
 import TagPickerModal from './components/TagPickerModal';
 import ImportReportModal from './components/ImportReportModal';
-import AIAgentPanel from './components/AIAgentPanel';
+import FloatingAIChatDock from './components/FloatingAIChatDock';
+import PresentationOverlay from './components/PresentationOverlay';
+import { importSiteCodeToProjectSchema } from './utils/codeFileImporter';
+import { useAiChatSession } from './hooks/useAiChatSession';
 import { createTagElement } from './data/tagRegistry';
 import { INITIAL_ELEMENTS, DEFAULT_UNIVERSAL_PROJECT } from './constants';
 import {
@@ -43,31 +46,29 @@ import {
 import { getParentScopeId } from './utils/selectionUtils';
 import { executeNodeClickEvent } from './utils/interactionEngine';
 import {
+  shouldHandleGlobalCanvasShortcut,
+  resolveSingleKeyToolShortcut,
+  clampCanvasZoom,
+} from './utils/canvasInputUtils';
+import {
   buildSerializableProjectSchema,
   parseAndMigrateLoadedProject,
+  detectInitializedViewports,
+  slugifyTabRoute,
   loadRecentProjects,
   upsertRecentProject,
   removeRecentProject,
   saveProjectToWebStorage,
+  loadProjectFromWebStorage,
+  deleteProjectFromWebStorage,
   saveAutosaveDraft,
+  loadAutosaveDraft,
+  clearAutosaveDraft,
   triggerBrowserJsonDownload,
 } from './utils/projectStorage';
 import AttributesCssInspectorModal from './components/AttributesCssInspectorModal';
 import FunctionEditorModal from './components/FunctionEditorModal';
 import StudioRightDock, { DEFAULT_RIGHT_DOCK_WIDTH } from './components/StudioRightDock';
-
-function detectInitializedViewports(nodes = [], initialDesktop = true) {
-  const result = { desktop: initialDesktop, tablet: false, mobile: false };
-  const check = (list) => {
-    for (const n of list || []) {
-      if (n.responsive?.tablet) result.tablet = true;
-      if (n.responsive?.mobile) result.mobile = true;
-      if (n.children) check(n.children);
-    }
-  };
-  check(nodes);
-  return result;
-}
 
 function buildTabState(id, name, elems = [], canvasOrByViewport = {}) {
   const hasPerViewport = canvasOrByViewport && (canvasOrByViewport.desktop || canvasOrByViewport.tablet || canvasOrByViewport.mobile);
@@ -128,6 +129,7 @@ export default function App() {
   });
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [projectFunctions, setProjectFunctions] = useState([]);
+  const [pageLinks, setPageLinks] = useState([]);
   const [functionEditorState, setFunctionEditorState] = useState({
     isOpen: false,
     fnObj: null,
@@ -138,6 +140,7 @@ export default function App() {
   const previewToastTimerRef = useRef(null);
   const projectFileInputRef = useRef(null);
   const [recentProjects, setRecentProjects] = useState(() => loadRecentProjects());
+  const [autosaveDraft, setAutosaveDraft] = useState(() => loadAutosaveDraft());
 
   const showToastMessage = useCallback((message, variant = 'info') => {
     if (!message) return;
@@ -186,17 +189,23 @@ export default function App() {
   const [secondaryColor, setSecondaryColor] = useState('#1a1816');
 
   // Canvas Viewport
-  const [zoom, setZoom] = useState(0.85);
-  const [panOffset, setPanOffset] = useState({ x: 80, y: 30 });
+  const [zoom, setZoom] = useState(0.56);
+  const [panOffset, setPanOffset] = useState({ x: 24, y: 48 });
+  const [fitVersion, setFitVersion] = useState(0);
 
-  // Unified Left Studio Sidebar tab: 'layers' | 'elements' | 'templates' | 'code' | null
+  // Unified Left Studio Sidebar tab: 'layers' | 'elements' | 'templates' | 'code' | 'ai' | null
   const [leftSidebarTab, setLeftSidebarTab] = useState('layers');
 
-  // Unified Right Dock state (Adobe resizable palette + vertical rail)
+  // Unified Right Dock state (Adobe resizable inspector palette + vertical rail)
   const [rightDockOpen, setRightDockOpen] = useState(true);
-  const [rightDockModule, setRightDockModule] = useState('properties'); // 'properties' | 'aiAgent'
   const [rightPropertiesTab, setRightPropertiesTab] = useState('layout'); // 'style' | 'layout' | 'props' | 'css' | 'code'
   const [rightDockWidth, setRightDockWidth] = useState(DEFAULT_RIGHT_DOCK_WIDTH);
+
+  // Bottom-Center Floating AI Chat Dock state
+  const [aiDockMinimized, setAiDockMinimized] = useState(false);
+  const [aiFocusSignal, setAiFocusSignal] = useState(0);
+  const [aiHighlightedIds, setAiHighlightedIds] = useState([]);
+  const aiHighlightTimerRef = useRef(null);
 
   // Preview Mode
   const [previewMode, setPreviewMode] = useState(false);
@@ -786,9 +795,87 @@ export default function App() {
     });
   }, [elements, projectFunctions, previewRuntimeOverrides, tabs, showToastMessage]);
 
+  const fitCanvasToViewport = useCallback((overrideWidth = null) => {
+    const canvasW = Number(overrideWidth) || Number(canvasSettings?.width) || 1280;
+    const canvasH = Number(canvasSettings?.height) || 1350;
+    const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
+    const estLeftW = previewMode ? 0 : (leftSidebarTab ? (leftSidebarTab === 'ai' ? 340 : 292) : 44);
+    const estRightW = previewMode ? 0 : (rightDockOpen ? rightDockWidth + 40 : 40);
+    const availW = wrapperEl?.clientWidth || Math.max(360, (typeof window !== 'undefined' ? window.innerWidth : 1440) - estLeftW - estRightW);
+    const availH = wrapperEl?.clientHeight || Math.max(420, (typeof window !== 'undefined' ? window.innerHeight : 920) - 76);
+    const usableW = Math.max(240, availW - 48);
+    let rawFitZoom = usableW / canvasW;
+    // Keep desktop/short artboards wholly clear of top breadcrumb and lifted Gemini chat dock
+    if (!previewMode && canvasH <= 1650) {
+      const usableH = Math.max(240, availH - 186);
+      rawFitZoom = Math.min(rawFitZoom, usableH / canvasH);
+    }
+    const fitZoom = clampCanvasZoom(Math.min(1, +rawFitZoom.toFixed(2)));
+    const scaledW = canvasW * fitZoom;
+    const panX = Math.max(20, Math.round((availW - scaledW) / 2));
+    setZoom(fitZoom);
+    setPanOffset({ x: panX, y: previewMode ? 28 : 34 });
+  }, [canvasSettings?.width, canvasSettings?.height, previewMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
+
+  const centerCanvasHorizontally = useCallback(() => {
+    if (previewMode) return;
+    const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
+    if (!wrapperEl || !wrapperEl.clientWidth) return;
+    const canvasW = Number(canvasSettings?.width) || 1280;
+    const scaledW = canvasW * zoom;
+    if (scaledW > wrapperEl.clientWidth - 24) return;
+    const centeredX = Math.max(20, Math.round((wrapperEl.clientWidth - scaledW) / 2));
+    setPanOffset((prev) => (Math.abs(prev.x - centeredX) <= 1 ? prev : { ...prev, x: centeredX }));
+  }, [previewMode, canvasSettings?.width, zoom]);
+
+  const fitCanvasRef = useRef(fitCanvasToViewport);
+  const centerHorizRef = useRef(centerCanvasHorizontally);
+  useEffect(() => {
+    fitCanvasRef.current = fitCanvasToViewport;
+  }, [fitCanvasToViewport]);
+  useEffect(() => {
+    centerHorizRef.current = centerCanvasHorizontally;
+  }, [centerCanvasHorizontally]);
+
+  // Fit & center artboard on initial load, tab switch, viewport switch, or fit trigger
+  useEffect(() => {
+    if (showWelcomeScreen) return undefined;
+    let cancelled = false;
+    let raf2 = null;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (!cancelled) fitCanvasRef.current?.();
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [showWelcomeScreen, fitVersion, activeTabId, viewportMode, canvasSettings?.width]);
+
+  // Keep artboard horizontally centered whenever sidebars open/close or window resizes
+  useEffect(() => {
+    if (showWelcomeScreen || previewMode) return undefined;
+    let rafId = requestAnimationFrame(() => centerHorizRef.current?.());
+    const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
+    const ro = wrapperEl && typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => centerHorizRef.current?.())
+      : null;
+    if (ro && wrapperEl) ro.observe(wrapperEl);
+    const onResize = () => centerHorizRef.current?.();
+    window.addEventListener('resize', onResize);
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro?.disconnect();
+      window.removeEventListener('resize', onResize);
+    };
+  }, [showWelcomeScreen, previewMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
+
   const handleTogglePreviewMode = useCallback((nextVal) => {
     setPreviewRuntimeOverrides({});
     setPreviewMode((prev) => (typeof nextVal === 'boolean' ? nextVal : !prev));
+    setFitVersion((v) => v + 1);
   }, []);
 
   // Reparent element (moving into another container or canvas root while keeping all viewports anchored)
@@ -935,6 +1022,16 @@ export default function App() {
 
     setSelectedIds([preparedNode.id]);
     setActiveTool('select');
+    if (
+      preparedNode.blockKind ||
+      preparedNode.sliderConfig ||
+      (Array.isArray(preparedNode.children) && preparedNode.children.length >= 2) ||
+      ['nav', 'navbar', 'footer'].includes(elType)
+    ) {
+      setRightDockOpen(true);
+      setRightDockModule('properties');
+      setRightPropertiesTab('block');
+    }
   };
 
   // Background remover
@@ -984,25 +1081,18 @@ export default function App() {
     }
   };
 
-  // Reset Zoom
-  const handleResetZoom = () => {
-    setZoom(0.85);
-    setPanOffset({ x: 80, y: 30 });
-  };
+  // Reset Zoom (Fit artboard cleanly inside visible workspace)
+  const handleResetZoom = useCallback(() => {
+    fitCanvasToViewport();
+  }, [fitCanvasToViewport]);
 
-  const handleSelectRightDockTarget = (moduleName, subTab = null) => {
+  const handleSelectRightDockTarget = (_moduleName, subTab = null) => {
     if (!rightDockOpen) {
-      setRightDockModule(moduleName);
-      if (moduleName === 'properties' && subTab) setRightPropertiesTab(subTab);
+      if (subTab) setRightPropertiesTab(subTab);
       setRightDockOpen(true);
       return;
     }
-    if (rightDockModule !== moduleName) {
-      setRightDockModule(moduleName);
-      if (moduleName === 'properties' && subTab) setRightPropertiesTab(subTab);
-      return;
-    }
-    if (moduleName === 'properties' && subTab && rightPropertiesTab !== subTab) {
+    if (subTab && rightPropertiesTab !== subTab) {
       setRightPropertiesTab(subTab);
       return;
     }
@@ -1011,7 +1101,6 @@ export default function App() {
 
   const handleDockFloatingInspector = (targetTab = 'css') => {
     setShowAttributesInspectorModal(false);
-    setRightDockModule('properties');
     setRightPropertiesTab(targetTab || 'css');
     setRightDockOpen(true);
   };
@@ -1029,10 +1118,79 @@ export default function App() {
       setShowAttributesInspectorModal(prev => !prev);
       return;
     }
-    if (panelName === 'properties' || panelName === 'aiAgent') {
-      handleSelectRightDockTarget(panelName);
+    if (panelName === 'properties') {
+      handleSelectRightDockTarget('properties');
+      return;
+    }
+    if (panelName === 'aiAgent') {
+      setAiDockMinimized((prev) => {
+        const nextMinimized = !prev;
+        if (!nextMinimized) setAiFocusSignal((s) => s + 1);
+        return nextMinimized;
+      });
     }
   };
+
+  const triggerAiHighlight = useCallback((ids = []) => {
+    if (aiHighlightTimerRef.current) clearTimeout(aiHighlightTimerRef.current);
+    const valid = (Array.isArray(ids) ? ids : []).filter(Boolean);
+    setAiHighlightedIds(valid);
+    if (valid.length > 0) {
+      aiHighlightTimerRef.current = setTimeout(() => {
+        setAiHighlightedIds([]);
+      }, 2600);
+    }
+  }, []);
+
+  const handleCaptureAiSnapshot = useCallback(() => ({
+    elements: JSON.parse(JSON.stringify(rawElements || [])),
+    canvasByViewport: JSON.parse(JSON.stringify(activeCanvasByViewport || createDefaultCanvasByViewport())),
+    selectedIds: [...selectedIds],
+  }), [rawElements, activeCanvasByViewport, selectedIds]);
+
+  const handleApplyAiResult = useCallback(({
+    nextElements,
+    recommendedHeight,
+    appliedTargetIds = [],
+    effectiveMode = 'full_site',
+  }) => {
+    const syncedRaw = syncViewportTreeDiffs(rawElements, nextElements, viewportMode);
+    let nextCanvasOverride = null;
+    if (recommendedHeight > (Number(canvasSettings?.height) || 1350)) {
+      nextCanvasOverride = {
+        ...activeCanvasByViewport,
+        [viewportMode]: {
+          ...canvasSettings,
+          height: recommendedHeight,
+        },
+      };
+    }
+    updateElementsWithHistory(syncedRaw, nextCanvasOverride);
+    if (effectiveMode === 'selection' && appliedTargetIds.length > 0) {
+      handleSelectElements(appliedTargetIds);
+    }
+    triggerAiHighlight(appliedTargetIds);
+    showToastMessage('AI tasarımı tuvale uygulandı (Ctrl+Z ile geri alabilirsin)');
+  }, [rawElements, viewportMode, canvasSettings, activeCanvasByViewport, updateElementsWithHistory, triggerAiHighlight, showToastMessage]);
+
+  const handleRestoreAiSnapshot = useCallback((snapshot) => {
+    if (!snapshot || !Array.isArray(snapshot.elements)) return;
+    updateElementsWithHistory(snapshot.elements, snapshot.canvasByViewport || null);
+    if (Array.isArray(snapshot.selectedIds)) {
+      handleSelectElements(snapshot.selectedIds);
+    }
+    setAiHighlightedIds([]);
+    showToastMessage('AI öncesi tasarım geri yüklendi');
+  }, [updateElementsWithHistory, showToastMessage]);
+
+  const aiChat = useAiChatSession({
+    elements,
+    selectedIds,
+    canvasSettings,
+    onCaptureSnapshot: handleCaptureAiSnapshot,
+    onApplyAiResult: handleApplyAiResult,
+    onRestoreAiSnapshot: handleRestoreAiSnapshot,
+  });
 
   const handleAddTab = () => {
     const newTabId = `tab-${Date.now()}`;
@@ -1052,6 +1210,19 @@ export default function App() {
     }
     setHasUnsavedChanges(true);
   };
+
+  const handleRenameTab = useCallback((tabId, nextName) => {
+    const cleaned = String(nextName || '').trim();
+    if (!cleaned) return;
+    setTabs((prevTabs) =>
+      prevTabs.map((t, idx) =>
+        t.id === tabId
+          ? { ...t, name: cleaned, route: slugifyTabRoute(cleaned, idx) }
+          : t
+      )
+    );
+    setHasUnsavedChanges(true);
+  }, []);
 
   // Tutorial actions
   const handleTutorialAddBox = () => {
@@ -1105,6 +1276,7 @@ export default function App() {
   const handleSwitchViewport = useCallback((nextViewport) => {
     if (!['desktop', 'tablet', 'mobile'].includes(nextViewport)) return;
     setViewportMode(nextViewport);
+    setFitVersion((v) => v + 1);
 
     if (nextViewport === 'desktop') return;
 
@@ -1172,6 +1344,28 @@ export default function App() {
     updateElementsWithHistory(tree, nextByVp);
   }, [viewportMode, rawElements, activeCanvasByViewport, activeTabId, updateElementsWithHistory]);
 
+  const buildCurrentProjectSchema = useCallback((overrides = {}) => {
+    return buildSerializableProjectSchema({
+      id: projectMeta.id || `proj-${Date.now()}`,
+      name: projectMeta.name || 'CraftStudio Projesi',
+      filePath: projectMeta.filePath,
+      tabs,
+      activeTabId,
+      viewportMode,
+      projectFunctions,
+      pageLinks,
+      createdAt: projectMeta.createdAt,
+      ...overrides,
+    });
+  }, [projectMeta, tabs, activeTabId, viewportMode, projectFunctions, pageLinks]);
+
+  const flushAutosaveDraft = useCallback(() => {
+    const schema = buildCurrentProjectSchema();
+    saveAutosaveDraft(schema);
+    setAutosaveDraft(schema);
+    return schema;
+  }, [buildCurrentProjectSchema]);
+
   // Helper: Apply a parsed & migrated project schema to Studio state
   const applyLoadedProjectSchema = useCallback((rawProjectData, extraMeta = {}) => {
     const schema = parseAndMigrateLoadedProject(rawProjectData);
@@ -1201,51 +1395,68 @@ export default function App() {
     setActiveTabId(resolvedActiveId);
     setViewportMode(schema.viewportMode || 'desktop');
     setProjectFunctions(Array.isArray(schema.projectFunctions) ? schema.projectFunctions : []);
+    setPageLinks(Array.isArray(schema.pageLinks) ? schema.pageLinks : []);
     setProjectMeta({
       id: schema.id,
       name: finalName,
       filePath: nextFilePath,
       createdAt: schema.createdAt || new Date().toISOString(),
     });
-    setHasUnsavedChanges(false);
+    setHasUnsavedChanges(Boolean(extraMeta.markUnsaved));
     setSelectedIds([]);
     setEditingGroupId(null);
     setPreviewMode(false);
     setPreviewRuntimeOverrides({});
     setShowWelcomeScreen(false);
+    setFitVersion((v) => v + 1);
 
-    const updatedRecent = upsertRecentProject({
-      ...schema,
-      name: finalName,
-      filePath: nextFilePath,
-    });
-    setRecentProjects(updatedRecent);
+    if (!extraMeta.skipRecentUpdate) {
+      const updatedRecent = upsertRecentProject({
+        ...schema,
+        name: finalName,
+        filePath: nextFilePath,
+      });
+      setRecentProjects(updatedRecent);
+    }
   }, []);
 
   // Debounced autosave draft in localStorage whenever user edits an open project
   useEffect(() => {
     if (showWelcomeScreen || !hasUnsavedChanges) return undefined;
     const timer = setTimeout(() => {
-      const schema = buildSerializableProjectSchema({
-        id: projectMeta.id,
-        name: projectMeta.name,
-        filePath: projectMeta.filePath,
-        tabs,
-        activeTabId,
-        viewportMode,
-        projectFunctions,
-        createdAt: projectMeta.createdAt,
-      });
-      saveAutosaveDraft(schema);
+      flushAutosaveDraft();
     }, 1500);
     return () => clearTimeout(timer);
-  }, [showWelcomeScreen, hasUnsavedChanges, projectMeta, tabs, activeTabId, viewportMode, projectFunctions]);
+  }, [showWelcomeScreen, hasUnsavedChanges, flushAutosaveDraft]);
+
+  // Synchronous flush + close confirmation when leaving with unsaved changes
+  useEffect(() => {
+    if (showWelcomeScreen || !hasUnsavedChanges) return undefined;
+    const handleBeforeUnload = (e) => {
+      flushAutosaveDraft();
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [showWelcomeScreen, hasUnsavedChanges, flushAutosaveDraft]);
+
+  // Reflect project name & dirty dot (`●`) in browser / Electron window title
+  useEffect(() => {
+    if (showWelcomeScreen) {
+      document.title = 'CraftStudio - Web Tasarımcı & React Oluşturucu';
+      return;
+    }
+    const prefix = hasUnsavedChanges ? '● ' : '';
+    document.title = `${prefix}${projectMeta.name || 'CraftStudio Projesi'} — CraftStudio`;
+  }, [showWelcomeScreen, hasUnsavedChanges, projectMeta.name]);
 
   // Welcome Screen & New Project actions
   const handleStartNewProject = (type) => {
     const newProjId = `proj-${Date.now()}`;
     const newTabId = `tab-${Date.now()}`;
     setProjectFunctions([]);
+    setPageLinks([]);
     setPreviewMode(false);
     setPreviewRuntimeOverrides({});
     setSelectedIds([]);
@@ -1253,12 +1464,12 @@ export default function App() {
     setHasUnsavedChanges(false);
 
     if (type === 'universal' || type === 'jewelry') {
-      const newTab = buildTabState(newTabId, 'Web-Sayfasi.craft', DEFAULT_UNIVERSAL_PROJECT, { width: 1280, height: 1350, backgroundColor: '#0f172a' });
+      const newTab = buildTabState(newTabId, 'Web-Sayfasi.craft', DEFAULT_UNIVERSAL_PROJECT, { width: 1280, height: 1350, backgroundColor: '#0b0a09' });
       setTabs([newTab]);
       setTabHistory(newTabId, { elements: newTab.elements, canvasByViewport: newTab.canvasByViewport });
       setActiveTabId(newTabId);
       setViewportMode('desktop');
-      setProjectMeta({ id: newProjId, name: 'Modern Takı & Landing Demosu', filePath: null, createdAt: new Date().toISOString() });
+      setProjectMeta({ id: newProjId, name: 'Aurelia Atelier Vitrini', filePath: null, createdAt: new Date().toISOString() });
     } else if (type === 'blank') {
       const newTab = buildTabState(newTabId, 'Yeni-Tasarim.craft', [], { width: 1280, height: 1200, backgroundColor: '#ffffff' });
       setTabs([newTab]);
@@ -1268,7 +1479,7 @@ export default function App() {
       setProjectMeta({ id: newProjId, name: 'Yeni Boş Proje', filePath: null, createdAt: new Date().toISOString() });
     } else if (type === 'mobile') {
       const adapted = ensureViewportAdapted(DEFAULT_UNIVERSAL_PROJECT, 'mobile', { forceReset: true });
-      const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1350, backgroundColor: '#0f172a' });
+      const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1350, backgroundColor: '#0b0a09' });
       byVp.mobile.height = adapted.suggestedHeight;
       const newTab = {
         ...buildTabState(newTabId, 'Mobil-Web.craft', adapted.tree, byVp),
@@ -1281,6 +1492,7 @@ export default function App() {
       setProjectMeta({ id: newProjId, name: 'Mobil Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() });
     }
     setShowWelcomeScreen(false);
+    setFitVersion((v) => v + 1);
   };
 
   const handleRenameProject = (nextName) => {
@@ -1291,20 +1503,11 @@ export default function App() {
   // 💾 Save Project (.craft.json via Electron native dialog OR Web storage + download)
   const handleSaveProject = useCallback(async (saveAs = false) => {
     try {
-      const schema = buildSerializableProjectSchema({
-        id: projectMeta.id || `proj-${Date.now()}`,
-        name: projectMeta.name || 'CraftStudio Projesi',
-        filePath: saveAs ? null : projectMeta.filePath,
-        tabs,
-        activeTabId,
-        viewportMode,
-        projectFunctions,
-        createdAt: projectMeta.createdAt,
-      });
+      const schema = buildCurrentProjectSchema();
 
       if (window.electronAPI?.saveProjectFile) {
         const res = await window.electronAPI.saveProjectFile({
-          filePath: saveAs ? null : projectMeta.filePath,
+          filePath: projectMeta.filePath,
           saveAs,
           defaultFileName: `${(schema.name || 'proje').toLowerCase().replace(/[^a-z0-9-_ğüşıöç]+/gi, '-')}.craft.json`,
           content: JSON.stringify({ ...schema, filePath: undefined }, null, 2),
@@ -1314,7 +1517,19 @@ export default function App() {
           showToastMessage(`Kaydetme hatası: ${res.error}`, 'error');
           return;
         }
-        const savedSchema = { ...schema, filePath: res.filePath, name: projectMeta.name || res.name };
+        const savedToDifferentFile = Boolean(
+          saveAs && projectMeta.filePath && res.filePath && res.filePath !== projectMeta.filePath
+        );
+        const nextId = savedToDifferentFile ? `proj-${Date.now()}` : schema.id;
+        const nextName = savedToDifferentFile
+          ? (res.name || schema.name)
+          : (projectMeta.name || res.name || schema.name);
+        const savedSchema = {
+          ...schema,
+          id: nextId,
+          filePath: res.filePath,
+          name: nextName,
+        };
         setProjectMeta((prev) => ({
           ...prev,
           id: savedSchema.id,
@@ -1324,14 +1539,17 @@ export default function App() {
         }));
         saveProjectToWebStorage(savedSchema);
         setRecentProjects(upsertRecentProject(savedSchema));
+        clearAutosaveDraft();
+        setAutosaveDraft(null);
         setHasUnsavedChanges(false);
         showToastMessage(`✓ Kaydedildi: ${res.fileName}`, 'success');
         return;
       }
 
-      // Web / Browser mode persistence (+ file download on Save As)
+      // Web / Browser mode persistence (+ .craft.json file download on Save As)
       saveProjectToWebStorage(schema);
-      saveAutosaveDraft(schema);
+      clearAutosaveDraft();
+      setAutosaveDraft(null);
       setRecentProjects(upsertRecentProject(schema));
       setHasUnsavedChanges(false);
       if (saveAs) {
@@ -1343,7 +1561,7 @@ export default function App() {
     } catch (err) {
       showToastMessage(`Kaydetme hatası: ${err.message}`, 'error');
     }
-  }, [projectMeta, tabs, activeTabId, viewportMode, projectFunctions, showToastMessage]);
+  }, [buildCurrentProjectSchema, projectMeta.filePath, projectMeta.name, showToastMessage]);
 
   // 📂 Open parsed JSON project object directly
   const handleOpenProject = (importedData) => {
@@ -1355,7 +1573,7 @@ export default function App() {
     }
   };
 
-  // 📂 Open .craft.json file via Electron dialog OR browser file picker
+  // 📂 Open website code (.html, .jsx, .tsx) or .craft.json file via Electron dialog OR browser picker
   const handleOpenProjectFile = useCallback(async () => {
     try {
       if (window.electronAPI?.openProjectFileDialog) {
@@ -1365,7 +1583,8 @@ export default function App() {
           showToastMessage(`Dosya açılamadı: ${res.error}`, 'error');
           return;
         }
-        applyLoadedProjectSchema(res.content, { filePath: res.filePath });
+        const parsedSchema = importSiteCodeToProjectSchema(res.content, res.fileName, res.filePath);
+        applyLoadedProjectSchema(parsedSchema, { filePath: res.filePath });
         showToastMessage(`✓ Açıldı: ${res.fileName}`, 'success');
         return;
       }
@@ -1381,10 +1600,11 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        applyLoadedProjectSchema(ev.target?.result);
+        const parsedSchema = importSiteCodeToProjectSchema(ev.target?.result, file.name);
+        applyLoadedProjectSchema(parsedSchema);
         showToastMessage(`✓ Açıldı: ${file.name}`, 'success');
       } catch (err) {
-        alert(`Geçersiz proje dosyası: ${err.message}`);
+        showToastMessage(`Geçersiz site veya proje dosyası: ${err.message}`, 'error');
       }
     };
     reader.readAsText(file);
@@ -1398,18 +1618,18 @@ export default function App() {
         const res = await window.electronAPI.openProjectDialog();
         if (res && !res.canceled) {
           if (res.error) {
-            alert('İçe aktarma hatası: ' + res.error);
+            showToastMessage(`İçe aktarma hatası: ${res.error}`, 'error');
             return;
           }
           setImportReportData(res);
           setShowImportReportModal(true);
         }
       } else {
-        alert('Klasör içe aktarma masaüstü (Electron) uygulamasında kullanılabilir. Dosya açmak için .craft.json seçebilirsiniz.');
+        showToastMessage('Klasör içe aktarma Electron masaüstünde kullanılabilir; dosya açmak için .craft.json seçin.', 'info');
       }
     } catch (err) {
       console.error('Error opening project folder:', err);
-      alert('Proje açılırken bir hata oluştu: ' + err.message);
+      showToastMessage(`Proje açılırken hata oluştu: ${err.message}`, 'error');
     }
   };
 
@@ -1435,12 +1655,15 @@ export default function App() {
 
   const handleOpenRecentProject = async (proj) => {
     try {
+      let fileMissingWarning = false;
       if (proj.filePath && window.electronAPI?.readProjectFile) {
         const res = await window.electronAPI.readProjectFile(proj.filePath);
         if (res && res.success) {
-          applyLoadedProjectSchema(res.content, { filePath: res.filePath });
+          const parsedSchema = importSiteCodeToProjectSchema(res.content, res.fileName, res.filePath);
+          applyLoadedProjectSchema(parsedSchema, { filePath: res.filePath });
           return;
         }
+        fileMissingWarning = true;
       }
       if (proj.folderPath && window.electronAPI?.importProjectFolder) {
         const res = await window.electronAPI.importProjectFolder(proj.folderPath);
@@ -1450,7 +1673,15 @@ export default function App() {
         }
       }
       if (proj.snapshot) {
-        applyLoadedProjectSchema(proj.snapshot, { filePath: proj.filePath || null });
+        applyLoadedProjectSchema(proj.snapshot, { filePath: fileMissingWarning ? null : (proj.filePath || null) });
+        if (fileMissingWarning) {
+          showToastMessage('Diskteki dosya taşınmış/silinmiş; son yerel önbellekten yüklendi.', 'info');
+        }
+        return;
+      }
+      const storedFallback = proj.id ? loadProjectFromWebStorage(proj.id) : null;
+      if (storedFallback) {
+        applyLoadedProjectSchema(storedFallback, { filePath: fileMissingWarning ? null : (proj.filePath || null) });
         return;
       }
       if (proj.elements) {
@@ -1460,22 +1691,72 @@ export default function App() {
           elements: proj.elements,
           canvasByViewport: proj.canvasByViewport || { width: proj.width || 1280, height: proj.height || 1350, backgroundColor: '#0f172a' },
         });
+        return;
       }
+      showToastMessage('Bu son proje kaydının içeriği bulunamadı.', 'error');
     } catch (err) {
       showToastMessage(`Son proje açılamadı: ${err.message}`, 'error');
     }
   };
 
   const handleDeleteRecentProject = (projectId) => {
+    deleteProjectFromWebStorage(projectId);
     setRecentProjects(removeRecentProject(projectId));
   };
+
+  const handleRestoreAutosave = useCallback((draft) => {
+    if (!draft) return;
+    try {
+      applyLoadedProjectSchema(draft, { markUnsaved: true, skipRecentUpdate: true });
+      showToastMessage(`✓ Otomatik taslak kurtarıldı: ${draft.name || 'Adsız Proje'}`, 'success');
+    } catch (err) {
+      showToastMessage(`Taslak kurtarılamadı: ${err.message}`, 'error');
+    }
+  }, [applyLoadedProjectSchema, showToastMessage]);
+
+  const handleDismissAutosave = useCallback(() => {
+    clearAutosaveDraft();
+    setAutosaveDraft(null);
+    showToastMessage('Otomatik taslak temizlendi.', 'info');
+  }, [showToastMessage]);
+
+  const handleGoHome = useCallback(() => {
+    if (!showWelcomeScreen && hasUnsavedChanges) {
+      flushAutosaveDraft();
+    }
+    setShowWelcomeScreen(true);
+  }, [showWelcomeScreen, hasUnsavedChanges, flushAutosaveDraft]);
 
   // 🌟 GLOBAL KEYBOARD SHORTCUTS (Ctrl+S, Ctrl+Shift+S, Ctrl+O, Ctrl+Shift+O, Ctrl+E, Ctrl+A/G/C/X/V, Esc, Enter, Delete, Undo/Redo)
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
-
+      const isAnyModalOpen = Boolean(
+        showExportModal ||
+        showTutorial ||
+        showAddTagModal ||
+        showImportReportModal ||
+        showAttributesInspectorModal ||
+        functionEditorState?.isOpen
+      );
       const isCtrl = e.ctrlKey || e.metaKey;
+
+      // Ctrl+K -> Focus / Open Floating AI Chat Dock
+      if (isCtrl && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        if (!isAnyModalOpen && !showWelcomeScreen && !previewMode) {
+          e.preventDefault();
+          setAiDockMinimized(false);
+          setAiFocusSignal((s) => s + 1);
+          return;
+        }
+      }
+
+      if (!shouldHandleGlobalCanvasShortcut({
+        activeElement: document.activeElement,
+        eventTarget: e.target,
+        isAnyModalOpen,
+      })) {
+        return;
+      }
 
       // Save Project: Ctrl+Shift+S -> Save As, Ctrl+S -> Save
       if (isCtrl && e.shiftKey && e.key.toLowerCase() === 's') {
@@ -1617,20 +1898,27 @@ export default function App() {
         } else {
           handleSelectParent();
         }
-      } else if (e.key === 'Enter') {
+      } else if (e.key === 'Enter' && !isCtrl && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         handleSelectChild();
-      } else if (e.key.toLowerCase() === 'v') {
-        setActiveTool('select');
-      } else if (e.key.toLowerCase() === 'r') {
-        setActiveTool('rectangle');
-      } else if (e.key.toLowerCase() === 'h') {
-        setActiveTool('hand');
-      } else if (e.key.toLowerCase() === 't') {
-        setActiveTool('text');
+      } else if (isCtrl && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        setZoom((z) => clampCanvasZoom(z + 0.1));
+      } else if (isCtrl && e.key === '-') {
+        e.preventDefault();
+        setZoom((z) => clampCanvasZoom(z - 0.1));
       } else if (isCtrl && e.key === '0') {
         e.preventDefault();
         handleResetZoom();
+      } else {
+        const nextTool = resolveSingleKeyToolShortcut(e.key, {
+          isCtrlOrMeta: isCtrl,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+        });
+        if (nextTool) {
+          setActiveTool(nextTool);
+        }
       }
     };
 
@@ -1656,21 +1944,21 @@ export default function App() {
     : null;
 
   const effectiveActivePanels = {
-    properties: rightDockOpen && rightDockModule === 'properties',
-    aiAgent: rightDockOpen && rightDockModule === 'aiAgent',
+    properties: rightDockOpen,
+    aiAgent: !aiDockMinimized,
     layers: leftSidebarTab === 'layers',
     assets: leftSidebarTab === 'templates' || leftSidebarTab === 'elements',
     attributesAndCss: showAttributesInspectorModal,
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0b0d12] text-slate-200 select-none overflow-hidden font-sans relative">
-      {/* Hidden browser file picker for opening .craft.json inside workspace */}
+    <div className="flex flex-col h-screen w-screen bg-[#111113] text-zinc-200 select-none overflow-hidden font-sans relative">
+      {/* Hidden browser file picker for opening .html / .jsx / .tsx / .craft.json inside workspace */}
       <input
         type="file"
         ref={projectFileInputRef}
         onChange={handleProjectFileInputChange}
-        accept=".json,.craft"
+        accept=".json,.craft,.craft.json,.html,.htm,.jsx,.tsx,.js,.ts"
         className="hidden"
       />
 
@@ -1699,6 +1987,9 @@ export default function App() {
           onOpenRecentProject={handleOpenRecentProject}
           onDeleteRecentProject={handleDeleteRecentProject}
           recentProjects={recentProjects}
+          autosaveDraft={autosaveDraft}
+          onRestoreAutosave={handleRestoreAutosave}
+          onDismissAutosave={handleDismissAutosave}
         />
       ) : (
         <>
@@ -1723,6 +2014,7 @@ export default function App() {
             }}
             onAddTab={handleAddTab}
             onCloseTab={handleCloseTab}
+            onRenameTab={handleRenameTab}
             previewMode={previewMode}
             setPreviewMode={handleTogglePreviewMode}
             onOpenExportModal={() => setShowExportModal(true)}
@@ -1730,12 +2022,13 @@ export default function App() {
             onOpenProjectFile={handleOpenProjectFile}
             onSaveProject={handleSaveProject}
             projectName={projectMeta.name}
+            projectFilePath={projectMeta.filePath}
             onRenameProject={handleRenameProject}
             hasUnsavedChanges={hasUnsavedChanges}
             viewportMode={viewportMode}
             setViewportMode={handleSwitchViewport}
             rawElements={rawElements}
-            onGoHome={() => setShowWelcomeScreen(true)}
+            onGoHome={handleGoHome}
             onNewBlankProject={() => handleStartNewProject('blank')}
             onStartTutorial={() => setShowTutorial(true)}
             selectedIds={selectedIds}
@@ -1786,50 +2079,63 @@ export default function App() {
                 onAddPreset={handleAddPreset}
                 onUpdateElement={handleUpdateElement}
                 onCommitHistory={handleCommitHistory}
-                onToggleAIAgent={() => togglePanel('aiAgent')}
-                isAIAgentOpen={rightDockOpen && rightDockModule === 'aiAgent'}
+                aiChat={aiChat}
                 viewportMode={viewportMode}
               />
             )}
 
-            {/* Center Canvas */}
-            <Canvas
-              elements={elements}
-              selectedIds={selectedIds}
-              onSelectElements={handleSelectElements}
-              onToggleElementSelection={handleToggleElementSelection}
-              onUpdateElement={handleUpdateElement}
-              onUpdateMultipleElements={handleUpdateMultipleElements}
-              onAltDuplicateElements={handleAltDuplicateElements}
-              onCommitHistory={handleCommitHistory}
-              onReparentElement={handleReparentElement}
-              onSelectParent={handleSelectParent}
-              onSelectChild={handleSelectChild}
-              activeTool={activeTool}
-              zoom={zoom}
-              setZoom={setZoom}
-              panOffset={panOffset}
-              setPanOffset={setPanOffset}
-              canvasSettings={canvasSettings}
-              onUpdateCanvasSettings={setCanvasSettings}
-              previewMode={previewMode}
-              previewRuntimeOverrides={previewRuntimeOverrides}
-              onPreviewExecuteEvent={handlePreviewExecuteEvent}
-              onPreviewInputChange={handlePreviewInputChange}
-              primaryColor={primaryColor}
-              secondaryColor={secondaryColor}
-              onAddElementAt={handleAddElementAt}
-              editingGroupId={editingGroupId}
-              setEditingGroupId={setEditingGroupId}
-              viewportMode={viewportMode}
-              onResetViewportFromDesktop={handleResetViewportFromDesktop}
-            />
+            {/* Center Canvas Column + Bottom-Center Floating AI Chat Dock */}
+            <div className="relative flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+              <Canvas
+                elements={elements}
+                selectedIds={selectedIds}
+                onSelectElements={handleSelectElements}
+                onToggleElementSelection={handleToggleElementSelection}
+                onUpdateElement={handleUpdateElement}
+                onUpdateMultipleElements={handleUpdateMultipleElements}
+                onAltDuplicateElements={handleAltDuplicateElements}
+                onCommitHistory={handleCommitHistory}
+                onReparentElement={handleReparentElement}
+                onSelectParent={handleSelectParent}
+                onSelectChild={handleSelectChild}
+                activeTool={activeTool}
+                zoom={zoom}
+                setZoom={setZoom}
+                panOffset={panOffset}
+                setPanOffset={setPanOffset}
+                canvasSettings={canvasSettings}
+                onUpdateCanvasSettings={setCanvasSettings}
+                previewMode={previewMode}
+                previewRuntimeOverrides={previewRuntimeOverrides}
+                onPreviewExecuteEvent={handlePreviewExecuteEvent}
+                onPreviewInputChange={handlePreviewInputChange}
+                primaryColor={primaryColor}
+                secondaryColor={secondaryColor}
+                onAddElementAt={handleAddElementAt}
+                editingGroupId={editingGroupId}
+                setEditingGroupId={setEditingGroupId}
+                viewportMode={viewportMode}
+                onResetViewportFromDesktop={handleResetViewportFromDesktop}
+                aiHighlightedIds={aiHighlightedIds}
+              />
+
+              {!previewMode && (
+                <FloatingAIChatDock
+                  aiChat={aiChat}
+                  isMinimized={aiDockMinimized}
+                  onSetMinimized={setAiDockMinimized}
+                  isLeftAiOpen={leftSidebarTab === 'ai'}
+                  onToggleLeftAiPanel={() => setLeftSidebarTab((prev) => (prev === 'ai' ? null : 'ai'))}
+                  focusSignal={aiFocusSignal}
+                />
+              )}
+            </div>
 
             {/* Unified Adobe Right Dock + Vertical Icon Rail */}
             {!previewMode && (
               <StudioRightDock
                 isOpen={rightDockOpen}
-                activeModule={rightDockModule}
+                activeModule="properties"
                 propertiesTab={rightPropertiesTab}
                 dockWidth={rightDockWidth}
                 onChangeDockWidth={setRightDockWidth}
@@ -1845,6 +2151,10 @@ export default function App() {
                     onSelectElement={(id) => handleSelectElements([id])}
                     onUpdateElement={handleUpdateElement}
                     onUpdateElementDirect={handleUpdateElementDirect}
+                    onUpdateResolvedElements={(nextResolved) => {
+                      const synced = syncViewportTreeDiffs(rawElements, nextResolved, viewportMode);
+                      updateElementsWithHistory(synced);
+                    }}
                     onUpdateMultipleElements={handleUpdateMultipleElements}
                     onDeleteSelected={handleDeleteSelected}
                     onDuplicateSelected={handleDuplicateSelected}
@@ -1867,21 +2177,24 @@ export default function App() {
                     onDeleteProjectFunction={handleDeleteProjectFunction}
                   />
                 )}
-                aiAgentContent={(
-                  <AIAgentPanel
-                    elements={elements}
-                    onUpdateElements={(nextResolved) => {
-                      const synced = syncViewportTreeDiffs(rawElements, nextResolved, viewportMode);
-                      updateElementsWithHistory(synced);
-                    }}
-                    selectedIds={selectedIds}
-                    onClose={() => setRightDockOpen(false)}
-                  />
-                )}
               />
             )}
           </div>
         </>
+      )}
+
+      {/* PowerPoint-style Fullscreen Browser Presentation Overlay ("Sun") */}
+      {!showWelcomeScreen && previewMode && (
+        <PresentationOverlay
+          projectName={projectMeta.name}
+          tabs={tabs}
+          activeTabId={activeTabId}
+          onSelectTab={(nextId) => setActiveTabId(nextId)}
+          projectFunctions={projectFunctions}
+          initialViewport={viewportMode === 'mobile' || viewportMode === 'tablet' ? viewportMode : 'full'}
+          onClose={() => handleTogglePreviewMode(false)}
+          onOpenExportModal={() => setShowExportModal(true)}
+        />
       )}
 
       {/* Tutorial Modal */}
@@ -1911,6 +2224,7 @@ export default function App() {
         viewportMode={viewportMode}
         tabs={tabs}
         projectFunctions={projectFunctions}
+        pageLinks={pageLinks}
         projectName={projectMeta.name}
         projectFilePath={projectMeta.filePath || ''}
       />

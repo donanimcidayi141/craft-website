@@ -49,7 +49,7 @@ export function getViewportPreset(viewportMode) {
  * Builds per-viewport canvas settings preserving shared background/height where sensible.
  */
 export function createDefaultCanvasByViewport(baseCanvas = {}) {
-  const desktopBgColor = baseCanvas.backgroundColor || '#0f172a';
+  const desktopBgColor = baseCanvas.bgColor || baseCanvas.backgroundColor || '#0f172a';
   const desktopBg = baseCanvas.background;
   const desktopWidth = Number(baseCanvas.width) || VIEWPORT_PRESETS.desktop.width;
   const desktopHeight = Number(baseCanvas.height) || VIEWPORT_PRESETS.desktop.defaultHeight;
@@ -798,6 +798,35 @@ function layoutNavChildren(rawNode, targetWidth, targetViewport, patchMap) {
   }
 
   let curY = 56;
+  const allFlatMiddle = middleItems.every((m) => !Array.isArray(m.children) || m.children.length === 0);
+  if (middleItems.length > 1 && allFlatMiddle) {
+    // Wrap flat middle links/badges cleanly into horizontal rows instead of stacking 1-per-row
+    const rowGap = 8;
+    const itemGap = 8;
+    const rowH = 30;
+    let cursorX = padX;
+    let rowY = curY;
+
+    middleItems.forEach((mid) => {
+      const isBadge = (mid.tag === 'span' || mid.type === 'span') && Number(mid.width) >= 100;
+      const desiredW = Math.min(
+        innerW,
+        Math.max(isBadge ? 116 : 74, Math.min(Number(mid.width) || 90, isBadge ? 148 : Math.floor((innerW - itemGap) / 2)))
+      );
+      if (cursorX > padX && cursorX + desiredW > padX + innerW) {
+        cursorX = padX;
+        rowY += rowH + rowGap;
+      }
+      setPatch(
+        mid,
+        { x: cursorX, y: rowY, width: desiredW, height: rowH },
+        { fontSize: isBadge ? '11px' : '12px', justifyContent: 'center', alignItems: 'center', whiteSpace: 'nowrap' }
+      );
+      cursorX += desiredW + itemGap;
+    });
+    return Math.max(60, rowY + rowH + 10);
+  }
+
   for (const mid of middleItems) {
     const midH = 34;
     if (Array.isArray(mid.children) && mid.children.length > 0) {
@@ -812,6 +841,170 @@ function layoutNavChildren(rawNode, targetWidth, targetViewport, patchMap) {
   }
 
   return Math.max(60, middleItems.length > 0 ? curY : 60);
+}
+
+/**
+ * Special responsive layout for Slider containers so slides remain stacked at (0,0)
+ * instead of unfolding sequentially into a tall empty vertical list.
+ */
+function adaptSliderSubtree(rawNode, assignedWidth, targetViewport, patchMap, adaptedStyle) {
+  const isMobile = targetViewport === 'mobile';
+  const children = rawNode.children || [];
+  const slides = children.filter((c) => c.sliderRole === 'slide');
+  const prevBtns = children.filter((c) => c.events?.onClick?.mode === 'slider_prev');
+  const nextBtns = children.filter((c) => c.events?.onClick?.mode === 'slider_next');
+  const dots = children
+    .filter((c) => c.sliderRole === 'dot')
+    .sort((a, b) => Number(a.slideIndex || 0) - Number(b.slideIndex || 0));
+  const handledSet = new Set([...slides, ...prevBtns, ...nextBtns, ...dots]);
+  const extras = children.filter((c) => !handledSet.has(c));
+
+  const setPatch = (child, box, styleObj = child.style, extraW = null, extraH = null) => {
+    const targetState = {
+      ...child,
+      x: Math.round(box.x),
+      y: Math.round(box.y),
+      width: Math.max(8, Math.round(box.width)),
+      height: Math.max(8, Math.round(box.height)),
+      style: styleObj,
+    };
+    patchMap.set(child.id, {
+      ov: buildOverrideFromResolvedDiff(child, targetState, {}),
+      adaptedWidth: extraW ?? targetState.width,
+      adaptedHeight: extraH ?? targetState.height,
+    });
+  };
+
+  let maxSlideH = 0;
+  const slideResults = slides.map((slide) => {
+    const adaptedSlide = adaptSubtreeAtWidth(slide, assignedWidth, targetViewport, patchMap);
+    maxSlideH = Math.max(maxSlideH, adaptedSlide.height);
+    return { slide, adaptedSlide };
+  });
+
+  const dotReserve = dots.length > 0 ? (isMobile ? 28 : 22) : 0;
+  const totalSliderH = Math.max(MIN_ELEMENT_SIZE, maxSlideH + dotReserve);
+
+  slideResults.forEach(({ slide, adaptedSlide }) => {
+    setPatch(
+      slide,
+      { x: 0, y: 0, width: assignedWidth, height: maxSlideH },
+      { ...adaptedSlide.style, paddingBottom: dotReserve ? `${dotReserve}px` : adaptedSlide.style?.paddingBottom },
+      assignedWidth,
+      maxSlideH
+    );
+  });
+
+  const arrowSize = isMobile ? 32 : 38;
+  const arrowY = Math.max(8, Math.round((maxSlideH - arrowSize) / 2));
+  prevBtns.forEach((btn) => {
+    const btnStyle = buildAdaptedStyle(btn.style, targetViewport, arrowSize);
+    setPatch(btn, { x: isMobile ? 6 : 12, y: arrowY, width: arrowSize, height: arrowSize }, btnStyle);
+  });
+  nextBtns.forEach((btn) => {
+    const btnStyle = buildAdaptedStyle(btn.style, targetViewport, arrowSize);
+    setPatch(btn, { x: assignedWidth - arrowSize - (isMobile ? 6 : 12), y: arrowY, width: arrowSize, height: arrowSize }, btnStyle);
+  });
+
+  if (dots.length > 0) {
+    const dotSize = 10;
+    const dotGap = 8;
+    const dotsSpan = dots.length * dotSize + (dots.length - 1) * dotGap;
+    const startX = Math.round((assignedWidth - dotsSpan) / 2);
+    const dotY = Math.max(12, totalSliderH - 18);
+    dots.forEach((dot, idx) => {
+      setPatch(
+        dot,
+        { x: startX + idx * (dotSize + dotGap), y: dotY, width: dotSize, height: dotSize },
+        dot.style
+      );
+    });
+  }
+
+  extras.forEach((extra) => {
+    const extraW = Math.min(assignedWidth - 24, Math.max(MIN_ELEMENT_SIZE, Number(extra.width) || 120));
+    const adaptedExtra = adaptSubtreeAtWidth(extra, extraW, targetViewport, patchMap);
+    setPatch(
+      extra,
+      {
+        x: Math.min(Number(extra.x) || 0, Math.max(0, assignedWidth - extraW)),
+        y: Math.min(Number(extra.y) || 0, Math.max(0, totalSliderH - adaptedExtra.height)),
+        width: adaptedExtra.width,
+        height: adaptedExtra.height,
+      },
+      adaptedExtra.style
+    );
+  });
+
+  return {
+    width: assignedWidth,
+    height: totalSliderH,
+    style: adaptedStyle,
+  };
+}
+
+/**
+ * Detects multi-column vertical clusters (like Footer directories) so mobile stacks each column cleanly instead of interleaving rows across columns.
+ */
+function buildGroupedColumnSequence(children, baseW) {
+  if (!children || children.length < 4 || baseW < 640) return null;
+  const wideThreshold = baseW * 0.56;
+  const wideItems = [];
+  const colItems = [];
+
+  children.forEach((ch) => {
+    const w = Number(ch.width) || 0;
+    const isFooterBottomCopy =
+      (ch.children?.length || 0) === 0 &&
+      /^(©|copyright|\(c\))/i.test(String(ch.textContent || ch.text || ch.content || '').trim());
+    if (w >= wideThreshold || isFooterBottomCopy) wideItems.push(ch);
+    else colItems.push(ch);
+  });
+
+  if (colItems.length < 4) return null;
+
+  const sortedByX = [...colItems].sort((a, b) => (Number(a.x) || 0) - (Number(b.x) || 0));
+  const clusters = [];
+  for (const item of sortedByX) {
+    const x1 = Number(item.x) || 0;
+    const x2 = x1 + (Number(item.width) || 40);
+    const match = clusters.find((cl) => x1 <= cl.maxX - 4 && x2 >= cl.minX + 4);
+    if (match) {
+      match.items.push(item);
+      match.minX = Math.min(match.minX, x1);
+      match.maxX = Math.max(match.maxX, x2);
+      match.minY = Math.min(match.minY, Number(item.y) || 0);
+      match.maxY = Math.max(match.maxY, (Number(item.y) || 0) + (Number(item.height) || 24));
+    } else {
+      clusters.push({
+        items: [item],
+        minX: x1,
+        maxX: x2,
+        minY: Number(item.y) || 0,
+        maxY: (Number(item.y) || 0) + (Number(item.height) || 24),
+      });
+    }
+  }
+
+  const multiItemClusters = clusters.filter((cl) => cl.items.length >= 2);
+  if (clusters.length < 2 || multiItemClusters.length < 2) return null;
+
+  const minColY = Math.min(...clusters.map((cl) => cl.minY));
+  const maxColY = Math.max(...clusters.map((cl) => cl.maxY));
+  const topBands = wideItems.filter((w) => (Number(w.y) || 0) <= minColY).sort((a, b) => a.y - b.y);
+  const bottomBands = wideItems.filter((w) => (Number(w.y) || 0) > minColY && (Number(w.y) || 0) >= maxColY - 24).sort((a, b) => a.y - b.y);
+  const middleBands = wideItems.filter((w) => !topBands.includes(w) && !bottomBands.includes(w));
+  if (middleBands.length > 0) return null;
+
+  const orderedRows = [];
+  topBands.forEach((b) => orderedRows.push(...groupChildrenIntoVisualRows([b])));
+  clusters
+    .sort((a, b) => a.minX - b.minX)
+    .forEach((cl) => {
+      orderedRows.push(...groupChildrenIntoVisualRows(cl.items));
+    });
+  bottomBands.forEach((b) => orderedRows.push(...groupChildrenIntoVisualRows([b])));
+  return orderedRows;
 }
 
 function layoutNavLinksContainer(containerNode, targetW, targetViewport, patchMap) {
@@ -881,6 +1074,11 @@ function adaptSubtreeAtWidth(rawNode, assignedWidth, targetViewport, patchMap, o
     };
   }
 
+  // Slider container: keep slides overlaid at (0,0) and keep arrows/dots compact
+  if (rawNode.sliderConfig || children.some((c) => c.sliderRole === 'slide')) {
+    return adaptSliderSubtree(rawNode, assignedWidth, targetViewport, patchMap, adaptedStyle);
+  }
+
   // Container node with children: compute inner padding & reflow rows recursively
   const minChildX = Math.min(...children.map((c) => Number(c.x) || 0));
   const minChildY = Math.min(...children.map((c) => Number(c.y) || 0));
@@ -904,7 +1102,8 @@ function adaptSubtreeAtWidth(rawNode, assignedWidth, targetViewport, patchMap, o
     ? Math.min(isMobile ? 28 : 40, Math.max(8, Math.round(minChildY * (isMobile ? 0.55 : 0.78))))
     : 0;
 
-  const rows = groupChildrenIntoVisualRows(children);
+  const groupedColumnRows = (isMobile || assignedWidth <= 520) ? buildGroupedColumnSequence(children, baseW) : null;
+  const rows = groupedColumnRows || groupChildrenIntoVisualRows(children);
   const layoutGap = isMobile ? 14 : 18;
   let curY = padTop;
   let prevDesktopRowBottom = rows[0]?.top ?? 0;
@@ -940,6 +1139,9 @@ function adaptSubtreeAtWidth(rawNode, assignedWidth, targetViewport, patchMap, o
       } else if (wasCentered) {
         targetChildW = Math.min(innerAvailW, Math.max(MIN_ELEMENT_SIZE, itemBaseW));
         targetChildX = Math.round((assignedWidth - targetChildW) / 2);
+      } else if (groupedColumnRows) {
+        targetChildW = Math.min(innerAvailW, Math.max(MIN_ELEMENT_SIZE, itemBaseW));
+        targetChildX = padX;
       } else {
         targetChildW = Math.min(innerAvailW, Math.max(MIN_ELEMENT_SIZE, itemBaseW));
         const relX = (Number(item.x) || 0) / Math.max(1, baseW - itemBaseW);
@@ -969,6 +1171,57 @@ function adaptSubtreeAtWidth(rawNode, assignedWidth, targetViewport, patchMap, o
 
     // Multiple items in the same visual row: decide how many columns fit comfortably
     const k = items.length;
+    const isLabelWithTrailingActionIcon =
+      k === 2 &&
+      (items[0].children?.length || 0) === 0 &&
+      (items[1].children?.length || 0) === 0 &&
+      (Number(items[1].width) || 0) <= 56 &&
+      (Number(items[1].height) || 0) <= 56 &&
+      innerAvailW >= 150;
+
+    if (isLabelWithTrailingActionIcon) {
+      const [leadItem, actionItem] = items;
+      const actionW = Math.max(28, Math.round(Number(actionItem.width) || 32));
+      const actionH = Math.max(28, Math.round(Number(actionItem.height) || 32));
+      const gapPx = 10;
+      const leadW = Math.max(80, innerAvailW - actionW - gapPx);
+      const adaptedLead = adaptSubtreeAtWidth(leadItem, leadW, targetViewport, patchMap);
+      const actionStyle = buildAdaptedStyle(actionItem.style, targetViewport, actionW);
+      const rowMaxH = Math.max(adaptedLead.height, actionH);
+
+      const leadTarget = {
+        ...leadItem,
+        x: padX,
+        y: curY,
+        width: adaptedLead.width,
+        height: adaptedLead.height,
+        style: adaptedLead.style,
+      };
+      patchMap.set(leadItem.id, {
+        ov: buildOverrideFromResolvedDiff(leadItem, leadTarget, {}),
+        adaptedWidth: leadTarget.width,
+        adaptedHeight: leadTarget.height,
+      });
+
+      const actionTarget = {
+        ...actionItem,
+        x: padX + innerAvailW - actionW,
+        y: curY + Math.max(0, Math.round((rowMaxH - actionH) / 2)),
+        width: actionW,
+        height: actionH,
+        style: actionStyle,
+      };
+      patchMap.set(actionItem.id, {
+        ov: buildOverrideFromResolvedDiff(actionItem, actionTarget, {}),
+        adaptedWidth: actionW,
+        adaptedHeight: actionH,
+      });
+
+      curY += rowMaxH;
+      prevDesktopRowBottom = row.bottom;
+      continue;
+    }
+
     const minDesktopItemW = Math.min(...items.map((it) => Number(it.width) || 100));
     const maxDesktopItemW = Math.max(...items.map((it) => Number(it.width) || 100));
     const areSmallInlineControls =

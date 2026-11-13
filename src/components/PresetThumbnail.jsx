@@ -49,6 +49,36 @@ export default function PresetThumbnail({ asset }) {
       </div>
     );
   }
+  if (key === 'nav-saas-split') {
+    return (
+      <div className="w-full h-9 rounded-sm bg-[#0f1117] border border-[#2c2c32] px-2 flex items-center justify-between">
+        <div className="flex items-center gap-1">
+          <span className="w-3 h-3 rounded-sm bg-gradient-to-br from-[#0d99ff] to-indigo-500 inline-block" />
+          <span className="text-[7px] font-bold text-zinc-100">SAAS</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="w-3 h-1 rounded-full bg-zinc-500" />
+          <span className="w-3 h-1 rounded-full bg-[#38bdf8]" />
+          <span className="w-3 h-1 rounded-full bg-zinc-500" />
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="px-1 py-0.5 rounded-sm border border-[#2c2c32] text-[6px] text-zinc-300">Giriş</span>
+          <span className="px-1.5 py-0.5 rounded-sm bg-[#0d99ff] text-white text-[6px] font-semibold">Başla</span>
+        </div>
+      </div>
+    );
+  }
+  if (key === 'nav-ecommerce-search') {
+    return (
+      <div className="w-full h-9 rounded-sm bg-[#101014] border border-[#2c2c32] px-2 flex items-center justify-between gap-1.5">
+        <span className="text-[7px] font-extrabold text-zinc-100 shrink-0">STORE</span>
+        <span className="flex-1 h-3.5 rounded-sm bg-[#18181c] border border-[#2c2c32] px-1 flex items-center text-[6px] text-zinc-500">
+          Ara...
+        </span>
+        <span className="px-1.5 py-0.5 rounded-sm bg-[#0d99ff] text-white text-[6px] font-bold shrink-0">Sepet</span>
+      </div>
+    );
+  }
   if (key.startsWith('nav-') || t === 'nav' || t === 'navbar') {
     return (
       <div className="w-full h-9 rounded-sm bg-[#09090b] border border-[#2c2c32] px-2.5 flex items-center justify-between">
@@ -99,6 +129,46 @@ export default function PresetThumbnail({ asset }) {
             <span className="block w-4 h-1 rounded-full bg-zinc-600" />
           </div>
         </div>
+      </div>
+    );
+  }
+  if (key === 'footer-modern-directory') {
+    return (
+      <div className="w-full h-12 rounded-sm bg-[#101013] border border-[#2c2c32] p-2 flex flex-col justify-between">
+        <div className="grid grid-cols-4 gap-2">
+          <div>
+            <span className="block w-6 h-1.5 rounded-full bg-[#38bdf8] mb-1" />
+            <span className="block w-8 h-1 rounded-full bg-zinc-600" />
+          </div>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="space-y-1">
+              <span className="block w-5 h-1 rounded-full bg-zinc-200" />
+              <span className="block w-6 h-1 rounded-full bg-zinc-600" />
+            </div>
+          ))}
+        </div>
+        <div className="w-full h-px bg-[#27272d]" />
+      </div>
+    );
+  }
+  if (key === 'footer-contact-map') {
+    return (
+      <div className="w-full h-12 rounded-sm bg-[#0f0f13] border border-[#2c2c32] p-2 flex flex-col justify-between">
+        <div className="grid grid-cols-3 gap-1.5 items-start">
+          <div>
+            <span className="block w-7 h-1.5 rounded-full bg-zinc-100 mb-1" />
+            <span className="inline-block px-1 py-0.5 rounded-[2px] bg-[#18181c] border border-[#2c2c32] text-[5px] text-[#38bdf8]">İstanbul</span>
+          </div>
+          <div className="space-y-1">
+            <span className="block w-6 h-1 rounded-full bg-[#38bdf8]/80" />
+            <span className="block w-8 h-1 rounded-full bg-zinc-500" />
+          </div>
+          <div className="space-y-1">
+            <span className="block w-6 h-1 rounded-full bg-zinc-300" />
+            <span className="block w-7 h-1 rounded-full bg-zinc-600" />
+          </div>
+        </div>
+        <div className="w-full h-px bg-[#27272d]" />
       </div>
     );
   }
@@ -162,6 +232,25 @@ export default function PresetThumbnail({ asset }) {
             </div>
           </div>
           <span className="w-2.5 h-3 rounded-full bg-zinc-800 text-[7px] text-zinc-300 flex items-center justify-center">›</span>
+        </div>
+        <div className="flex items-center justify-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
+          <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" />
+          <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" />
+        </div>
+      </div>
+    );
+  }
+  if (key === 'slider-logo-clients') {
+    return (
+      <div className="w-full h-12 rounded-sm bg-[#121216] border border-[#2c2c32] px-2 py-1.5 flex flex-col justify-between">
+        <span className="w-14 h-1 rounded-full bg-[#38bdf8]/75" />
+        <div className="grid grid-cols-4 gap-1">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="h-4 rounded-[2px] bg-[#18181c] border border-[#2c2c32] flex items-center justify-center">
+              <span className="w-3 h-1 rounded-full bg-zinc-300" />
+            </div>
+          ))}
         </div>
         <div className="flex items-center justify-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
@@ -247,6 +336,48 @@ export default function PresetThumbnail({ asset }) {
             <span className="w-4 h-0.5 rounded-full bg-zinc-500 mt-1" />
           </div>
         ))}
+      </div>
+    );
+  }
+  if (key === 'block-product-showcase') {
+    return (
+      <div className="w-full h-12 rounded-sm bg-[#111116] border border-[#27272d] p-1.5 grid grid-cols-3 gap-1">
+        {[1, 2, 3].map((n) => (
+          <div key={n} className="rounded-sm bg-[#18181f] border border-[#2c2c34] p-0.5 flex flex-col justify-between">
+            <div className="w-full h-4 rounded-sm bg-gradient-to-br from-slate-700 to-slate-800" />
+            <div className="flex items-center justify-between px-0.5">
+              <span className="w-5 h-0.5 rounded-full bg-zinc-300" />
+              <span className="text-[6px] font-bold text-amber-400">₺</span>
+            </div>
+            <span className="w-full h-1.5 rounded-sm bg-blue-600/90" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (key === 'block-faq-accordion') {
+    return (
+      <div className="w-full h-12 rounded-sm bg-[#0e0f13] border border-[#27272d] p-1.5 flex flex-col justify-between gap-1">
+        {[1, 2, 3].map((n) => (
+          <div key={n} className="h-2.5 rounded-sm bg-[#17171e] border border-[#2a2a35] px-1.5 flex items-center justify-between">
+            <span className="w-16 h-1 rounded-full bg-zinc-300" />
+            <span className="text-[7px] text-[#38bdf8]">▾</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (key === 'block-cta-banner') {
+    return (
+      <div className="w-full h-11 rounded-sm bg-gradient-to-r from-[#1d4ed8] via-[#312e81] to-[#0f172a] border border-white/15 px-2.5 flex items-center justify-between">
+        <div className="space-y-1">
+          <span className="block w-16 h-1.5 rounded-full bg-white" />
+          <span className="block w-12 h-1 rounded-full bg-sky-200/70" />
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="px-1.5 py-0.5 rounded-sm bg-white text-[#0f172a] text-[6px] font-bold">Başla</span>
+          <span className="px-1 py-0.5 rounded-sm border border-white/30 text-white text-[6px]">Demo</span>
+        </div>
       </div>
     );
   }

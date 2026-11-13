@@ -96,12 +96,12 @@ input[type="range"].studio-slider::-webkit-slider-thumb:hover {
   background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
 }
 
-/* Architectural Studio Canvas Dot Grid */
+/* Architectural Studio Canvas Dot Grid (Matte Carbon Workstation) */
 .canvas-grid {
-  background-color: #090b10;
+  background-color: #111113;
   background-image:
-    radial-gradient(circle at 50% 0%, rgba(245, 158, 11, 0.035), transparent 60%),
-    radial-gradient(rgba(255, 255, 255, 0.065) 1px, transparent 1px);
+    radial-gradient(circle at 50% 0%, rgba(13, 153, 255, 0.03), transparent 55%),
+    radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
   background-size: 100% 100%, 24px 24px;
 }
 

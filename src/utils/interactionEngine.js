@@ -403,6 +403,23 @@ export function executeNodeClickEvent(node, context = {}) {
       }
       return { ok: true, action: clickCfg.mode };
     }
+    case 'accordion_toggle': {
+      const target = findElementByAnyId(elements, clickCfg.targetElementId) || node;
+      const id = target ? target.id : clickCfg.targetElementId;
+      if (id) {
+        const curOpen = runtimeOverrides[id]?.accordionOpen ?? Boolean(target?.accordionOpen);
+        const nextOpen = !curOpen;
+        setRuntimeOverrides?.({
+          ...runtimeOverrides,
+          [id]: {
+            ...(runtimeOverrides[id] || {}),
+            accordionOpen: nextOpen,
+          },
+        });
+        return { ok: true, action: 'accordion_toggle', accordionOpen: nextOpen };
+      }
+      return { ok: true, action: 'accordion_toggle' };
+    }
     default:
       return { ok: true, action: 'noop' };
   }
@@ -447,6 +464,9 @@ export function buildReactOnClickExpression(eventConfig, projectFunctions = [], 
     const actionKey = eventConfig.mode.replace('slider_', '');
     const targetIdx = eventConfig.mode === 'slider_goto' ? `, ${Number(eventConfig.slideIndex) || 0}` : '';
     return `() => switchSlider(${JSON.stringify(eventConfig.targetElementId)}, ${JSON.stringify(actionKey)}${targetIdx})`;
+  }
+  if (eventConfig.mode === 'accordion_toggle' && eventConfig.targetElementId) {
+    return `() => toggleAccordion(${JSON.stringify(eventConfig.targetElementId)})`;
   }
   return null;
 }

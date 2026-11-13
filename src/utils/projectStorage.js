@@ -6,6 +6,38 @@ export const SAVED_PROJECTS_STORAGE_KEY = 'craftstudio.savedProjects.v1';
 export const AUTOSAVE_STORAGE_KEY = 'craftstudio.autosaveDraft.v1';
 export const MAX_RECENT_PROJECTS = 12;
 
+export function slugifyTabRoute(rawName = 'Sayfa', index = 0) {
+  if (index === 0) return '/';
+  const trMap = { ç: 'c', ğ: 'g', ı: 'i', ö: 'o', ş: 's', ü: 'u', Ç: 'c', Ğ: 'g', İ: 'i', Ö: 'o', Ş: 's', Ü: 'u' };
+  const slug = String(rawName || `sayfa-${index + 1}`)
+    .replace(/\.(craft\.json|craft|json)$/i, '')
+    .split('')
+    .map((ch) => trMap[ch] || ch)
+    .join('')
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `/${slug || `sayfa-${index + 1}`}`;
+}
+
+/**
+ * Inspects an AST element tree to determine which non-desktop breakpoints have overrides.
+ */
+export function detectInitializedViewports(nodes = [], initialDesktop = true) {
+  const result = { desktop: Boolean(initialDesktop), tablet: false, mobile: false };
+  const scan = (list) => {
+    for (const node of list || []) {
+      if (node?.responsive?.tablet) result.tablet = true;
+      if (node?.responsive?.mobile) result.mobile = true;
+      if (Array.isArray(node?.children) && node.children.length > 0) {
+        scan(node.children);
+      }
+    }
+  };
+  scan(nodes);
+  return result;
+}
+
 function getSafeStorage(customStorage = null) {
   if (customStorage) return customStorage;
   try {
@@ -24,9 +56,7 @@ function getSafeStorage(customStorage = null) {
 export function normalizeProjectTab(tab = {}, index = 0, fallbackCanvasSettings = null) {
   const safeId = tab.id || `tab-${Date.now()}-${index + 1}`;
   const rawName = tab.name || `Sayfa-${index + 1}.craft`;
-  const cleanRoute =
-    tab.route ||
-    (index === 0 ? '/' : `/${rawName.replace(/\.craft$/, '').toLowerCase().replace(/[^a-z0-9-_]/g, '-')}`);
+  const cleanRoute = tab.route || slugifyTabRoute(rawName, index);
   const migratedElements = sanitizeTree(migrateFlatToNestedTree(Array.isArray(tab.elements) ? tab.elements : []));
   const byVp = tab.canvasByViewport
     ? {
@@ -36,17 +66,22 @@ export function normalizeProjectTab(tab = {}, index = 0, fallbackCanvasSettings 
       }
     : createDefaultCanvasByViewport(tab.canvasSettings || fallbackCanvasSettings || {});
 
+  const hasExplicitInit = tab.initializedViewports && typeof tab.initializedViewports === 'object';
+  const initializedViewports = hasExplicitInit
+    ? {
+        desktop: tab.initializedViewports.desktop !== false,
+        tablet: Boolean(tab.initializedViewports.tablet),
+        mobile: Boolean(tab.initializedViewports.mobile),
+      }
+    : detectInitializedViewports(migratedElements, true);
+
   return {
     id: safeId,
     name: rawName,
     route: cleanRoute,
     elements: migratedElements,
     canvasByViewport: byVp,
-    initializedViewports: tab.initializedViewports || {
-      desktop: true,
-      tablet: Boolean(tab.canvasByViewport?.tablet),
-      mobile: Boolean(tab.canvasByViewport?.mobile),
-    },
+    initializedViewports,
   };
 }
 
@@ -157,6 +192,7 @@ export function parseAndMigrateLoadedProject(rawInput) {
       name: parsed.name || 'Yüklenen Proje',
       filePath: parsed.filePath || null,
       createdAt: parsed.createdAt,
+      viewportMode: parsed.viewportMode || 'desktop',
       tabs: [singleTab],
       activeTabId: singleTab.id,
       projectFunctions: Array.isArray(parsed.projectFunctions) ? parsed.projectFunctions : [],
@@ -210,6 +246,7 @@ export function upsertRecentProject(projectSchema, customStorage = null) {
     id: projectSchema.id,
     name: projectSchema.name,
     filePath: projectSchema.filePath || null,
+    hasWebSnapshot: Boolean(projectSchema.tabs && projectSchema.tabs.length > 0),
     updatedAt: projectSchema.updatedAt || new Date().toISOString(),
     date: formatSavedDateLabel(projectSchema.updatedAt),
     elementsCount: countProjectElements(projectSchema.tabs),
@@ -222,8 +259,17 @@ export function upsertRecentProject(projectSchema, customStorage = null) {
   };
 
   const filtered = current.filter((item) => {
-    if (projectSchema.filePath && item.filePath && item.filePath === projectSchema.filePath) return false;
-    return item.id !== projectSchema.id;
+    if (projectSchema.filePath && item.filePath && item.filePath === projectSchema.filePath) {
+      return false;
+    }
+    if (item.id === projectSchema.id) {
+      // Preserve distinct files if both have different disk paths (Save As)
+      if (projectSchema.filePath && item.filePath && projectSchema.filePath !== item.filePath) {
+        return true;
+      }
+      return false;
+    }
+    return true;
   });
   const nextList = [summaryEntry, ...filtered].slice(0, MAX_RECENT_PROJECTS);
 
@@ -259,12 +305,43 @@ export function removeRecentProject(projectId, customStorage = null) {
 
 export function saveProjectToWebStorage(projectSchema, customStorage = null) {
   const storage = getSafeStorage(customStorage);
-  if (!storage) return false;
+  if (!storage || !projectSchema?.id) return false;
   try {
     const rawMap = storage.getItem(SAVED_PROJECTS_STORAGE_KEY);
     const map = rawMap ? JSON.parse(rawMap) : {};
     map[projectSchema.id] = projectSchema;
     storage.setItem(SAVED_PROJECTS_STORAGE_KEY, JSON.stringify(map));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadProjectFromWebStorage(projectId, customStorage = null) {
+  const storage = getSafeStorage(customStorage);
+  if (!storage || !projectId) return null;
+  try {
+    const rawMap = storage.getItem(SAVED_PROJECTS_STORAGE_KEY);
+    if (!rawMap) return null;
+    const map = JSON.parse(rawMap);
+    const hit = map?.[projectId];
+    return hit ? parseAndMigrateLoadedProject(hit) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function deleteProjectFromWebStorage(projectId, customStorage = null) {
+  const storage = getSafeStorage(customStorage);
+  if (!storage || !projectId) return false;
+  try {
+    const rawMap = storage.getItem(SAVED_PROJECTS_STORAGE_KEY);
+    if (!rawMap) return true;
+    const map = JSON.parse(rawMap);
+    if (map && Object.prototype.hasOwnProperty.call(map, projectId)) {
+      delete map[projectId];
+      storage.setItem(SAVED_PROJECTS_STORAGE_KEY, JSON.stringify(map));
+    }
     return true;
   } catch {
     return false;
@@ -287,10 +364,25 @@ export function loadAutosaveDraft(customStorage = null) {
   if (!storage) return null;
   try {
     const raw = storage.getItem(AUTOSAVE_STORAGE_KEY);
-    if (!raw) return null;
+    if (!raw || !String(raw).trim()) return null;
     return parseAndMigrateLoadedProject(raw);
   } catch {
     return null;
+  }
+}
+
+export function clearAutosaveDraft(customStorage = null) {
+  const storage = getSafeStorage(customStorage);
+  if (!storage) return false;
+  try {
+    if (typeof storage.removeItem === 'function') {
+      storage.removeItem(AUTOSAVE_STORAGE_KEY);
+    } else {
+      storage.setItem(AUTOSAVE_STORAGE_KEY, '');
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 

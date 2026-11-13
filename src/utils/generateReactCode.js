@@ -5,6 +5,11 @@ import {
   getEffectiveFunctionCode,
   sanitizeFunctionIdentifier,
 } from './interactionEngine.js';
+import {
+  createDefaultCanvasByViewport,
+  ensureViewportAdapted,
+  hasViewportOverrides,
+} from './responsiveUtils.js';
 
 /**
  * Produces a safe URL / filesystem slug for project folders and npm package names.
@@ -40,6 +45,17 @@ export const HTML_TO_JSX_ATTR_MAP = {
   frameborder: 'frameBorder',
   contenteditable: 'contentEditable',
   spellcheck: 'spellCheck',
+  viewbox: 'viewBox',
+  preserveaspectratio: 'preserveAspectRatio',
+  'stroke-width': 'strokeWidth',
+  'stroke-linecap': 'strokeLinecap',
+  'stroke-linejoin': 'strokeLinejoin',
+  'stroke-opacity': 'strokeOpacity',
+  'fill-rule': 'fillRule',
+  'clip-rule': 'clipRule',
+  'fill-opacity': 'fillOpacity',
+  'clip-path': 'clipPath',
+  patternunits: 'patternUnits',
 };
 
 export function convertHtmlAttrToJsx(attrName) {
@@ -48,37 +64,483 @@ export function convertHtmlAttrToJsx(attrName) {
   return HTML_TO_JSX_ATTR_MAP[lower] || attrName;
 }
 
+function escapeScriptContent(jsCode) {
+  return String(jsCode ?? '').replace(/<\/(script)/gi, '<\\/$1');
+}
+
+function parseInlineStyleString(styleStr) {
+  const parsed = {};
+  if (typeof styleStr !== 'string' || !styleStr.trim()) return parsed;
+  styleStr.split(';').forEach((decl) => {
+    const colonIdx = decl.indexOf(':');
+    if (colonIdx <= 0) return;
+    const rawKey = decl.slice(0, colonIdx).trim();
+    const rawVal = decl.slice(colonIdx + 1).trim();
+    if (!rawKey || !rawVal) return;
+    const key = rawKey.startsWith('--') ? rawKey : kebabToCamelCase(rawKey.toLowerCase());
+    parsed[key] = rawVal;
+  });
+  return parsed;
+}
+
+const COORDINATE_STYLE_KEYS = [
+  'position', 'left', 'right', 'top', 'bottom', 'width', 'height', 'zIndex',
+  'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
+];
+const PURE_TEXT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'a', 'label', 'blockquote', 'text', 'badge']);
+
+function stripCanvasCoordinateStyles(styleObj) {
+  if (!styleObj || typeof styleObj !== 'object') return styleObj;
+  COORDINATE_STYLE_KEYS.forEach((key) => {
+    delete styleObj[key];
+  });
+  return styleObj;
+}
+
+function hasExplicitStylePadding(styleObj) {
+  if (!styleObj || typeof styleObj !== 'object') return false;
+  return (
+    styleObj.padding !== undefined ||
+    styleObj.paddingTop !== undefined ||
+    styleObj.paddingRight !== undefined ||
+    styleObj.paddingBottom !== undefined ||
+    styleObj.paddingLeft !== undefined ||
+    styleObj.paddingInline !== undefined ||
+    styleObj.paddingBlock !== undefined
+  );
+}
+
+function buildProductCardFallbackHtml(node) {
+  const imgUrl = node.productImage || node.imageUrl || 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=600&auto=format&fit=crop&q=80';
+  const tagText = node.productTag ? `<span style="position:absolute;top:12px;left:12px;padding:4px 10px;border-radius:999px;background:rgba(15,23,42,0.86);color:#f8fafc;font-size:11px;font-weight:600;">${escapeHtmlText(node.productTag)}</span>` : '';
+  const descHtml = node.productDesc ? `<p style="margin:0;font-size:12px;line-height:1.5;color:#64748b;">${escapeHtmlText(node.productDesc)}</p>` : '';
+  const priceHtml = node.productPrice ? `<span style="font-size:14px;font-weight:700;color:#2563eb;">${escapeHtmlText(node.productPrice)}</span>` : '';
+  return `<div style="position:relative;width:100%;height:56%;min-height:140px;overflow:hidden;background:#0f172a;"><img src="${escapeHtmlAttr(imgUrl)}" alt="${escapeHtmlAttr(node.productName || 'Ürün')}" style="width:100%;height:100%;object-fit:cover;display:block;" />${tagText}</div><div style="flex:1;display:flex;flex-direction:column;justify-content:space-between;padding:16px;gap:8px;width:100%;"><div style="display:flex;flex-direction:column;gap:6px;"><h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">${escapeHtmlText(node.productName || 'Özel Ürün')}</h3>${descHtml}</div><div style="display:flex;align-items:center;justify-content:space-between;padding-top:8px;">${priceHtml}<span style="font-size:12px;font-weight:600;color:#2563eb;">İncele ↗</span></div></div>`;
+}
+
+function applyNodeVisualStyles(styleObj, node, isPlainHtml = false) {
+  if (!node || typeof node !== 'object') return styleObj;
+
+  if (node.fillType === 'gradient' && node.gradient) {
+    styleObj.background = `linear-gradient(${node.gradient.angle ?? 90}deg, ${node.gradient.color1 || '#d4af37'}, ${node.gradient.color2 || '#2c2523'})`;
+    delete styleObj.backgroundColor;
+  } else if (node.fillType === 'solid' && node.fillColor && node.fillColor !== 'transparent') {
+    styleObj.backgroundColor = node.fillColor;
+    delete styleObj.background;
+  } else if (node.fillColor && node.fillColor !== 'transparent' && !styleObj.background && !styleObj.backgroundColor) {
+    styleObj.backgroundColor = node.fillColor;
+  }
+
+  if (node.borderRadiusType === 'custom' && node.borderRadiusCorners && !styleObj.borderRadius) {
+    const { tl = 0, tr = 0, br = 0, bl = 0 } = node.borderRadiusCorners;
+    styleObj.borderRadius = `${tl}px ${tr}px ${br}px ${bl}px`;
+  } else if (node.borderRadius > 0 && !styleObj.borderRadius) {
+    styleObj.borderRadius = `${node.borderRadius}px`;
+  }
+
+  if (node.borderWidth > 0 && !styleObj.border) {
+    styleObj.border = `${node.borderWidth}px ${node.borderStyle || 'solid'} ${node.borderColor || '#cbd5e1'}`;
+  }
+
+  if (node.shadow && node.shadow !== 'none' && !styleObj.boxShadow) {
+    styleObj.boxShadow = node.shadow;
+  }
+
+  if (node.opacity !== undefined && node.opacity !== 100 && styleObj.opacity === undefined) {
+    const numOp = Number(node.opacity) / 100;
+    styleObj.opacity = isPlainHtml ? Math.max(0, Math.min(1, numOp)) : numOp;
+  }
+
+  const rawTag = String(node.type || '').toLowerCase();
+  if (rawTag !== 'img' && rawTag !== 'image' && node.imageUrl && !styleObj.backgroundImage && !styleObj.background) {
+    styleObj.backgroundImage = `url(${node.imageUrl})`;
+    styleObj.backgroundSize = styleObj.backgroundSize || 'cover';
+    styleObj.backgroundPosition = styleObj.backgroundPosition || 'center';
+  }
+
+  if (node.textColor && !styleObj.color) styleObj.color = node.textColor;
+  if (node.fontSize && !styleObj.fontSize) styleObj.fontSize = `${node.fontSize}px`;
+  if (node.fontWeight && !styleObj.fontWeight) styleObj.fontWeight = node.fontWeight;
+  if (node.textAlign && !styleObj.textAlign) styleObj.textAlign = node.textAlign;
+  if (node.fontFamily && !styleObj.fontFamily) styleObj.fontFamily = node.fontFamily;
+  if (node.lineHeight && !styleObj.lineHeight) styleObj.lineHeight = node.lineHeight;
+  if (node.letterSpacing && !styleObj.letterSpacing) styleObj.letterSpacing = node.letterSpacing;
+  if (node.fontStyle && !styleObj.fontStyle) styleObj.fontStyle = node.fontStyle;
+  if (node.textTransform && !styleObj.textTransform) styleObj.textTransform = node.textTransform;
+  if (node.textShadow && node.textShadow !== 'none' && !styleObj.textShadow) styleObj.textShadow = node.textShadow;
+
+  if (node.animation?.hoverLineColor) styleObj['--craft-line-color'] = node.animation.hoverLineColor;
+  if (node.animation?.hoverLineHeight) styleObj['--craft-line-height'] = `${node.animation.hoverLineHeight}px`;
+  if (node.animation?.hoverLineDuration) styleObj['--craft-line-duration'] = `${node.animation.hoverLineDuration}s`;
+
+  return styleObj;
+}
+
+function resolveCanvasParityStyle({
+  styleObj,
+  node,
+  rawTag,
+  mappedTag,
+  isVoid,
+  isFormField,
+  hasChildren,
+  parentWidth,
+  topOffsetPx = 0,
+  depth = 0,
+  accordionLayoutOverride = null,
+  accLayout = null,
+  applyCanvasCoords = true,
+  isPlainHtml = false,
+}) {
+  const isPureTextNode = PURE_TEXT_TAGS.has(rawTag);
+  const hasExplicitPadding = hasExplicitStylePadding(styleObj);
+  const hasHoverUnderline = Boolean(
+    node.animation?.hoverClassName && /hover-underline|hover-text-fill-bar/.test(String(node.animation.hoverClassName))
+  );
+
+  if (applyCanvasCoords) {
+    stripCanvasCoordinateStyles(styleObj);
+    styleObj.position = node.positionMode === 'sticky' ? 'sticky' : (node.positionMode === 'fixed' ? 'fixed' : 'absolute');
+    if ((node.positionMode === 'sticky' || node.positionMode === 'fixed') && styleObj.top === undefined) {
+      styleObj.top = '0px';
+    }
+    if (node.positionMode === 'sticky' && typeof node.x === 'number' && node.x > 0) {
+      styleObj.marginLeft = toPercentCss(node.x, parentWidth);
+    }
+    if (node.positionMode === 'fixed' && typeof node.x === 'number') {
+      styleObj.left = toPercentCss(node.x, parentWidth);
+    }
+    if (typeof node.x === 'number' && node.positionMode !== 'sticky' && node.positionMode !== 'fixed') {
+      styleObj.left = toPercentCss(node.x, parentWidth);
+    }
+    if (typeof node.y === 'number' && node.positionMode !== 'sticky' && node.positionMode !== 'fixed') {
+      const resolvedY = accordionLayoutOverride ? accordionLayoutOverride.resolvedY : node.y;
+      styleObj.top = `${resolvedY - topOffsetPx}px`;
+    }
+    if (typeof node.width === 'number') {
+      styleObj.width = isFixedSquareIconNode(node) ? `${node.width}px` : toPercentCss(node.width, parentWidth);
+    }
+    if (typeof node.height === 'number') {
+      const baseItemHeight = accordionLayoutOverride
+        ? accordionLayoutOverride.resolvedH
+        : (node.accordionRole === 'item' ? getAccordionItemResolvedHeight(node) : node.height);
+      const resolvedHeight = accLayout && accLayout.extraHeight > 0 ? baseItemHeight + accLayout.extraHeight : baseItemHeight;
+      styleObj.height = `${resolvedHeight}px`;
+    }
+    if (typeof node.zIndex === 'number') {
+      styleObj.zIndex = node.zIndex;
+    } else if (isPlainHtml) {
+      styleObj.zIndex = node.positionMode === 'sticky' || node.positionMode === 'fixed' ? 100 : depth + 1;
+    }
+
+    if (!styleObj.display && !isVoid && mappedTag !== 'textarea' && mappedTag !== 'select') {
+      styleObj.display = 'flex';
+      styleObj.flexDirection = styleObj.flexDirection || 'column';
+      styleObj.alignItems = styleObj.alignItems || (rawTag === 'button' ? 'center' : (isPureTextNode ? 'stretch' : 'flex-start'));
+      styleObj.justifyContent = styleObj.justifyContent || (rawTag === 'button' ? 'center' : 'flex-start');
+    }
+    if (!styleObj.overflow && !isVoid && !isFormField) {
+      styleObj.overflow = (hasChildren || hasHoverUnderline || isPureTextNode) ? 'visible' : 'hidden';
+    }
+    if (!hasExplicitPadding && !isFormField && rawTag !== 'button') {
+      styleObj.padding = '0px';
+    }
+    if (isFormField) {
+      if (styleObj.padding === undefined) styleObj.padding = mappedTag === 'textarea' ? '10px' : '8px 14px';
+      if (styleObj.outline === undefined) styleObj.outline = 'none';
+    }
+    if (mappedTag === 'a' && !styleObj.textDecoration) styleObj.textDecoration = 'none';
+    if (mappedTag === 'img' && !styleObj.objectFit) styleObj.objectFit = 'cover';
+    styleObj.boxSizing = styleObj.boxSizing || 'border-box';
+  }
+
+  applyNodeVisualStyles(styleObj, node, isPlainHtml);
+
+  if (isFormField) {
+    if (!styleObj.color) styleObj.color = '#1a1816';
+    if (!styleObj.fontSize) styleObj.fontSize = '14px';
+  } else if (rawTag === 'button') {
+    if (!styleObj.color) styleObj.color = '#ffffff';
+    if (!styleObj.fontSize) styleObj.fontSize = '14px';
+    if (!styleObj.fontWeight) styleObj.fontWeight = 600;
+    if (!styleObj.textAlign) styleObj.textAlign = 'center';
+    if (!styleObj.cursor) styleObj.cursor = 'pointer';
+  } else if (isPureTextNode) {
+    if (!styleObj.color) styleObj.color = '#1f2937';
+    if (!styleObj.textAlign) styleObj.textAlign = 'left';
+    if (!styleObj.lineHeight) styleObj.lineHeight = '1.4';
+  } else if (!isVoid && !styleObj.textAlign) {
+    styleObj.textAlign = 'left';
+  }
+
+  const textAlignVal = styleObj.textAlign || node.textAlign || (rawTag === 'button' ? 'center' : 'left');
+  const innerTextPadding = isPureTextNode && !hasExplicitPadding ? (rawTag === 'text' ? '2px 4px' : '4px') : '';
+  const innerLineHeight = isPureTextNode ? String(styleObj.lineHeight || '1.4') : '';
+
+  return { isPureTextNode, textAlignVal, innerTextPadding, innerLineHeight };
+}
+
+function adaptPublishTabViewports(tabEls, tabDesktopCanvas, tabCanvasByVp, initializedViewports) {
+  if (!Array.isArray(tabEls) || tabEls.length === 0) {
+    return { elements: tabEls, canvasByViewport: tabCanvasByVp };
+  }
+  const desktopWidth = Number(tabDesktopCanvas?.width) || 1280;
+  let adaptedEls = tabEls;
+  let nextCanvasByVp = tabCanvasByVp ? { ...tabCanvasByVp } : createDefaultCanvasByViewport(tabDesktopCanvas);
+
+  ['tablet', 'mobile'].forEach((vp) => {
+    const alreadyReady = Boolean(initializedViewports?.[vp]) || hasViewportOverrides(adaptedEls, vp);
+    if (alreadyReady) return;
+    const res = ensureViewportAdapted(adaptedEls, vp, { desktopWidth });
+    if (res?.tree) adaptedEls = res.tree;
+    if (res?.suggestedHeight) {
+      const fallbackVp = {
+        width: vp === 'mobile' ? 375 : 768,
+        height: res.suggestedHeight,
+        bgColor: tabDesktopCanvas?.bgColor || tabDesktopCanvas?.backgroundColor || '#ffffff',
+      };
+      nextCanvasByVp[vp] = {
+        ...fallbackVp,
+        ...(nextCanvasByVp[vp] || {}),
+        height: Math.max(Number(nextCanvasByVp[vp]?.height) || 0, res.suggestedHeight),
+      };
+    }
+  });
+
+  return { elements: adaptedEls, canvasByViewport: nextCanvasByVp };
+}
+
+function normalizePublishTabs({ tabs = [], activeTabId = null, elements = null, canvasSettings = null, canvasByViewport = null } = {}) {
+  const defaultCanvas = canvasSettings || { width: 1280, height: 1350, backgroundColor: '#0f172a' };
+  if (!Array.isArray(tabs) || tabs.length === 0) {
+    const rawEls = Array.isArray(elements) ? elements.filter(Boolean) : [];
+    const desktopCanvas = canvasByViewport?.desktop || defaultCanvas;
+    const adapted = adaptPublishTabViewports(rawEls, desktopCanvas, canvasByViewport, null);
+    return [
+      {
+        id: 'tab-1',
+        name: 'Anasayfa.craft',
+        route: '/',
+        domId: 'craft-page-tab-1',
+        elements: adapted.elements,
+        canvasByViewport: adapted.canvasByViewport,
+        canvasSettings: desktopCanvas,
+      },
+    ];
+  }
+
+  const matchedIdx = activeTabId ? tabs.findIndex((t) => t && t.id === activeTabId) : 0;
+  const effectiveActiveIdx = matchedIdx >= 0 ? matchedIdx : 0;
+  const seenDomIds = new Set();
+
+  return tabs.map((t, idx) => {
+    const tab = t || {};
+    const isActive = idx === effectiveActiveIdx;
+    const rawTabEls = (isActive && Array.isArray(elements) ? elements : (tab.elements || [])).filter(Boolean);
+    const rawTabCanvasByVp = (isActive && canvasByViewport) ? canvasByViewport : (tab.canvasByViewport || undefined);
+    const tabDesktopCanvas = rawTabCanvasByVp?.desktop || tab.canvasSettings || defaultCanvas;
+    const adapted = adaptPublishTabViewports(rawTabEls, tabDesktopCanvas, rawTabCanvasByVp, tab.initializedViewports);
+    const idStr = tab.id || `tab-${idx + 1}`;
+    let baseDomId = `craft-page-${slugifyProjectFolderName(idStr)}`;
+    if (seenDomIds.has(baseDomId)) {
+      baseDomId = `${baseDomId}-${idx + 1}`;
+    }
+    seenDomIds.add(baseDomId);
+
+    const fallbackSlug = slugifyProjectFolderName(String(tab.name || `sayfa-${idx + 1}`).replace(/\.craft$/i, ''));
+    return {
+      ...tab,
+      id: idStr,
+      name: tab.name || `Sayfa ${idx + 1}`,
+      route: tab.route || (idx === 0 ? '/' : `/${fallbackSlug}`),
+      domId: baseDomId,
+      elements: adapted.elements,
+      canvasByViewport: adapted.canvasByViewport,
+      canvasSettings: tabDesktopCanvas,
+    };
+  });
+}
+
+const CUSTOM_TYPE_TAG_MAP = {
+  text: 'span',
+  badge: 'span',
+  navbar: 'nav',
+  image: 'img',
+  product_card: 'article',
+  rectangle: 'div',
+  circle: 'div',
+  box: 'div',
+  frame: 'div',
+  card: 'div',
+  container: 'div',
+};
+
+export function resolveHtmlTagName(rawType) {
+  const lower = String(rawType || 'div').trim().toLowerCase();
+  if (CUSTOM_TYPE_TAG_MAP[lower]) return CUSTOM_TYPE_TAG_MAP[lower];
+  const safe = lower.replace(/[^a-z0-9-]/g, '');
+  return safe || 'div';
+}
+
+export function escapeJsxText(value) {
+  return String(value ?? '').replace(/[{}<>]/g, (ch) => ({
+    '{': "{'{'}",
+    '}': "{'}'}",
+    '<': "{'<'}",
+    '>': "{'>'}",
+  }[ch]));
+}
+
 function camelToKebabCase(str) {
   return String(str).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 
-function buildResponsiveCssRules(flatList) {
+function kebabToCamelCase(str) {
+  if (!str || str.startsWith('--')) return str;
+  return String(str).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+}
+
+function normalizeStyleForReact(styleObj = {}) {
+  const out = {};
+  Object.entries(styleObj || {}).forEach(([key, val]) => {
+    if (val === undefined || val === null || val === '') return;
+    const normKey = key.startsWith('--') ? key : kebabToCamelCase(key);
+    out[normKey] = val;
+  });
+  return out;
+}
+
+function isFixedSquareIconNode(node = {}) {
+  const w = Number(node.width);
+  const h = Number(node.height);
+  if (node.sliderRole === 'dot') return true;
+  return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 && Math.abs(w - h) <= 2 && w <= 64;
+}
+
+function toPercentCss(value, parentWidth = 1280) {
+  const num = Number(value);
+  const denom = Math.max(1, Number(parentWidth) || 1280);
+  if (!Number.isFinite(num)) return String(value ?? '0px');
+  const pct = Number(((num / denom) * 100).toFixed(4));
+  return `${pct}%`;
+}
+
+function buildParentWidthMap(elements = [], rootWidths = { desktop: 1280, tablet: 768, mobile: 375 }) {
+  const map = new Map();
+  const walk = (nodes, parentWidths) => {
+    for (const node of nodes || []) {
+      if (!node || !node.id) continue;
+      map.set(node.id, parentWidths);
+      if (Array.isArray(node.children) && node.children.length > 0) {
+        const nextWidths = {
+          desktop: Number(node.width) || parentWidths.desktop,
+          tablet: Number(node.responsive?.tablet?.width) || Number(node.width) || parentWidths.tablet,
+          mobile: Number(node.responsive?.mobile?.width) || Number(node.width) || parentWidths.mobile,
+        };
+        walk(node.children, nextWidths);
+      }
+    }
+  };
+  walk(elements, rootWidths);
+  return map;
+}
+
+function collectResponsiveDeclarations(ov, node, vpParentW, forceShowDisplay = 'flex', deskParentW = null) {
+  const decls = [];
+  const hasOv = Boolean(ov && typeof ov === 'object' && Object.keys(ov).length > 0);
+  const safeOv = hasOv ? ov : {};
+  const parentResized = Boolean(
+    deskParentW &&
+      vpParentW &&
+      deskParentW !== vpParentW &&
+      Math.abs(vpParentW - deskParentW) / Math.max(1, deskParentW) > 0.08
+  );
+
+  if (!hasOv && !parentResized) return decls;
+
+  if (safeOv.isHidden === true) {
+    decls.push('display: none !important;');
+  } else {
+    if (safeOv.isHidden === false) {
+      const targetDisplay = safeOv.style?.display || node.style?.display || forceShowDisplay;
+      decls.push(`display: ${targetDisplay} !important;`);
+    }
+    if (safeOv.x !== undefined && node.positionMode !== 'sticky' && node.positionMode !== 'fixed') {
+      decls.push(`left: ${toPercentCss(safeOv.x, vpParentW)} !important;`);
+    } else if (safeOv.x !== undefined && node.positionMode === 'sticky') {
+      decls.push(`margin-left: ${Number(safeOv.x) > 0 ? toPercentCss(safeOv.x, vpParentW) : '0px'} !important;`);
+    }
+    if (safeOv.y !== undefined && node.positionMode !== 'sticky' && node.positionMode !== 'fixed') {
+      decls.push(`top: ${safeOv.y}px !important;`);
+    }
+    if (safeOv.width !== undefined) {
+      const effH = safeOv.height !== undefined ? safeOv.height : node.height;
+      const squareFixed = isFixedSquareIconNode({ ...node, width: safeOv.width, height: effH });
+      decls.push(`width: ${squareFixed ? `${safeOv.width}px` : toPercentCss(safeOv.width, vpParentW)} !important;`);
+    } else if (parentResized && typeof node.width === 'number') {
+      // Desktop uses percentage width relative to deskParentW; re-anchor to vpParentW when parent container shrank
+      const squareFixed = isFixedSquareIconNode(node);
+      if (!squareFixed) {
+        const clampedPx = Math.min(node.width, vpParentW);
+        decls.push(`width: ${toPercentCss(clampedPx, vpParentW)} !important;`);
+      }
+    }
+    if (safeOv.height !== undefined) {
+      decls.push(`height: ${safeOv.height}px !important;`);
+    }
+  }
+
+  if (safeOv.opacity !== undefined) {
+    decls.push(`opacity: ${Math.max(0, Math.min(1, Number(safeOv.opacity) / 100)).toFixed(2)} !important;`);
+  }
+  if (safeOv.zIndex !== undefined) decls.push(`z-index: ${safeOv.zIndex} !important;`);
+
+  if (safeOv.fillType === 'gradient' && safeOv.gradient) {
+    decls.push(`background: linear-gradient(${safeOv.gradient.angle || 90}deg, ${safeOv.gradient.color1 || '#d4af37'}, ${safeOv.gradient.color2 || '#2c2523'}) !important;`);
+  } else if (safeOv.fillColor !== undefined && safeOv.fillColor !== 'transparent') {
+    decls.push(`background-color: ${safeOv.fillColor} !important;`);
+  }
+
+  if (safeOv.borderRadiusCorners && typeof safeOv.borderRadiusCorners === 'object') {
+    const { tl = 0, tr = 0, br = 0, bl = 0 } = safeOv.borderRadiusCorners;
+    decls.push(`border-radius: ${tl}px ${tr}px ${br}px ${bl}px !important;`);
+  } else if (safeOv.borderRadius !== undefined) {
+    decls.push(`border-radius: ${safeOv.borderRadius}px !important;`);
+  }
+
+  if (safeOv.borderWidth !== undefined && Number(safeOv.borderWidth) > 0) {
+    decls.push(`border: ${safeOv.borderWidth}px ${safeOv.borderStyle || node.borderStyle || 'solid'} ${safeOv.borderColor || node.borderColor || '#cbd5e1'} !important;`);
+  }
+  if (safeOv.shadow !== undefined) {
+    decls.push(`box-shadow: ${safeOv.shadow === 'none' ? 'none' : safeOv.shadow} !important;`);
+  }
+
+  if (safeOv.style && typeof safeOv.style === 'object') {
+    for (const [k, v] of Object.entries(safeOv.style)) {
+      if (v !== null && v !== undefined && v !== '') {
+        decls.push(`${k.startsWith('--') ? k : camelToKebabCase(k)}: ${v} !important;`);
+      }
+    }
+  }
+  return decls;
+}
+
+function buildResponsiveCssRules(flatList, elements = [], canvasByViewport = null) {
   const tabletRules = [];
   const mobileRules = [];
+  const rootWidths = {
+    desktop: Number(canvasByViewport?.desktop?.width) || 1280,
+    tablet: Number(canvasByViewport?.tablet?.width) || 768,
+    mobile: Number(canvasByViewport?.mobile?.width) || 375,
+  };
+  const parentWidthMap = buildParentWidthMap(elements, rootWidths);
 
   const pushRulesForVp = (node, vp, targetArr) => {
     const ov = node.responsive?.[vp];
-    if (!ov || Object.keys(ov).length === 0) return;
-
-    const decls = [];
-    if (ov.isHidden === true) {
-      decls.push('display: none !important;');
-    } else if (ov.isHidden === false && node.isHidden) {
-      decls.push('display: flex !important;');
-    }
-
-    if (ov.opacity !== undefined) decls.push(`opacity: ${(Number(ov.opacity) / 100).toFixed(2)} !important;`);
-    if (ov.zIndex !== undefined) decls.push(`z-index: ${ov.zIndex} !important;`);
-    if (ov.fillColor !== undefined) decls.push(`background-color: ${ov.fillColor} !important;`);
-    if (ov.borderRadius !== undefined) decls.push(`border-radius: ${ov.borderRadius}px !important;`);
-
-    if (ov.style && typeof ov.style === 'object') {
-      for (const [k, v] of Object.entries(ov.style)) {
-        if (v !== null && v !== undefined && v !== '') {
-          decls.push(`${camelToKebabCase(k)}: ${v} !important;`);
-        }
-      }
-    }
+    const parentEntry = parentWidthMap.get(node.id);
+    const vpParentW = parentEntry?.[vp] || rootWidths[vp];
+    const deskParentW = parentEntry?.desktop || rootWidths.desktop;
+    const decls = collectResponsiveDeclarations(ov, node, vpParentW, 'flex', deskParentW);
 
     if (decls.length > 0) {
       targetArr.push(`  [data-craft-id="${node.id}"] {\n    ${decls.join('\n    ')}\n  }`);
@@ -98,6 +560,91 @@ function buildResponsiveCssRules(flatList) {
     css += `\n/* Responsive Mobile Overrides (<= 639px) */\n@media (max-width: 639px) {\n${mobileRules.join('\n')}\n}\n`;
   }
   return css;
+}
+
+function getAccordionItemResolvedHeight(node) {
+  if (node?.accordionRole !== 'item') return Number(node?.height) || 0;
+  const isOpen = node.accordionOpen !== false;
+  if (isOpen) return Number(node.accordionExpandedHeight || node.height) || 108;
+  return Number(node.accordionCollapsedHeight || node.height) || 58;
+}
+
+function computeAccordionContainerLayout(parentNode) {
+  const children = Array.isArray(parentNode?.children) ? parentNode.children : [];
+  if (!children.some((ch) => ch?.accordionRole === 'item')) {
+    return { extraHeight: 0, itemMap: null };
+  }
+  let deltaY = 0;
+  const itemMap = new Map();
+  children.forEach((ch) => {
+    if (ch?.accordionRole === 'item') {
+      const isOpen = ch.accordionOpen !== false;
+      const resolvedH = getAccordionItemResolvedHeight(ch);
+      const baseH = Number(ch.height) || resolvedH;
+      itemMap.set(ch.id, {
+        isOpen,
+        baseY: Number(ch.y) || 0,
+        baseH,
+        resolvedY: (Number(ch.y) || 0) + deltaY,
+        resolvedH,
+      });
+      deltaY += resolvedH - baseH;
+    }
+  });
+  return { extraHeight: Math.max(0, deltaY), itemMap };
+}
+
+function computeResolvedStageHeight(elements = [], baseHeight = 1350) {
+  const maxBottom = (Array.isArray(elements) ? elements : []).reduce((max, el) => {
+    if (!el || el.isHidden) return max;
+    const acc = computeAccordionContainerLayout(el);
+    const h = (Number(el.height) || 0) + (acc?.extraHeight || 0);
+    return Math.max(max, (Number(el.y) || 0) + h);
+  }, 0);
+  return Math.max(Number(baseHeight) || 0, maxBottom);
+}
+
+function buildAccordionToggleBody(findFnName = 'findDomEl') {
+  return `    var itemEl = ${findFnName}(targetRef);
+    if (!itemEl) return;
+    var wasOpen = itemEl.getAttribute('data-craft-accordion-open') === '1';
+    itemEl.setAttribute('data-craft-accordion-open', wasOpen ? '0' : '1');
+    var parent = itemEl.parentElement;
+    if (parent) {
+      var children = Array.from(parent.children || []);
+      var deltaY = 0;
+      children.forEach(function(ch) {
+        if (!ch.getAttribute || ch.getAttribute('data-craft-accordion-item') !== '1') return;
+        var isOpen = ch.getAttribute('data-craft-accordion-open') === '1';
+        var rawBaseY = ch.getAttribute('data-craft-accordion-base-y');
+        var rawBaseH = ch.getAttribute('data-craft-accordion-base-h');
+        var baseY = rawBaseY !== null && rawBaseY !== '' ? Number(rawBaseY) : NaN;
+        var baseH = rawBaseH !== null && rawBaseH !== '' ? Number(rawBaseH) : NaN;
+        var colH = Number(ch.getAttribute('data-craft-accordion-collapsed')) || baseH || 58;
+        var expH = Number(ch.getAttribute('data-craft-accordion-expanded')) || baseH || 108;
+        var targetH = isOpen ? expH : colH;
+        if (!Number.isNaN(baseY)) ch.style.top = (baseY + deltaY) + 'px';
+        ch.style.height = targetH + 'px';
+        if (!Number.isNaN(baseH)) deltaY += (targetH - baseH);
+        Array.from(ch.querySelectorAll('[data-craft-accordion-panel]')).forEach(function(panelEl) {
+          if (!panelEl.dataset.craftOrigDisplay) {
+            panelEl.dataset.craftOrigDisplay = panelEl.style.display && panelEl.style.display !== 'none' ? panelEl.style.display : 'flex';
+          }
+          panelEl.style.display = isOpen ? panelEl.dataset.craftOrigDisplay : 'none';
+        });
+        Array.from(ch.querySelectorAll('[data-craft-accordion-indicator]')).forEach(function(indEl) {
+          var innerSpan = indEl.querySelector('span');
+          var nextGlyph = isOpen ? '\\u2212' : '+';
+          if (innerSpan && indEl.children.length === 1) innerSpan.textContent = nextGlyph;
+          else indEl.textContent = nextGlyph;
+        });
+      });
+      var rawParentBaseH = parent.getAttribute('data-craft-accordion-base-h');
+      var parentBaseH = rawParentBaseH !== null && rawParentBaseH !== '' ? Number(rawParentBaseH) : NaN;
+      if (!Number.isNaN(parentBaseH) && parentBaseH > 0) {
+        parent.style.height = Math.max(parentBaseH, parentBaseH + deltaY) + 'px';
+      }
+    }`;
 }
 
 function buildExportedRuntimeScript(projectFunctions = []) {
@@ -145,24 +692,51 @@ function buildExportedRuntimeScript(projectFunctions = []) {
   };
   const show = (ref) => {
     const target = findDomEl(ref);
-    if (target) target.style.display = '';
+    if (target) target.style.display = target.dataset.prevDisplay || 'flex';
   };
   const hide = (ref) => {
     const target = findDomEl(ref);
-    if (target) target.style.display = 'none';
+    if (target) {
+      if (target.style.display && target.style.display !== 'none') target.dataset.prevDisplay = target.style.display;
+      target.style.display = 'none';
+    }
   };
   const toggleVisible = (ref) => {
     const target = findDomEl(ref);
-    if (target) target.style.display = target.style.display === 'none' ? '' : 'none';
+    if (target) {
+      const isHiddenNow = target.style.display === 'none' || getComputedStyle(target).display === 'none';
+      if (isHiddenNow) show(ref);
+      else hide(ref);
+    }
+  };
+  const addClass = (ref, cls) => {
+    const target = findDomEl(ref);
+    if (target && cls) target.classList.add(String(cls));
+  };
+  const removeClass = (ref, cls) => {
+    const target = findDomEl(ref);
+    if (target && cls) target.classList.remove(String(cls));
   };
   const scrollToElement = (ref) => {
     const target = findDomEl(ref);
     if (target) target.scrollIntoView({ behavior: 'smooth' });
   };
+  const openUrl = (url, newTab = true) => {
+    if (!url || typeof window === 'undefined') return;
+    if (newTab) window.open(url, '_blank', 'noopener,noreferrer');
+    else window.location.href = url;
+  };
   const goToPage = (routeOrId) => {
-    const clean = String(routeOrId || '');
-    if (clean.startsWith('#')) return scrollToElement(clean);
+    const clean = String(routeOrId || '').trim();
+    if (clean.startsWith('#') && !clean.startsWith('#/')) return scrollToElement(clean);
+    if (typeof onNavigatePage === 'function') {
+      const handled = onNavigatePage(clean.startsWith('#/') ? clean.slice(1) : clean);
+      if (handled) return;
+    }
     notify(\`Sayfa yönlendirmesi: \${clean}\`);
+  };
+  const toggleAccordion = (targetRef) => {
+${buildAccordionToggleBody('findDomEl')}
   };
   const switchSlider = (sliderRef, action = 'next', targetIdx = 0) => {
     const root = findDomEl(sliderRef);
@@ -180,13 +754,17 @@ function buildExportedRuntimeScript(projectFunctions = []) {
         slideEl.dataset.craftOrigDisplay = slideEl.style.display && slideEl.style.display !== 'none' ? slideEl.style.display : 'flex';
       }
       const sIdx = Number(slideEl.getAttribute('data-craft-slide-index') || 0);
-      slideEl.style.display = sIdx === next ? slideEl.dataset.craftOrigDisplay : 'none';
+      const isVisible = sIdx === next;
+      slideEl.classList.toggle('is-slide-hidden', !isVisible);
+      slideEl.style.display = isVisible ? slideEl.dataset.craftOrigDisplay : 'none';
     });
     const dots = Array.from(root.querySelectorAll('[data-craft-slider-dot]'));
     dots.forEach((dotEl) => {
       const dIdx = Number(dotEl.getAttribute('data-craft-slider-dot') || 0);
-      dotEl.style.opacity = dIdx === next ? '1' : '0.45';
-      dotEl.style.transform = dIdx === next ? 'scale(1.22)' : 'scale(1)';
+      const active = dIdx === next;
+      dotEl.classList.toggle('is-active-dot', active);
+      dotEl.style.opacity = active ? '1' : '0.45';
+      dotEl.style.transform = active ? 'scale(1.22)' : 'scale(1)';
     });
   };
   const notify = (msg) => {
@@ -202,16 +780,73 @@ ${fnDefs ? `\n${fnDefs}` : ''}`;
  * Serializes an AST element into pure JSX with className, htmlFor, style object, etc.
  */
 export function renderAstElementToJsx(el, indent = '      ', options = {}) {
-  if (!el) return '';
-  const { projectFunctions = [], tabs = [], includeNodeDataId = false, preserveCanvasCoords = false, parentSliderActiveIdx = null } = options || {};
+  if (!el || typeof el !== 'object') return '';
+  const {
+    projectFunctions = [],
+    tabs = [],
+    includeNodeDataId = false,
+    preserveCanvasCoords = false,
+    parentSliderActiveIdx = null,
+    parentAccordionOpen = null,
+    accordionLayoutOverride = null,
+    parentWidth = 1280,
+    topOffsetPx = 0,
+  } = options || {};
   const rawTag = (el.type || 'div').toLowerCase();
-  const tag = rawTag === 'text' ? 'span' : rawTag;
+  const tag = resolveHtmlTagName(rawTag);
   const isVoid = isVoidTag(tag);
+  const isFormField = tag === 'input' || tag === 'textarea' || tag === 'select';
+  const accLayout = computeAccordionContainerLayout(el);
 
-  // Convert attributes
+  // Convert attributes safely (deduping class/className, parsing inline style string, converting form props)
   const jsxAttrParts = [];
-  const attrs = { ...(el.attrs || {}) };
-  if (el.id && ((el.responsive && (el.responsive.tablet || el.responsive.mobile)) || preserveCanvasCoords || el.sliderConfig)) {
+  const rawAttrs = { ...(el.attrs || {}) };
+  let parsedAttrStyle = {};
+  if (typeof rawAttrs.style === 'string') {
+    parsedAttrStyle = parseInlineStyleString(rawAttrs.style);
+  } else if (rawAttrs.style && typeof rawAttrs.style === 'object') {
+    parsedAttrStyle = normalizeStyleForReact(rawAttrs.style);
+  }
+  delete rawAttrs.style;
+
+  const mergedClasses = [rawAttrs.class, rawAttrs.className, el.animation?.className, el.animation?.hoverClassName]
+    .filter((v) => typeof v === 'string' && v.trim())
+    .join(' ')
+    .trim();
+  delete rawAttrs.class;
+  delete rawAttrs.className;
+
+  const isSlideHidden = el.sliderRole === 'slide' && parentSliderActiveIdx !== null && Number(el.slideIndex || 0) !== Number(parentSliderActiveIdx);
+  const isActiveDot = el.sliderRole === 'dot' && parentSliderActiveIdx !== null && Number(el.slideIndex || 0) === Number(parentSliderActiveIdx);
+  const finalClassList = [
+    mergedClasses,
+    isSlideHidden ? 'is-slide-hidden' : '',
+    isActiveDot ? 'is-active-dot' : '',
+  ].filter(Boolean).join(' ').trim();
+
+  const attrs = {};
+  Object.entries(rawAttrs).forEach(([key, val]) => {
+    if (!key || !/^[a-zA-Z_:][a-zA-Z0-9_.:-]*$/.test(key)) return;
+    if (/^on[a-z]+$/i.test(key)) return;
+    if (isFormField && key === 'value' && rawAttrs.defaultValue === undefined) {
+      attrs.defaultValue = val;
+      return;
+    }
+    if (tag === 'input' && key === 'checked' && rawAttrs.defaultChecked === undefined) {
+      attrs.defaultChecked = val;
+      return;
+    }
+    attrs[key] = val;
+  });
+
+  if (finalClassList) {
+    attrs.className = finalClassList;
+  }
+  if (tag === 'img' && !attrs.src) {
+    attrs.src = el.imageUrl || 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&auto=format&fit=crop&q=80';
+    if (!attrs.alt) attrs.alt = 'Görsel';
+  }
+  if (el.id && ((el.responsive && (el.responsive.tablet || el.responsive.mobile)) || preserveCanvasCoords || el.sliderConfig || el.accordionRole)) {
     attrs['data-craft-id'] = el.id;
   }
   if (includeNodeDataId && el.id && !attrs.id && !attrs['data-craft-id']) {
@@ -228,11 +863,36 @@ export function renderAstElementToJsx(el, indent = '      ', options = {}) {
   if (el.sliderRole === 'dot') {
     attrs['data-craft-slider-dot'] = String(el.slideIndex || 0);
   }
+  if (accLayout.itemMap && typeof el.height === 'number') {
+    attrs['data-craft-accordion-base-h'] = String(el.height);
+  }
+  if (el.accordionRole === 'item') {
+    const isItemOpen = el.accordionOpen !== false;
+    const collapsedH = Number(el.accordionCollapsedHeight) || Number(el.height) || 58;
+    const expandedH = Number(el.accordionExpandedHeight) || Number(el.height) || 108;
+    attrs['data-craft-accordion-item'] = '1';
+    attrs['data-craft-accordion-open'] = isItemOpen ? '1' : '0';
+    attrs['data-craft-accordion-collapsed'] = String(collapsedH);
+    attrs['data-craft-accordion-expanded'] = String(expandedH);
+    if (typeof el.y === 'number') attrs['data-craft-accordion-base-y'] = String(el.y - topOffsetPx);
+    if (typeof el.height === 'number') attrs['data-craft-accordion-base-h'] = String(el.height);
+  }
+  if (el.accordionRole === 'panel') {
+    attrs['data-craft-accordion-panel'] = '1';
+  }
+  if (el.accordionRole === 'indicator') {
+    attrs['data-craft-accordion-indicator'] = '1';
+  }
 
-  // Append animation classes if present
-  if (el.animation?.className || el.animation?.hoverClassName) {
-    const animCls = [el.animation?.className, el.animation?.hoverClassName].filter(Boolean).join(' ');
-    attrs.class = attrs.class ? `${attrs.class} ${animCls}` : animCls;
+  const validChildren = Array.isArray(el.children) ? el.children.filter(Boolean) : [];
+  const hasChildren = validChildren.length > 0;
+  const rawText = (el.accordionRole === 'indicator' && parentAccordionOpen !== null)
+    ? (parentAccordionOpen ? '−' : '+')
+    : (rawTag === 'button' && el.sliderRole !== 'dot' && !hasChildren && !el.textContent && !el.content)
+      ? 'Buton'
+      : (el.textContent || el.content || '');
+  if (tag === 'textarea' && rawText && attrs.defaultValue === undefined) {
+    attrs.defaultValue = rawText;
   }
 
   Object.entries(attrs).forEach(([key, val]) => {
@@ -245,56 +905,47 @@ export function renderAstElementToJsx(el, indent = '      ', options = {}) {
     }
   });
 
-  // Handle style & underline CSS custom properties
-  const styleObj = { ...(el.style || {}) };
-  if (preserveCanvasCoords) {
-    if (!styleObj.position) {
-      styleObj.position = el.positionMode === 'sticky' ? 'sticky' : 'absolute';
-      if (el.positionMode === 'sticky' && styleObj.top === undefined) styleObj.top = '0px';
-    }
-    if (typeof el.x === 'number' && styleObj.left === undefined) styleObj.left = `${el.x}px`;
-    if (typeof el.y === 'number' && el.positionMode !== 'sticky' && styleObj.top === undefined) styleObj.top = `${el.y}px`;
-    if (typeof el.width === 'number' && styleObj.width === undefined) styleObj.width = `${el.width}px`;
-    if (typeof el.height === 'number' && styleObj.height === undefined) styleObj.height = `${el.height}px`;
-    if (typeof el.zIndex === 'number' && styleObj.zIndex === undefined) styleObj.zIndex = el.zIndex;
-    if (el.opacity !== undefined && el.opacity !== 100 && styleObj.opacity === undefined) {
-      styleObj.opacity = Number(el.opacity) / 100;
-    }
-    if (el.fillType === 'gradient' && el.gradient && !styleObj.background) {
-      styleObj.background = `linear-gradient(${el.gradient.angle || 90}deg, ${el.gradient.color1 || '#d4af37'}, ${el.gradient.color2 || '#2c2523'})`;
-    }
-    if (el.borderRadiusType === 'custom' && el.borderRadiusCorners && !styleObj.borderRadius) {
-      const { tl = 0, tr = 0, br = 0, bl = 0 } = el.borderRadiusCorners;
-      styleObj.borderRadius = `${tl}px ${tr}px ${br}px ${bl}px`;
-    }
-    if (el.shadow && el.shadow !== 'none' && !styleObj.boxShadow) {
-      styleObj.boxShadow = el.shadow;
-    }
-    if (el.textColor && !styleObj.color) styleObj.color = el.textColor;
-    if (el.fontSize && !styleObj.fontSize) styleObj.fontSize = `${el.fontSize}px`;
-    if (el.fontWeight && !styleObj.fontWeight) styleObj.fontWeight = el.fontWeight;
-    if (el.textAlign && !styleObj.textAlign) styleObj.textAlign = el.textAlign;
-    styleObj.boxSizing = styleObj.boxSizing || 'border-box';
+  // Handle style & visual properties with 1:1 Canvas fidelity
+  const styleObj = { ...parsedAttrStyle, ...normalizeStyleForReact(el.style || {}) };
+  const { isPureTextNode, textAlignVal, innerTextPadding, innerLineHeight } = resolveCanvasParityStyle({
+    styleObj,
+    node: el,
+    rawTag,
+    mappedTag: tag,
+    isVoid,
+    isFormField,
+    hasChildren,
+    parentWidth,
+    topOffsetPx,
+    accordionLayoutOverride,
+    accLayout,
+    applyCanvasCoords: preserveCanvasCoords,
+    isPlainHtml: false,
+  });
+
+  if (el.isHidden) {
+    styleObj.display = 'none';
   }
-  if (el.fillColor && el.fillColor !== 'transparent' && !styleObj.background && !styleObj.backgroundColor) {
-    styleObj.backgroundColor = el.fillColor;
-  }
-  if (el.borderWidth > 0 && !styleObj.border) {
-    styleObj.border = `${el.borderWidth}px solid ${el.borderColor || '#cbd5e1'}`;
-  }
-  if (el.borderRadius > 0 && !styleObj.borderRadius) {
-    styleObj.borderRadius = `${el.borderRadius}px`;
-  }
-  if (el.animation?.hoverLineColor) styleObj['--craft-line-color'] = el.animation.hoverLineColor;
-  if (el.animation?.hoverLineHeight) styleObj['--craft-line-height'] = `${el.animation.hoverLineHeight}px`;
-  if (el.animation?.hoverLineDuration) styleObj['--craft-line-duration'] = `${el.animation.hoverLineDuration}s`;
-  if (el.sliderRole === 'slide' && parentSliderActiveIdx !== null && Number(el.slideIndex || 0) !== Number(parentSliderActiveIdx)) {
+  if (el.accordionRole === 'panel' && parentAccordionOpen === false) {
     styleObj.display = 'none';
   }
   if (el.sliderRole === 'dot' && parentSliderActiveIdx !== null) {
-    const isActiveDot = Number(el.slideIndex || 0) === Number(parentSliderActiveIdx);
     styleObj.opacity = isActiveDot ? 1 : 0.45;
     if (isActiveDot) styleObj.transform = 'scale(1.22)';
+  }
+
+  let onClickExpr = buildReactOnClickExpression(el.events?.onClick, projectFunctions, tabs);
+  if (!onClickExpr && tag === 'a' && attrs.href && String(attrs.href).startsWith('#/')) {
+    const internalRoute = String(attrs.href).slice(1);
+    onClickExpr = `(e) => { e.preventDefault(); goToPage(${JSON.stringify(internalRoute)}); }`;
+  }
+  if (onClickExpr && !styleObj.cursor) styleObj.cursor = 'pointer';
+
+  const safeText = escapeJsxText(rawText);
+  const isRawTextTag = tag === 'option' || tag === 'title';
+  const wrapTextSpan = Boolean(rawText) && !isRawTextTag && (isPureTextNode || (preserveCanvasCoords && !hasChildren));
+  if (wrapTextSpan && !styleObj.textAlign) {
+    styleObj.textAlign = textAlignVal;
   }
 
   let styleProp = '';
@@ -302,30 +953,60 @@ export function renderAstElementToJsx(el, indent = '      ', options = {}) {
     styleProp = ` style={${JSON.stringify(styleObj)}}`;
   }
 
-  const onClickExpr = buildReactOnClickExpression(el.events?.onClick, projectFunctions, tabs);
   const onClickProp = onClickExpr ? ` onClick={${onClickExpr}}` : '';
 
   const attrsStr = jsxAttrParts.length > 0 ? ` ${jsxAttrParts.join(' ')}` : '';
 
-  if (isVoid) {
+  if (isVoid || tag === 'textarea') {
     return `${indent}<${tag}${attrsStr}${styleProp}${onClickProp} />`;
   }
-
-  const text = el.textContent || el.content || '';
-  const hasChildren = Array.isArray(el.children) && el.children.length > 0;
-  const childOptions = ownSliderIdx !== null ? { ...options, parentSliderActiveIdx: ownSliderIdx } : options;
+  const innerSpanStyle = wrapTextSpan
+    ? {
+        width: '100%',
+        display: 'block',
+        whiteSpace: 'pre-wrap',
+        pointerEvents: 'none',
+        textAlign: 'inherit',
+        ...(innerTextPadding ? { padding: innerTextPadding } : {}),
+        ...(innerLineHeight ? { lineHeight: innerLineHeight } : {}),
+      }
+    : null;
+  const renderedTextNode = safeText
+    ? (wrapTextSpan ? `<span style={${JSON.stringify(innerSpanStyle)}}>${safeText}</span>` : safeText)
+    : '';
+  const nextParentWidth = Number(el.width) || parentWidth;
+  const nextAccordionOpen = el.accordionRole === 'item' ? (el.accordionOpen !== false) : parentAccordionOpen;
+  const childOptions = {
+    ...options,
+    topOffsetPx: 0,
+    parentSliderActiveIdx: ownSliderIdx !== null ? ownSliderIdx : parentSliderActiveIdx,
+    parentAccordionOpen: nextAccordionOpen,
+    parentWidth: nextParentWidth,
+  };
 
   if (hasChildren) {
-    const childrenJsx = el.children.map(child => renderAstElementToJsx(child, indent + '  ', childOptions)).join('\n');
-    const textPart = text ? `${indent}  ${text}\n` : '';
+    const childrenJsx = validChildren.map((child) => {
+      const childLayoutOverride = accLayout.itemMap ? (accLayout.itemMap.get(child.id) || null) : null;
+      return renderAstElementToJsx(child, indent + '  ', { ...childOptions, accordionLayoutOverride: childLayoutOverride });
+    }).join('\n');
+    const textPart = renderedTextNode ? `${indent}  ${renderedTextNode}\n` : '';
     return `${indent}<${tag}${attrsStr}${styleProp}${onClickProp}>\n${textPart}${childrenJsx}\n${indent}</${tag}>`;
   }
 
-  if (text.includes('\n') || text.length > 40) {
-    return `${indent}<${tag}${attrsStr}${styleProp}${onClickProp}>\n${indent}  ${text}\n${indent}</${tag}>`;
+  if ((rawTag === 'product_card' || (rawTag === 'article' && el.productName)) && !rawText) {
+    const productImg = el.productImage || el.imageUrl || 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=600&auto=format&fit=crop&q=80';
+    const cardTitle = escapeJsxText(el.productName || 'Özel Ürün');
+    const cardDesc = el.productDesc ? `<p style={{ margin: 0, fontSize: '12px', lineHeight: 1.5, color: '#64748b' }}>${escapeJsxText(el.productDesc)}</p>` : '';
+    const cardTag = el.productTag ? `<span style={{ position: 'absolute', top: '12px', left: '12px', padding: '4px 10px', borderRadius: '999px', background: 'rgba(15,23,42,0.86)', color: '#f8fafc', fontSize: '11px', fontWeight: 600 }}>${escapeJsxText(el.productTag)}</span>` : '';
+    const cardPrice = el.productPrice ? `<span style={{ fontSize: '14px', fontWeight: 700, color: '#2563eb' }}>${escapeJsxText(el.productPrice)}</span>` : '<span />';
+    return `${indent}<${tag}${attrsStr}${styleProp}${onClickProp}>\n${indent}  <div style={{ position: 'relative', width: '100%', height: '56%', minHeight: '140px', overflow: 'hidden', background: '#0f172a' }}><img src={${JSON.stringify(productImg)}} alt={${JSON.stringify(el.productName || 'Ürün')}} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />${cardTag}</div>\n${indent}  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '16px', gap: '8px', width: '100%' }}><div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}><h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>${cardTitle}</h3>${cardDesc}</div><div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '8px' }}>${cardPrice}<span style={{ fontSize: '12px', fontWeight: 600, color: '#2563eb' }}>İncele ↗</span></div></div>\n${indent}</${tag}>`;
   }
 
-  return `${indent}<${tag}${attrsStr}${styleProp}${onClickProp}>${text}</${tag}>`;
+  if (!wrapTextSpan && (rawText.includes('\n') || rawText.length > 40)) {
+    return `${indent}<${tag}${attrsStr}${styleProp}${onClickProp}>\n${indent}  ${renderedTextNode}\n${indent}</${tag}>`;
+  }
+
+  return `${indent}<${tag}${attrsStr}${styleProp}${onClickProp}>${renderedTextNode}</${tag}>`;
 }
 
 // Generates a fully modular, responsive, Flexbox & Grid based universal React project
@@ -335,10 +1016,29 @@ export function generateModularReactProject(
   canvasByViewport = null,
   projectContext = {}
 ) {
-  const { projectFunctions = [], tabs = [], projectName = 'CraftStudio Projesi', folderSlug, activeTabId } = projectContext || {};
+  const {
+    projectFunctions = [],
+    tabs = [],
+    pageLinks = [],
+    viewportMode = 'desktop',
+    projectName = 'CraftStudio Projesi',
+    folderSlug,
+    activeTabId,
+  } = projectContext || {};
   const resolvedSlug = slugifyProjectFolderName(folderSlug || projectName || 'yayinlanan-react-site');
+  const safeElements = Array.isArray(elements) ? elements.filter(Boolean) : [];
+  const normalizedTabs = normalizePublishTabs({
+    tabs,
+    activeTabId,
+    elements: safeElements,
+    canvasSettings,
+    canvasByViewport,
+  });
+  const activeNormalizedTab = normalizedTabs.find((t) => t.id === activeTabId) || normalizedTabs[0];
   // Flatten tree to find standard elements across any depth
-  const flatElements = flattenTree(elements);
+  const flatElements = flattenTree(safeElements);
+  const allTabFlatElements = normalizedTabs.flatMap((t) => flattenTree(t.elements || []));
+  const allTabRootElements = normalizedTabs.flatMap((t) => t.elements || []);
 
   // Extract navbar elements & texts dynamically from OOP AST
   const navEl = flatElements.find(el => el.type === 'nav' || el.type === 'navbar');
@@ -452,7 +1152,7 @@ export function generateModularReactProject(
   const standardIds = new Set([
     'elem-nav', 'elem-nav-brand', 'elem-nav-logo-icon', 'elem-nav-logo-text', 'elem-nav-menu',
     'elem-nav-link-1', 'elem-nav-link-2', 'elem-nav-link-3', 'elem-nav-link-4', 'elem-nav-link-5', 'elem-nav-cta-btn',
-    'elem-hero', 'elem-badge', 'elem-hero-title', 'elem-hero-desc', 'elem-hero-btn', 'elem-google-link',
+    'elem-hero', 'elem-badge', 'elem-hero-title', 'elem-hero-desc', 'elem-hero-btn', 'elem-google-link', 'elem-hero-visual',
     'elem-features-section', 'elem-sec-title', 'elem-sec-desc', 'elem-cards-grid',
     'elem-card-1', 'elem-card-1-img', 'elem-card-1-badge', 'elem-card-1-title', 'elem-card-1-desc', 'elem-card-1-btn',
     'elem-card-2', 'elem-card-2-img', 'elem-card-2-badge', 'elem-card-2-title', 'elem-card-2-desc', 'elem-card-2-btn',
@@ -463,15 +1163,69 @@ export function generateModularReactProject(
     'elem-footer-col-3', 'elem-footer-col3-title', 'elem-footer-col3-link1', 'elem-footer-col3-link2', 'elem-footer-col3-link3',
     'elem-footer-copyright'
   ]);
-  const usesModularTemplate = Boolean(
-    navEl && flatElements.some((el) => el.id === 'elem-hero' || el.id === 'hero-sec')
-  );
+  const hasMultiPages = normalizedTabs.length > 1;
+  const heroEl = flatElements.find((el) => el.id === 'elem-hero' || el.id === 'hero-sec');
+  const navRoot = safeElements.find((el) => el.id === 'elem-nav' || el.type === 'nav' || el.type === 'navbar') || null;
+  const heroRoot = safeElements.find((el) => el.id === 'elem-hero' || el.id === 'hero-sec') || null;
+  const featuresRoot = safeElements.find((el) => el.id === 'elem-features-section') || safeElements.find((el) => el.id === 'elem-cards-grid');
+  const footerRoot = safeElements.find((el) => el.id === 'elem-footer' || el.type === 'footer');
+
+  const usesModularTemplate = Boolean(navRoot && heroRoot && !hasMultiPages);
+  const hasFeaturesSection = usesModularTemplate
+    ? Boolean(featuresRoot)
+    : flatElements.some(
+        (el) => el.id === 'elem-features-section' || el.id === 'elem-cards-grid' || el.id === 'elem-card-1' || el.type === 'article' || el.type === 'product_card'
+      );
+  const hasFooterSection = usesModularTemplate
+    ? Boolean(footerRoot)
+    : flatElements.some((el) => el.id === 'elem-footer' || el.type === 'footer');
+  const handledModularIds = new Set([navRoot?.id, heroRoot?.id, featuresRoot?.id, footerRoot?.id].filter(Boolean));
   const customElements = usesModularTemplate
-    ? elements.filter(el => !standardIds.has(el.id))
-    : elements;
+    ? safeElements.filter((el) => !handledModularIds.has(el.id))
+    : safeElements;
+
+  const initialTab = normalizedTabs.find((t) => t.id === activeTabId) || normalizedTabs[0];
+  const stageBgColor = initialTab.canvasSettings?.bgColor || initialTab.canvasSettings?.backgroundColor || canvasSettings?.bgColor || canvasSettings?.backgroundColor || '#0b0f19';
+  const stageWidth = Number(initialTab.canvasSettings?.width || canvasSettings?.width) || 1280;
+  const stageHeight = Number(initialTab.canvasSettings?.height || canvasSettings?.height) || 1350;
+  const resolvedStageHeight = computeResolvedStageHeight(safeElements, stageHeight);
+
+  const customElementsRuntimeCode = buildExportedRuntimeScript(projectFunctions);
+  const stageJsxOptions = {
+    projectFunctions,
+    tabs: normalizedTabs,
+    preserveCanvasCoords: true,
+    topOffsetPx: 0,
+    parentWidth: stageWidth,
+    includeNodeDataId: true,
+  };
+
+  const buildModularAstSectionCode = (componentName, propsSig, astNode) => `import React from 'react';
+
+export default function ${componentName}(${propsSig}) {
+${customElementsRuntimeCode}
+
+  return (
+    <>
+${renderAstElementToJsx(astNode, '      ', stageJsxOptions)}
+    </>
+  );
+}
+`;
+
+  const navBg = navEl?.fillColor || navEl?.style?.backgroundColor || '#0f172a';
+  const heroBackground = (heroEl?.fillType === 'gradient' && heroEl?.gradient)
+    ? `linear-gradient(${heroEl.gradient.angle || 135}deg, ${heroEl.gradient.color1 || '#0f172a'} 0%, ${heroEl.gradient.color2 || '#1e1b4b'} 100%)`
+    : (heroEl?.fillColor && heroEl.fillColor !== 'transparent' ? heroEl.fillColor : (heroEl?.style?.background || 'linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)'));
+  const heroRadius = heroEl?.borderRadius ? `${heroEl.borderRadius}px` : '24px';
+  const heroBtnBackground = (ctaEl?.fillType === 'gradient' && ctaEl?.gradient)
+    ? `linear-gradient(${ctaEl.gradient.angle || 90}deg, ${ctaEl.gradient.color1 || '#3b82f6'} 0%, ${ctaEl.gradient.color2 || '#2563eb'} 100%)`
+    : (ctaEl?.fillColor && ctaEl.fillColor !== 'transparent' ? ctaEl.fillColor : (ctaEl?.style?.background || 'linear-gradient(90deg, #3b82f6 0%, #2563eb 100%)'));
 
   // 1. src/components/Navbar.jsx
-  const navbarCode = `import React, { useState } from 'react';
+  const navbarCode = usesModularTemplate && navRoot
+    ? buildModularAstSectionCode('Navbar', '{ onCtaClick, onNotify, onNavigatePage }', navRoot)
+    : `import React, { useState } from 'react';
 import { Search, Menu, X, Sparkles, ArrowRight } from 'lucide-react';
 
 export default function Navbar({ onCtaClick }) {
@@ -480,15 +1234,15 @@ export default function Navbar({ onCtaClick }) {
   const navLinks = ${JSON.stringify(navLinks)};
 
   return (
-    <header className="sticky top-0 z-50 w-full backdrop-blur-md bg-[#0f172a]/95 border-b border-[#1e293b] transition-all">
-      <div className="max-w-7xl mx-auto px-4 sm:px-8 h-18 flex items-center justify-between">
+    <header style={{ backgroundColor: ${JSON.stringify(navBg)} }} className="sticky top-0 z-50 w-full backdrop-blur-md border-b border-[#1e293b] transition-all">
+      <div className="w-full px-4 sm:px-8 lg:px-14 h-18 flex items-center justify-between">
         {/* Brand / Logo */}
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-md font-bold">
             <Sparkles size={17} />
           </div>
           <span className="font-bold tracking-wider text-sm sm:text-base text-white font-sans">
-            ${logoText}
+            ${escapeJsxText(logoText)}
           </span>
         </div>
 
@@ -557,17 +1311,19 @@ export default function Navbar({ onCtaClick }) {
 `;
 
   // 2. src/components/HeroSection.jsx
-  const heroCode = `import React from 'react';
+  const heroCode = usesModularTemplate && heroRoot
+    ? buildModularAstSectionCode('HeroSection', '{ onCtaClick, onNotify, onNavigatePage }', heroRoot)
+    : `import React from 'react';
 import { Sparkles, ArrowRight, ExternalLink } from 'lucide-react';
 
 export default function HeroSection({ onCtaClick }) {
   return (
-    <section className="w-full max-w-7xl mx-auto px-4 sm:px-8 py-8 sm:py-14">
+    <section className="w-full px-4 sm:px-8 lg:px-14 py-8 sm:py-14">
       {/* Flex container with modern indigo gradient matching canvas */}
       <div 
         style={{
-          background: 'linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%)',
-          borderRadius: '24px',
+          background: ${JSON.stringify(heroBackground)},
+          borderRadius: ${JSON.stringify(heroRadius)},
           boxShadow: '0 20px 50px rgba(15, 23, 42, 0.35)',
         }}
         className="w-full border border-[#312e81] p-6 sm:p-12 md:p-16 flex flex-col items-start justify-center text-left relative overflow-hidden"
@@ -578,17 +1334,17 @@ export default function HeroSection({ onCtaClick }) {
         {/* Badge */}
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-500/35 text-indigo-300 text-xs font-semibold mb-4 sm:mb-6">
           <Sparkles size={13} className="text-indigo-400" />
-          <span>${badgeText}</span>
+          <span>${escapeJsxText(badgeText)}</span>
         </div>
 
         {/* Title */}
-        <h1 className="text-2xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold text-[#f8fafc] tracking-tight leading-tight max-w-3xl mb-4 sm:mb-6">
-          ${titleText}
+        <h1 className="text-2xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold text-[#f8fafc] tracking-tight leading-tight max-w-4xl mb-4 sm:mb-6">
+          ${escapeJsxText(titleText)}
         </h1>
 
         {/* Description */}
-        <p className="text-sm sm:text-base md:text-lg text-[#94a3b8] max-w-2xl leading-relaxed mb-6 sm:mb-8">
-          ${descText}
+        <p className="text-sm sm:text-base md:text-lg text-[#94a3b8] max-w-3xl leading-relaxed mb-6 sm:mb-8">
+          ${escapeJsxText(descText)}
         </p>
 
         {/* Actions Row */}
@@ -596,23 +1352,23 @@ export default function HeroSection({ onCtaClick }) {
           <button
             onClick={onCtaClick}
             style={{
-              background: 'linear-gradient(90deg, #3b82f6 0%, #2563eb 100%)',
+              background: ${JSON.stringify(heroBtnBackground)},
               boxShadow: '0 8px 24px rgba(37, 99, 235, 0.4)',
             }}
             className="inline-flex items-center gap-2.5 px-7 py-3.5 rounded-full text-white font-bold text-sm sm:text-base hover:brightness-110 active:scale-95 transition-all cursor-pointer"
           >
-            <span>${heroCtaText}</span>
+            <span>${escapeJsxText(heroCtaText)}</span>
             <ArrowRight size={17} />
           </button>
 
           {/* External Link */}
           <a
-            href="${extLinkHref}"
+            href={${JSON.stringify(extLinkHref)}}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 px-5 py-3 rounded-full text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-sm font-medium transition-all"
           >
-            <span>${extLinkText}</span>
+            <span>${escapeJsxText(extLinkText)}</span>
             <ExternalLink size={14} className="text-blue-400" />
           </a>
         </div>
@@ -676,14 +1432,16 @@ export default function ProductCard({
 `;
 
   // 4. src/components/ProductsSection.jsx (Features Section)
-  const productsSectionCode = `import React from 'react';
+  const productsSectionCode = usesModularTemplate && featuresRoot
+    ? buildModularAstSectionCode('ProductsSection', '{ onAction, onNotify, onNavigatePage }', featuresRoot)
+    : `import React from 'react';
 import ProductCard from './ProductCard';
 
 export default function ProductsSection({ onAction }) {
   const items = ${JSON.stringify(cardsToUse, null, 2)};
 
   return (
-    <section id="ozellikler" className="w-full max-w-7xl mx-auto px-4 sm:px-8 py-8 sm:py-16">
+    <section id="ozellikler" className="w-full px-4 sm:px-8 lg:px-14 py-8 sm:py-16">
       {/* Container Box matching canvas #0f172a / border-[#1e293b] */}
       <div className="bg-[#0f172a] border border-[#1e293b] rounded-3xl p-6 sm:p-10 shadow-2xl">
         {/* Header */}
@@ -693,11 +1451,11 @@ export default function ProductsSection({ onAction }) {
               GÜÇLÜ ALTYAPI
             </span>
             <h2 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-white font-sans">
-              ${secTitleText}
+              ${escapeJsxText(secTitleText)}
             </h2>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 max-w-md">
-            ${secDescText}
+            ${escapeJsxText(secDescText)}
           </p>
         </div>
 
@@ -721,36 +1479,78 @@ export default function ProductsSection({ onAction }) {
 }
 `;
 
-  // 5. Custom Elements Section (renders any custom user tags + interactive projectFunctions)
-  const jsxRenderOptions = {
-    projectFunctions,
-    tabs,
-    preserveCanvasCoords: !usesModularTemplate,
-    includeNodeDataId: !usesModularTemplate || projectFunctions.length > 0 || flatElements.some((n) => n?.events?.onClick && n.events.onClick.mode !== 'none'),
-  };
-  const customElementsRuntimeCode = buildExportedRuntimeScript(projectFunctions);
-  const sectionStageHeight = Number(canvasSettings?.height) || 1350;
+  // 5. Custom Elements Section (renders any custom user tags + multi-page tabs + interactive projectFunctions)
+  const sectionStageHeight = resolvedStageHeight;
+  let customSectionBodyJsx = '';
+
+  if (hasMultiPages) {
+    customSectionBodyJsx = normalizedTabs
+      .map((tab) => {
+        const tabWidth = Number(tab.canvasSettings?.width) || stageWidth;
+        const tabHeight = computeResolvedStageHeight(tab.elements || [], Number(tab.canvasSettings?.height) || stageHeight);
+        const tabBg = tab.canvasSettings?.bgColor || tab.canvasSettings?.backgroundColor || stageBgColor;
+        const tabJsxOptions = {
+          projectFunctions,
+          tabs: normalizedTabs,
+          preserveCanvasCoords: true,
+          parentWidth: tabWidth,
+          includeNodeDataId: true,
+        };
+        const tabChildrenJsx = (tab.elements || [])
+          .map((el) => renderAstElementToJsx(el, '        ', tabJsxOptions))
+          .join('\n');
+        return `      <div
+        data-craft-page-id=${JSON.stringify(tab.id)}
+        data-craft-route=${JSON.stringify(tab.route)}
+        className="relative w-full"
+        style={{
+          display: activePageId === ${JSON.stringify(tab.id)} ? 'block' : 'none',
+          minHeight: '${tabHeight}px',
+          backgroundColor: ${JSON.stringify(tabBg)},
+        }}
+      >
+${tabChildrenJsx || '        <div className="w-full py-24 text-center text-sm text-slate-400">Bu sayfada henüz bileşen bulunmuyor.</div>'}
+      </div>`;
+      })
+      .join('\n');
+  } else {
+    const jsxRenderOptions = {
+      projectFunctions,
+      tabs: normalizedTabs,
+      preserveCanvasCoords: true,
+      topOffsetPx: 0,
+      parentWidth: stageWidth,
+      includeNodeDataId: true,
+    };
+    const renderedCustomChildren = customElements
+      .map((el) => renderAstElementToJsx(el, '      ', jsxRenderOptions))
+      .join('\n');
+    customSectionBodyJsx = usesModularTemplate
+      ? `    <>\n${renderedCustomChildren}\n    </>`
+      : `    <section className="relative w-full" style={{ minHeight: '${sectionStageHeight}px' }}>\n${renderedCustomChildren}\n    </section>`;
+  }
+
   const customElementsCode = `import React from 'react';
 
-export default function CustomElementsSection({ onNotify }) {
+export default function CustomElementsSection({ onNotify, activePageId, onNavigatePage }) {
 ${customElementsRuntimeCode}
 
   return (
-    <section ${usesModularTemplate ? 'className="w-full max-w-7xl mx-auto px-4 sm:px-8 py-6 space-y-6"' : `className="relative w-full" style={{ minHeight: '${sectionStageHeight}px' }}`}>
-${customElements.map(el => renderAstElementToJsx(el, '      ', jsxRenderOptions)).join('\n')}
-    </section>
+${hasMultiPages ? `    <div className="w-full relative overflow-x-clip">\n${customSectionBodyJsx}\n    </div>` : customSectionBodyJsx}
   );
 }
 `;
 
   // 6. src/components/Footer.jsx
-  const footerCode = `import React from 'react';
+  const footerCode = usesModularTemplate && footerRoot
+    ? buildModularAstSectionCode('Footer', '{ onNotify, onNavigatePage }', footerRoot)
+    : `import React from 'react';
 import { Sparkles, Mail, Globe } from 'lucide-react';
 
 export default function Footer() {
   return (
     <footer className="w-full bg-[#0f172a] text-slate-300 border-t border-[#1e293b] mt-16">
-      <div className="max-w-7xl mx-auto px-4 sm:px-8 py-12 sm:py-16">
+      <div className="w-full px-4 sm:px-8 lg:px-14 py-12 sm:py-16">
         <div className="grid grid-cols-1 md:grid-cols-5 gap-8 sm:gap-12 mb-12">
           {/* Brand Info */}
           <div className="md:col-span-2 space-y-4">
@@ -759,42 +1559,42 @@ export default function Footer() {
                 <Sparkles size={15} />
               </div>
               <span className="text-base font-bold text-white tracking-wider font-sans">
-                ${footerBrandTitle}
+                ${escapeJsxText(footerBrandTitle)}
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-400 max-w-md leading-relaxed">
-              ${footerBrandDesc}
+              ${escapeJsxText(footerBrandDesc)}
             </p>
           </div>
 
           {/* Sütun 1: Ürünler */}
           <div className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-white">${col1Title}</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wider text-white">${escapeJsxText(col1Title)}</h4>
             <ul className="space-y-2 text-xs text-slate-400">
-              ${linksCol1.map(l => `<li><a href="#" className="hover:text-blue-400 transition-colors">${l}</a></li>`).join('\n              ')}
+              ${linksCol1.map(l => `<li><a href="#" className="hover:text-blue-400 transition-colors">${escapeJsxText(l)}</a></li>`).join('\n              ')}
             </ul>
           </div>
 
           {/* Sütun 2: Şirket */}
           <div className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-white">${col2Title}</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wider text-white">${escapeJsxText(col2Title)}</h4>
             <ul className="space-y-2 text-xs text-slate-400">
-              ${linksCol2.map(l => `<li><a href="#" className="hover:text-blue-400 transition-colors">${l}</a></li>`).join('\n              ')}
+              ${linksCol2.map(l => `<li><a href="#" className="hover:text-blue-400 transition-colors">${escapeJsxText(l)}</a></li>`).join('\n              ')}
             </ul>
           </div>
 
           {/* Sütun 3: Topluluk */}
           <div className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-white">${col3Title}</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wider text-white">${escapeJsxText(col3Title)}</h4>
             <ul className="space-y-2 text-xs text-slate-400">
-              ${linksCol3.map(l => `<li><a href="#" className="hover:text-blue-400 transition-colors">${l}</a></li>`).join('\n              ')}
+              ${linksCol3.map(l => `<li><a href="#" className="hover:text-blue-400 transition-colors">${escapeJsxText(l)}</a></li>`).join('\n              ')}
             </ul>
           </div>
         </div>
 
         {/* Bottom Bar */}
         <div className="border-t border-[#1e293b] pt-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-4">
-          <p>${copyrightText}</p>
+          <p>${escapeJsxText(copyrightText)}</p>
           <div className="flex gap-6">
             <a href="#" className="hover:text-slate-400">Gizlilik Politikası</a>
             <a href="#" className="hover:text-slate-400">Kullanım Koşulları</a>
@@ -806,35 +1606,46 @@ export default function Footer() {
 }
 `;
 
-  // 7. src/App.jsx (Uses Modular Demo Shell only when template sections actually exist; otherwise renders user's faithful custom canvas)
-  const hasCustomElements = customElements.length > 0;
-  const stageBgColor = canvasSettings?.bgColor || canvasSettings?.backgroundColor || '#0b0f19';
-  const stageWidth = Number(canvasSettings?.width) || 1280;
-  const stageHeight = Number(canvasSettings?.height) || 1350;
+  // 7. src/App.jsx (Renders 1:1 Studio AST inside modular section components or multi-page tabs)
+  const hasCustomElements = customElements.length > 0 || hasMultiPages;
+  const routeEntriesMeta = normalizedTabs.map((t) => ({
+    id: t.id,
+    route: t.route,
+    name: String(t.name || '').replace(/\.craft$/i, ''),
+    bgColor: t.canvasSettings?.bgColor || t.canvasSettings?.backgroundColor || stageBgColor,
+    height: computeResolvedStageHeight(t.elements || [], Number(t.canvasSettings?.height) || stageHeight),
+  }));
 
   const appCode = usesModularTemplate
     ? `import React, { useState } from 'react';
 import Navbar from './components/Navbar';
 import HeroSection from './components/HeroSection';
-import ProductsSection from './components/ProductsSection';
+${hasFeaturesSection ? "import ProductsSection from './components/ProductsSection';" : ''}
 ${hasCustomElements ? "import CustomElementsSection from './components/CustomElementsSection';" : ''}
-import Footer from './components/Footer';
+${hasFooterSection ? "import Footer from './components/Footer';" : ''}
 
 export default function App() {
   const [notification, setNotification] = useState('');
 
+  const handleNotify = (msg) => {
+    setNotification(String(msg ?? ''));
+    setTimeout(() => setNotification(''), 3500);
+  };
+
   const handleAction = (item) => {
-    setNotification(\`"\${item.name}" inceleniyor...\`);
-    setTimeout(() => setNotification(''), 3000);
+    handleNotify(\`"\${item?.name || 'Bileşen'}" inceleniyor...\`);
   };
 
   const handleScrollToFeatures = () => {
-    const el = document.getElementById('ozellikler');
+    const el = document.getElementById('elem-features-section') || document.getElementById('ozellikler');
     if (el) el.scrollIntoView({ behavior: 'smooth' });
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#0b0f19] text-slate-100 flex flex-col selection:bg-blue-600 selection:text-white">
+    <div
+      style={{ backgroundColor: ${JSON.stringify(stageBgColor)}, minHeight: '100vh' }}
+      className="w-full flex flex-col selection:bg-blue-600 selection:text-white"
+    >
       {/* Toast Notification */}
       {notification && (
         <div className="fixed bottom-6 right-6 z-50 bg-[#1e293b] text-blue-300 border border-blue-500/40 px-4 py-2.5 rounded-md shadow-2xl text-xs font-medium">
@@ -842,21 +1653,15 @@ export default function App() {
         </div>
       )}
 
-      {/* 1. Modular Navbar (Sticky) */}
-      <Navbar onCtaClick={handleScrollToFeatures} />
-
-      {/* 2. Main Content */}
-      <main className="flex-1 w-full flex flex-col items-center">
-        {/* Modular Hero Section */}
-        <HeroSection onCtaClick={handleScrollToFeatures} />
-
-        ${hasCustomElements ? '{/* Custom User-Designed Elements */}\n        <CustomElementsSection onNotify={(msg) => {\n          setNotification(msg);\n          setTimeout(() => setNotification(\'\'), 3500);\n        }} />\n' : ''}
-        {/* Modular Features Grid Section */}
-        <ProductsSection onAction={handleAction} />
+      {/* 1:1 Canvas Stage composed from modular section components */}
+      <main
+        className="relative flex-1 w-full overflow-x-clip"
+        style={{ backgroundColor: ${JSON.stringify(stageBgColor)}, minHeight: '${resolvedStageHeight}px' }}
+      >
+        <Navbar onCtaClick={handleScrollToFeatures} onNotify={handleNotify} />
+        <HeroSection onCtaClick={handleScrollToFeatures} onNotify={handleNotify} />
+        ${hasCustomElements ? '<CustomElementsSection onNotify={handleNotify} />\n        ' : ''}${hasFeaturesSection ? '<ProductsSection onAction={handleAction} onNotify={handleNotify} />\n        ' : ''}${hasFooterSection ? '<Footer onNotify={handleNotify} />' : ''}
       </main>
-
-      {/* 3. Modular Footer */}
-      <Footer />
     </div>
   );
 }
@@ -864,13 +1669,36 @@ export default function App() {
     : `import React, { useState } from 'react';
 ${hasCustomElements ? "import CustomElementsSection from './components/CustomElementsSection';" : ''}
 
+const CRAFT_ROUTES = ${JSON.stringify(routeEntriesMeta, null, 2)};
+
 export default function App() {
   const [notification, setNotification] = useState('');
+  const [activePageId, setActivePageId] = useState(${JSON.stringify(initialTab.id)});
+
+  const activePageMeta = CRAFT_ROUTES.find((r) => r.id === activePageId) || CRAFT_ROUTES[0];
+
+  const handleNavigatePage = (targetRef) => {
+    const clean = String(targetRef || '').trim();
+    const normLower = clean.toLowerCase();
+    const strippedLower = normLower.replace(/^\\//, '').replace(/\\.craft$/i, '');
+    const found = CRAFT_ROUTES.find(
+      (r) =>
+        r.id === clean ||
+        r.route === clean ||
+        r.route.toLowerCase() === normLower ||
+        r.name.toLowerCase() === normLower ||
+        r.name.toLowerCase() === strippedLower
+    );
+    if (!found) return false;
+    setActivePageId(found.id);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+    return true;
+  };
 
   return (
     <div
-      style={{ backgroundColor: '${stageBgColor}', minHeight: '100vh' }}
-      className="w-full text-slate-100 flex flex-col items-center selection:bg-blue-600 selection:text-white"
+      style={{ backgroundColor: activePageMeta?.bgColor || ${JSON.stringify(stageBgColor)}, minHeight: '100vh' }}
+      className="w-full flex flex-col items-center selection:bg-blue-600 selection:text-white"
     >
       {notification && (
         <div className="fixed bottom-6 right-6 z-50 bg-[#18181b] text-slate-100 border border-blue-500/50 px-4 py-2.5 rounded-md shadow-2xl text-xs font-medium">
@@ -879,11 +1707,11 @@ export default function App() {
       )}
 
       <main
-        style={{ width: '100%', maxWidth: '${stageWidth}px', minHeight: '${stageHeight}px' }}
-        className="relative flex-1 overflow-x-hidden"
+        style={{ width: '100%', minHeight: \`\${activePageMeta?.height || ${resolvedStageHeight}}px\` }}
+        className="relative flex-1 overflow-x-clip"
       >
         ${hasCustomElements
-          ? `<CustomElementsSection onNotify={(msg) => {\n          setNotification(msg);\n          setTimeout(() => setNotification(''), 3500);\n        }} />`
+          ? `<CustomElementsSection\n          activePageId={activePageId}\n          onNavigatePage={handleNavigatePage}\n          onNotify={(msg) => {\n            setNotification(msg);\n            setTimeout(() => setNotification(''), 3500);\n          }}\n        />`
           : `<div className="w-full py-24 text-center text-sm text-slate-400">Bu sayfada henüz yayınlanacak bileşen bulunmuyor.</div>`}
       </main>
     </div>
@@ -908,9 +1736,9 @@ export default function App() {
       "lucide-react": "^1.16.0"
     },
     devDependencies: {
-      "@tailwindcss/vite": "^4.0.0",
+      "@tailwindcss/vite": "^4.1.18",
       "@vitejs/plugin-react": "^4.3.4",
-      "tailwindcss": "^4.0.0",
+      "tailwindcss": "^4.1.18",
       "vite": "^6.1.0"
     }
   };
@@ -921,6 +1749,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
+  base: './',
   plugins: [react(), tailwindcss()],
 });
 `;
@@ -936,8 +1765,9 @@ export default defineConfig({
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   </head>
-  <body class="m-0 p-0 antialiased font-sans bg-[#0b0f19] text-slate-100">
+  <body style="margin:0;padding:0;background:${escapeHtmlAttr(stageBgColor)};font-family:'Inter',system-ui,-apple-system,sans-serif;" class="antialiased font-sans">
     <div id="root"></div>
+    <script>if (window.location && window.location.protocol === 'file:') { window.location.replace('./live-preview.html'); }</script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
@@ -947,8 +1777,9 @@ export default defineConfig({
   const indexCss = `@import "tailwindcss";
 
 @layer base {
-  body {
-    overflow-x: hidden;
+  html, body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    overflow-x: clip;
   }
 }
 
@@ -1013,7 +1844,10 @@ export default defineConfig({
 .hover-text-fill-bar::after { bottom: -1px; opacity: 0.2; transform: scaleX(1); }
 .hover-text-fill-bar:hover::after { height: 6px; opacity: 0.45; }
 .hover-text-fill-bar:hover { transform: translateY(-2px); }
-${buildResponsiveCssRules(flatElements)}
+.is-slide-hidden { display: none !important; }
+[data-craft-slider-dot] { transition: transform 0.2s ease, opacity 0.2s ease, background-color 0.2s ease; opacity: 0.45; }
+[data-craft-slider-dot].is-active-dot { opacity: 1 !important; transform: scale(1.22); }
+${buildResponsiveCssRules(allTabFlatElements, allTabRootElements, activeNormalizedTab?.canvasByViewport || canvasByViewport)}
 `;
 
   // 12. src/main.jsx
@@ -1030,37 +1864,29 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 `;
 
   // 13. craft.project.json (Full Studio Schema incl. multi-viewport, tabs & projectFunctions)
-  const serializedTabs = (Array.isArray(tabs) && tabs.length > 0)
-    ? tabs
-    : [
-        {
-          id: 'tab-1',
-          name: 'Anasayfa.craft',
-          route: '/',
-          elements: elements,
-          canvasByViewport: canvasByViewport || undefined,
-        }
-      ];
+  const serializedTabs = normalizedTabs.map(({ domId, ...restTab }) => restTab);
 
   const craftProjectJson = JSON.stringify({
     schemaVersion: '1.1.0',
     studio: 'CraftStudio',
     name: projectName || 'CraftStudio Projesi',
     createdAt: new Date().toISOString(),
+    activeTabId: activeTabId || undefined,
+    viewportMode: viewportMode || 'desktop',
     canvasSettings: canvasSettings || { width: 1280, height: 1350, backgroundColor: '#0f172a' },
     canvasByViewport: canvasByViewport || undefined,
     tabs: serializedTabs,
     projectFunctions: projectFunctions || [],
-    pageLinks: []
+    pageLinks: Array.isArray(pageLinks) ? pageLinks : []
   }, null, 2);
 
   const standaloneHtml = buildStandaloneHtmlSite({
     projectName,
-    tabs: serializedTabs,
-    activeTabId,
-    elements,
-    canvasSettings,
-    canvasByViewport,
+    tabs: normalizedTabs,
+    activeTabId: activeNormalizedTab?.id || activeTabId,
+    elements: activeNormalizedTab?.elements,
+    canvasSettings: activeNormalizedTab?.canvasSettings || canvasSettings,
+    canvasByViewport: activeNormalizedTab?.canvasByViewport || canvasByViewport,
     projectFunctions,
   });
 
@@ -1106,79 +1932,59 @@ function styleObjectToInlineString(styleObj) {
 }
 
 function buildStandaloneNodeHtml(node, depth, options) {
-  if (!node || node.isHidden) return '';
-  const { projectFunctions = [], tabs = [], seenHtmlIds } = options;
+  if (!node || typeof node !== 'object') return '';
+  const shownInResponsive = node?.responsive?.tablet?.isHidden === false || node?.responsive?.mobile?.isHidden === false;
+  const canToggleVisible = Boolean(options?.hasProjectFunctions || options?.toggleTargetIds?.has(node?.id));
+  if (node.isHidden && !shownInResponsive && !canToggleVisible) return '';
+  const {
+    projectFunctions = [],
+    tabs = [],
+    seenHtmlIds,
+    parentWidth = 1280,
+    parentAccordionOpen = null,
+    accordionLayoutOverride = null,
+  } = options;
   const rawTag = (node.type || 'div').toLowerCase();
-  const mappedTag = rawTag === 'text' || rawTag === 'badge'
-    ? 'span'
-    : rawTag === 'navbar'
-      ? 'nav'
-      : rawTag === 'image'
-        ? 'img'
-        : rawTag === 'product_card'
-          ? 'article'
-          : rawTag;
+  const mappedTag = resolveHtmlTagName(rawTag);
   const voidTag = isVoidTag(mappedTag);
+  const accLayout = computeAccordionContainerLayout(node);
 
-  const styleObj = { ...(node.style || {}) };
-  if (!styleObj.position) {
-    styleObj.position = node.positionMode === 'sticky' ? 'sticky' : 'absolute';
-    if (node.positionMode === 'sticky' && styleObj.top === undefined) styleObj.top = '0px';
+  const rawAttrs = { ...(node.attrs || {}) };
+  let parsedAttrStyle = {};
+  if (typeof rawAttrs.style === 'string') {
+    parsedAttrStyle = parseInlineStyleString(rawAttrs.style);
+  } else if (rawAttrs.style && typeof rawAttrs.style === 'object') {
+    parsedAttrStyle = rawAttrs.style;
   }
-  if (typeof node.x === 'number' && styleObj.left === undefined && node.positionMode !== 'sticky') {
-    styleObj.left = `${node.x}px`;
-  }
-  if (typeof node.y === 'number' && styleObj.top === undefined && node.positionMode !== 'sticky') {
-    styleObj.top = `${node.y}px`;
-  }
-  if (typeof node.width === 'number' && styleObj.width === undefined) styleObj.width = `${node.width}px`;
-  if (typeof node.height === 'number' && styleObj.height === undefined) styleObj.height = `${node.height}px`;
-  if (styleObj.zIndex === undefined) {
-    styleObj.zIndex = node.zIndex || (node.positionMode === 'sticky' || node.positionMode === 'fixed' ? 100 : depth + 1);
-  }
-  styleObj.boxSizing = 'border-box';
+  delete rawAttrs.style;
 
-  if (node.fillType === 'gradient' && node.gradient) {
-    styleObj.background = `linear-gradient(${node.gradient.angle || 90}deg, ${node.gradient.color1 || '#d4af37'}, ${node.gradient.color2 || '#2c2523'})`;
-  } else if (node.fillColor && node.fillColor !== 'transparent' && !styleObj.background && !styleObj.backgroundColor) {
-    styleObj.backgroundColor = node.fillColor;
-  }
+  const validChildren = Array.isArray(node.children) ? node.children.filter(Boolean) : [];
+  const hasChildren = validChildren.length > 0;
+  const isFormField = mappedTag === 'input' || mappedTag === 'textarea' || mappedTag === 'select';
+  const styleObj = { ...parsedAttrStyle, ...(node.style || {}) };
+  const { isPureTextNode, textAlignVal, innerTextPadding, innerLineHeight } = resolveCanvasParityStyle({
+    styleObj,
+    node,
+    rawTag,
+    mappedTag,
+    isVoid: voidTag,
+    isFormField,
+    hasChildren,
+    parentWidth,
+    topOffsetPx: 0,
+    depth,
+    accordionLayoutOverride,
+    accLayout,
+    applyCanvasCoords: true,
+    isPlainHtml: true,
+  });
+  if (node.isHidden) styleObj.display = 'none';
 
-  if (node.borderRadiusType === 'custom' && node.borderRadiusCorners && !styleObj.borderRadius) {
-    const { tl = 0, tr = 0, br = 0, bl = 0 } = node.borderRadiusCorners;
-    styleObj.borderRadius = `${tl}px ${tr}px ${br}px ${bl}px`;
-  } else if (node.borderRadius > 0 && !styleObj.borderRadius) {
-    styleObj.borderRadius = `${node.borderRadius}px`;
-  }
+  const attrs = { ...rawAttrs };
+  const mergedBaseClass = [attrs.class, attrs.className].filter((v) => typeof v === 'string' && v.trim()).join(' ').trim();
+  delete attrs.className;
+  if (mergedBaseClass) attrs.class = mergedBaseClass;
 
-  if (!styleObj.border && node.borderWidth > 0) {
-    styleObj.border = `${node.borderWidth}px ${node.borderStyle || 'solid'} ${node.borderColor || '#cbd5e1'}`;
-  }
-  if (node.shadow && node.shadow !== 'none' && !styleObj.boxShadow) {
-    styleObj.boxShadow = node.shadow;
-  }
-  if (node.opacity !== undefined && node.opacity !== 100 && styleObj.opacity === undefined) {
-    styleObj.opacity = Math.max(0, Math.min(1, Number(node.opacity) / 100));
-  }
-
-  const isPureTextNode = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'a', 'label', 'blockquote', 'text', 'badge'].includes(rawTag);
-  if (!styleObj.display && !voidTag) {
-    styleObj.display = 'flex';
-    styleObj.flexDirection = styleObj.flexDirection || 'column';
-    styleObj.alignItems = styleObj.alignItems || (isPureTextNode || rawTag === 'button' ? 'center' : 'flex-start');
-    styleObj.justifyContent = styleObj.justifyContent || (rawTag === 'button' ? 'center' : 'flex-start');
-  }
-  if (node.textColor && !styleObj.color) styleObj.color = node.textColor;
-  if (node.fontSize && !styleObj.fontSize) styleObj.fontSize = `${node.fontSize}px`;
-  if (node.fontWeight && !styleObj.fontWeight) styleObj.fontWeight = node.fontWeight;
-  if (node.textAlign && !styleObj.textAlign) styleObj.textAlign = node.textAlign;
-  if (rawTag === 'a' && !styleObj.textDecoration) styleObj.textDecoration = 'none';
-
-  if (node.animation?.hoverLineColor) styleObj['--craft-line-color'] = node.animation.hoverLineColor;
-  if (node.animation?.hoverLineHeight) styleObj['--craft-line-height'] = `${node.animation.hoverLineHeight}px`;
-  if (node.animation?.hoverLineDuration) styleObj['--craft-line-duration'] = `${node.animation.hoverLineDuration}s`;
-
-  const attrs = { ...(node.attrs || {}) };
   if (mappedTag === 'img' && !attrs.src) {
     attrs.src = node.imageUrl || 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&auto=format&fit=crop&q=80';
     if (!attrs.alt) attrs.alt = 'Görsel';
@@ -1201,6 +2007,27 @@ function buildStandaloneNodeHtml(node, depth, options) {
   }
   if (node.sliderRole === 'dot') {
     attrs['data-craft-slider-dot'] = String(node.slideIndex || 0);
+  }
+  if (accLayout.itemMap && typeof node.height === 'number') {
+    attrs['data-craft-accordion-base-h'] = String(node.height);
+  }
+  if (node.accordionRole === 'item') {
+    const isItemOpen = node.accordionOpen !== false;
+    const collapsedH = Number(node.accordionCollapsedHeight) || Number(node.height) || 58;
+    const expandedH = Number(node.accordionExpandedHeight) || Number(node.height) || 108;
+    attrs['data-craft-accordion-item'] = '1';
+    attrs['data-craft-accordion-open'] = isItemOpen ? '1' : '0';
+    attrs['data-craft-accordion-collapsed'] = String(collapsedH);
+    attrs['data-craft-accordion-expanded'] = String(expandedH);
+    if (typeof node.y === 'number') attrs['data-craft-accordion-base-y'] = String(node.y);
+    if (typeof node.height === 'number') attrs['data-craft-accordion-base-h'] = String(node.height);
+  }
+  if (node.accordionRole === 'panel') {
+    attrs['data-craft-accordion-panel'] = '1';
+    if (parentAccordionOpen === false) styleObj.display = 'none';
+  }
+  if (node.accordionRole === 'indicator') {
+    attrs['data-craft-accordion-indicator'] = '1';
   }
 
   const isSlideHidden = node.sliderRole === 'slide' && parentSliderActiveIdx !== null && Number(node.slideIndex || 0) !== Number(parentSliderActiveIdx);
@@ -1244,6 +2071,8 @@ function buildStandaloneNodeHtml(node, depth, options) {
     ) {
       const actionKey = onClickEv.mode.replace('slider_', '');
       onClickAttr = ` data-craft-slider-action="${escapeHtmlAttr(actionKey)}" data-craft-slider-target="${escapeHtmlAttr(onClickEv.targetElementId)}" data-craft-slide-idx="${Number(onClickEv.slideIndex) || 0}"`;
+    } else if (onClickEv.mode === 'accordion_toggle' && (onClickEv.targetElementId || node.id)) {
+      onClickAttr = ` data-craft-accordion-toggle="${escapeHtmlAttr(onClickEv.targetElementId || node.id)}"`;
     }
   } else if (mappedTag === 'a' && attrs.href && String(attrs.href).startsWith('#/')) {
     onClickAttr = ` data-craft-nav="${escapeHtmlAttr(String(attrs.href).slice(1))}"`;
@@ -1261,22 +2090,54 @@ function buildStandaloneNodeHtml(node, depth, options) {
     return `<${mappedTag}${attrStr ? ' ' + attrStr : ''}${stylePart}${onClickAttr} />`;
   }
 
-  const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-  const textContent = node.textContent ?? node.content ?? '';
+  const rawTextVal = (node.accordionRole === 'indicator' && parentAccordionOpen !== null)
+    ? (parentAccordionOpen ? '−' : '+')
+    : (node.textContent ?? node.content ?? '');
+  const textContent = (rawTag === 'button' && node.sliderRole !== 'dot' && !hasChildren && !rawTextVal) ? 'Buton' : rawTextVal;
+  const isRawTextTag = mappedTag === 'textarea' || mappedTag === 'option' || mappedTag === 'title';
+  const spanStyleDecl = [
+    'width:100%',
+    'display:block',
+    'white-space:pre-wrap',
+    'pointer-events:none',
+    'text-align:inherit',
+    innerTextPadding ? `padding:${escapeHtmlAttr(innerTextPadding)}` : '',
+    innerLineHeight ? `line-height:${escapeHtmlAttr(innerLineHeight)}` : '',
+  ].filter(Boolean).join(';');
   const textHtml = textContent
-    ? `<span style="width:100%;display:block;white-space:pre-wrap;pointer-events:none;${styleObj.textAlign ? `text-align:${escapeHtmlAttr(styleObj.textAlign)};` : ''}">${escapeHtmlText(textContent)}</span>`
-    : '';
-  const childOptions = ownSliderIdx !== null ? { ...options, parentSliderActiveIdx: ownSliderIdx } : options;
+    ? isRawTextTag
+      ? escapeHtmlText(textContent)
+      : `<span style="${spanStyleDecl};">${escapeHtmlText(textContent)}</span>`
+    : (rawTag === 'product_card' || (rawTag === 'article' && node.productName)) && !hasChildren
+      ? buildProductCardFallbackHtml(node)
+      : '';
+  const nextParentWidth = Number(node.width) || parentWidth;
+  const nextAccordionOpen = node.accordionRole === 'item' ? (node.accordionOpen !== false) : parentAccordionOpen;
+  const childOptions = {
+    ...options,
+    parentSliderActiveIdx: ownSliderIdx !== null ? ownSliderIdx : parentSliderActiveIdx,
+    parentAccordionOpen: nextAccordionOpen,
+    parentWidth: nextParentWidth,
+  };
   const childrenHtml = hasChildren
-    ? node.children.map((ch) => buildStandaloneNodeHtml(ch, depth + 1, childOptions)).join('')
+    ? validChildren.map((ch) => {
+        const childLayoutOverride = accLayout.itemMap ? (accLayout.itemMap.get(ch.id) || null) : null;
+        return buildStandaloneNodeHtml(ch, depth + 1, { ...childOptions, accordionLayoutOverride: childLayoutOverride });
+      }).join('')
     : '';
 
   return `<${mappedTag}${attrStr ? ' ' + attrStr : ''}${stylePart}${onClickAttr}>${textHtml}${childrenHtml}</${mappedTag}>`;
 }
 
-function buildStandaloneResponsiveCss(flatList, tabScopeSelector, pageCanvasByViewport) {
+function buildStandaloneResponsiveCss(flatList, tabScopeSelector, pageCanvasByViewport, tabElements = []) {
   const tabletRules = [];
   const mobileRules = [];
+  const rootWidths = {
+    desktop: Number(pageCanvasByViewport?.desktop?.width) || 1280,
+    tablet: Number(pageCanvasByViewport?.tablet?.width) || 768,
+    mobile: Number(pageCanvasByViewport?.mobile?.width) || 375,
+  };
+  const parentWidthMap = buildParentWidthMap(tabElements, rootWidths);
 
   if (pageCanvasByViewport?.tablet?.height) {
     tabletRules.push(`${tabScopeSelector} { min-height: ${pageCanvasByViewport.tablet.height}px !important; }`);
@@ -1287,24 +2148,10 @@ function buildStandaloneResponsiveCss(flatList, tabScopeSelector, pageCanvasByVi
 
   const pushNodeRules = (node, vp, targetArr) => {
     const ov = node.responsive?.[vp];
-    if (!ov || Object.keys(ov).length === 0) return;
-    const decls = [];
-    if (ov.isHidden === true) {
-      decls.push('display: none !important;');
-    } else {
-      if (ov.isHidden === false) decls.push('display: flex !important;');
-      if (ov.x !== undefined) decls.push(`left: ${ov.x}px !important;`);
-      if (ov.y !== undefined) decls.push(`top: ${ov.y}px !important;`);
-      if (ov.width !== undefined) decls.push(`width: ${ov.width}px !important;`);
-      if (ov.height !== undefined) decls.push(`height: ${ov.height}px !important;`);
-      if (ov.style && typeof ov.style === 'object') {
-        Object.entries(ov.style).forEach(([prop, val]) => {
-          if (val !== undefined && val !== null && val !== '') {
-            decls.push(`${camelToKebabCase(prop)}: ${val} !important;`);
-          }
-        });
-      }
-    }
+    const parentEntry = parentWidthMap.get(node.id);
+    const vpParentW = parentEntry?.[vp] || rootWidths[vp];
+    const deskParentW = parentEntry?.desktop || rootWidths.desktop;
+    const decls = collectResponsiveDeclarations(ov, node, vpParentW, 'flex', deskParentW);
     if (decls.length > 0) {
       targetArr.push(`${tabScopeSelector} [data-craft-id="${node.id}"] { ${decls.join(' ')} }`);
     }
@@ -1328,52 +2175,52 @@ export function buildStandaloneHtmlSite(input = {}) {
     projectName = 'CraftStudio Sitesi',
     tabs = [],
     activeTabId = null,
-    elements = [],
+    elements = null,
     canvasSettings = { width: 1280, height: 1350, bgColor: '#ffffff' },
     canvasByViewport = null,
     projectFunctions = [],
   } = input || {};
 
-  const normalizedTabs = (Array.isArray(tabs) && tabs.length > 0)
-    ? tabs.map((t, idx) => {
-        const isActive = activeTabId ? t.id === activeTabId : idx === 0;
-        const tabEls = isActive && Array.isArray(elements) ? elements : (t.elements || []);
-        const tabCanvasByVp = (isActive && canvasByViewport) ? canvasByViewport : (t.canvasByViewport || null);
-        const tabDesktopCanvas = tabCanvasByVp?.desktop || t.canvasSettings || canvasSettings || { width: 1280, height: 1350, bgColor: '#ffffff' };
-        return {
-          id: t.id || `tab-${idx + 1}`,
-          name: t.name || `Sayfa ${idx + 1}`,
-          route: t.route || (idx === 0 ? '/' : `/${slugifyProjectFolderName(t.name || `sayfa-${idx + 1}`)}`),
-          elements: tabEls,
-          canvasByViewport: tabCanvasByVp,
-          canvasSettings: tabDesktopCanvas,
-        };
-      })
-    : [
-        {
-          id: 'tab-1',
-          name: 'Anasayfa.craft',
-          route: '/',
-          elements: Array.isArray(elements) ? elements : [],
-          canvasByViewport,
-          canvasSettings: canvasByViewport?.desktop || canvasSettings || { width: 1280, height: 1350, bgColor: '#ffffff' },
-        },
-      ];
+  const normalizedTabs = normalizePublishTabs({
+    tabs,
+    activeTabId,
+    elements,
+    canvasSettings,
+    canvasByViewport,
+  });
 
   const initialTab = normalizedTabs.find((t) => t.id === activeTabId) || normalizedTabs[0];
+  const initialBg = initialTab.canvasSettings?.bgColor || initialTab.canvasSettings?.backgroundColor || '#ffffff';
   const responsiveCssBlocks = [];
-  const pagesHtml = normalizedTabs.map((tab, idx) => {
+  const pagesHtml = normalizedTabs.map((tab) => {
     const seenHtmlIds = new Set();
     const deskW = Number(tab.canvasSettings?.width) || 1280;
-    const deskH = Number(tab.canvasSettings?.height) || 1350;
+    const baseDeskH = Number(tab.canvasSettings?.height) || 1350;
+    const deskH = computeResolvedStageHeight(tab.elements || [], baseDeskH);
     const deskBg = tab.canvasSettings?.bgColor || tab.canvasSettings?.backgroundColor || '#ffffff';
-    const tabSelector = `#craft-page-${slugifyProjectFolderName(tab.id || `p${idx}`)}`;
+    const tabSelector = `#${tab.domId}`;
     const flatList = flattenTree(tab.elements || []);
-    const respCss = buildStandaloneResponsiveCss(flatList, `${tabSelector} .craft-stage`, tab.canvasByViewport);
+    const toggleTargetIds = new Set();
+    flatList.forEach((n) => {
+      const ev = n?.events?.onClick;
+      if ((ev?.mode === 'toggle' || ev?.mode === 'toggle_visibility') && (ev.targetElementId || ev.targetId)) {
+        toggleTargetIds.add(ev.targetElementId || ev.targetId);
+      }
+    });
+    const respCss = buildStandaloneResponsiveCss(flatList, `${tabSelector} .craft-stage`, tab.canvasByViewport, tab.elements || []);
     if (respCss.trim()) responsiveCssBlocks.push(respCss);
 
     const nodesHtml = (tab.elements || [])
-      .map((el) => buildStandaloneNodeHtml(el, 0, { projectFunctions, tabs: normalizedTabs, seenHtmlIds }))
+      .map((el) =>
+        buildStandaloneNodeHtml(el, 0, {
+          projectFunctions,
+          tabs: normalizedTabs,
+          seenHtmlIds,
+          parentWidth: deskW,
+          toggleTargetIds,
+          hasProjectFunctions: (projectFunctions || []).length > 0,
+        })
+      )
       .join('\n');
 
     const emptyNotice = flatList.length === 0
@@ -1381,25 +2228,35 @@ export function buildStandaloneHtmlSite(input = {}) {
       : '';
 
     const activeCls = tab.id === initialTab.id ? ' is-active' : '';
-    return `  <section id="craft-page-${slugifyProjectFolderName(tab.id || `p${idx}`)}" data-route="${escapeHtmlAttr(tab.route)}" class="craft-page${activeCls}" style="background:${escapeHtmlAttr(deskBg)};min-height:100vh;">
-    <div class="craft-stage" style="position:relative;width:100%;max-width:${deskW}px;min-height:${deskH}px;margin:0 auto;background:${escapeHtmlAttr(deskBg)};overflow-x:hidden;">
+    return `  <section id="${tab.domId}" data-route="${escapeHtmlAttr(tab.route)}" class="craft-page${activeCls}" style="background:${escapeHtmlAttr(deskBg)};min-height:100vh;">
+    <div class="craft-stage" style="position:relative;width:100%;max-width:none;min-height:${deskH}px;margin:0;background:${escapeHtmlAttr(deskBg)};overflow-x:clip;">
 ${nodesHtml || emptyNotice}
     </div>
   </section>`;
   }).join('\n');
 
-  const compiledFnBlocks = (projectFunctions || [])
-    .map((fn) => {
-      const fnName = sanitizeFunctionIdentifier(fn.name);
-      if (!fnName) return '';
-      const fnBody = getEffectiveFunctionCode(fn);
-      return `window.__craftFunctions[${JSON.stringify(fnName)}] = function() {\n${fnBody}\n};`;
-    })
-    .filter(Boolean)
-    .join('\n\n');
+  const compiledFnBlocks = escapeScriptContent(
+    (projectFunctions || [])
+      .map((fn) => {
+        const fnName = sanitizeFunctionIdentifier(fn?.name);
+        if (!fnName) return '';
+        const fnBody = getEffectiveFunctionCode(fn);
+        return `window.__craftFunctions[${JSON.stringify(fnName)}] = function() {\n${fnBody}\n};`;
+      })
+      .filter(Boolean)
+      .join('\n\n')
+  );
 
-  const routeMapJson = JSON.stringify(
-    normalizedTabs.map((t) => ({ id: t.id, route: t.route, domId: `craft-page-${slugifyProjectFolderName(t.id)}` }))
+  const routeMapJson = escapeScriptContent(
+    JSON.stringify(
+      normalizedTabs.map((t) => ({
+        id: t.id,
+        route: t.route,
+        name: String(t.name || '').replace(/\.craft$/i, ''),
+        domId: t.domId,
+        bgColor: t.canvasSettings?.bgColor || t.canvasSettings?.backgroundColor || initialBg,
+      }))
+    )
   );
 
   return `<!DOCTYPE html>
@@ -1410,10 +2267,13 @@ ${nodesHtml || emptyNotice}
   <title>${escapeHtmlText(projectName)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&family=Playfair+Display:wght@500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; font-family: 'Inter', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+    html, body { width: 100%; margin: 0; padding: 0; font-family: 'Inter', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; overflow-x: clip; }
+    h1, h2, h3, h4, h5, h6, p, blockquote, figure, pre, dl, dd, ul, ol { margin: 0; padding: 0; }
+    ul, ol { list-style: none; }
+    img, svg, video, canvas { display: block; max-width: 100%; }
     .craft-page { display: none; width: 100%; }
     .craft-page.is-active { display: block; }
     .craft-toast {
@@ -1424,6 +2284,25 @@ ${nodesHtml || emptyNotice}
       transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease;
     }
     .craft-toast.is-open { opacity: 1; transform: translateY(0); }
+
+    @keyframes studioFadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes studioSlideUp { from { opacity: 0; transform: translateY(32px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes studioSlideDown { from { opacity: 0; transform: translateY(-32px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes studioSlideLeft { from { opacity: 0; transform: translateX(36px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes studioSlideRight { from { opacity: 0; transform: translateX(-36px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes studioZoomIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+    @keyframes studioBounceIn { 0% { opacity: 0; transform: scale(0.3); } 50% { opacity: 0.9; transform: scale(1.05); } 100% { opacity: 1; transform: scale(1); } }
+    @keyframes studioFloatSlow { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+    @keyframes studioPulseGlow { 0%, 100% { opacity: 1; filter: drop-shadow(0 0 2px rgba(59, 130, 246, 0.3)); } 50% { opacity: 0.85; filter: drop-shadow(0 0 16px rgba(59, 130, 246, 0.75)); } }
+    .animate-fade-in { animation: studioFadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .animate-slide-up { animation: studioSlideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .animate-slide-down { animation: studioSlideDown 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .animate-slide-left { animation: studioSlideLeft 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .animate-slide-right { animation: studioSlideRight 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .animate-zoom-in { animation: studioZoomIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .animate-bounce-in { animation: studioBounceIn 0.7s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+    .animate-float { animation: studioFloatSlow 3.2s ease-in-out infinite; }
+    .animate-pulse-glow { animation: studioPulseGlow 2.5s ease-in-out infinite; }
 
     .hover-underline-center, .hover-underline-left, .hover-underline-right, .hover-underline-slide, .hover-text-fill-bar { position: relative; }
     .hover-underline-center::after, .hover-underline-left::after, .hover-underline-right::after, .hover-underline-slide::after, .hover-text-fill-bar::after {
@@ -1441,19 +2320,26 @@ ${nodesHtml || emptyNotice}
     .hover-text-fill-bar::after { bottom: -1px; opacity: 0.2; transform: scaleX(1); }
     .hover-text-fill-bar:hover::after { height: 6px; opacity: 0.45; }
     .hover-text-fill-bar:hover { transform: translateY(-2px); }
-    .hover-lift { transition: transform 0.22s ease, box-shadow 0.22s ease; }
+    .hover-lift, .hover\\:-translate-y-1 { transition: transform 0.22s ease, box-shadow 0.22s ease; }
     .hover-lift:hover { transform: translateY(-3px); }
+    .hover\\:-translate-y-1:hover { transform: translateY(-4px); }
+    .hover\\:scale-105 { transition: transform 0.22s ease; }
+    .hover\\:scale-105:hover { transform: scale(1.05); }
+    .hover\\:rotate-1 { transition: transform 0.22s ease; }
+    .hover\\:rotate-1:hover { transform: rotate(2deg); }
+    .hover\\:shadow-lg:hover { box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32) !important; }
     .hover-glow { transition: box-shadow 0.22s ease, filter 0.22s ease; }
     .hover-glow:hover { filter: brightness(1.08); box-shadow: 0 0 18px rgba(59,130,246,0.35); }
+    .transition-transform { transition: transform 0.2s ease; }
+    .transition-shadow { transition: box-shadow 0.2s ease; }
+    .duration-200 { transition-duration: 0.2s; }
     .is-slide-hidden { display: none !important; }
     [data-craft-slider-dot] { transition: transform 0.2s ease, opacity 0.2s ease, background-color 0.2s ease; opacity: 0.45; }
     [data-craft-slider-dot].is-active-dot { opacity: 1 !important; transform: scale(1.22); }
-    @media (max-width: 1023px) { .craft-stage { max-width: 768px !important; } }
-    @media (max-width: 639px) { .craft-stage { max-width: 375px !important; } }
     ${responsiveCssBlocks.join('\n    ')}
   </style>
 </head>
-<body>
+<body style="margin:0;padding:0;background:${escapeHtmlAttr(initialBg)};">
 ${pagesHtml}
   <div id="craft-toast" class="craft-toast"></div>
   <script>
@@ -1526,8 +2412,18 @@ ${pagesHtml}
       }
       var alert = notify;
       function goToPage(routeOrTabId) {
-        var norm = String(routeOrTabId || '/');
-        var found = routes.find(function(r) { return r.route === norm || r.id === norm; });
+        var norm = String(routeOrTabId || '/').trim();
+        var normLower = norm.toLowerCase();
+        var strippedLower = normLower.replace(/^\\//, '').replace(/\\.craft$/i, '');
+        var found = routes.find(function(r) {
+          return (
+            r.route === norm ||
+            r.id === norm ||
+            String(r.route || '').toLowerCase() === normLower ||
+            String(r.name || '').toLowerCase() === normLower ||
+            String(r.name || '').toLowerCase() === strippedLower
+          );
+        });
         if (!found) {
           notify('Sayfa bulunamadı: ' + norm);
           return;
@@ -1535,7 +2431,13 @@ ${pagesHtml}
         document.querySelectorAll('.craft-page').forEach(function(sec) {
           sec.classList.toggle('is-active', sec.id === found.domId);
         });
+        if (found.bgColor) document.body.style.background = found.bgColor;
         window.scrollTo({ top: 0, behavior: 'smooth' });
+        try {
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: 'craft-active-page', route: found.route, id: found.id, name: found.name }, '*');
+          }
+        } catch (err) {}
       }
       function switchSlider(targetRef, action, gotoIdx) {
         var root = findEl(targetRef);
@@ -1557,11 +2459,14 @@ ${pagesHtml}
           dotEl.classList.toggle('is-active-dot', dIdx === next);
         });
       }
+      function toggleAccordion(targetRef) {
+${buildAccordionToggleBody('findEl')}
+      }
 
       ${compiledFnBlocks}
 
       document.addEventListener('click', function(e) {
-        var target = e.target && e.target.closest ? e.target.closest('[data-craft-fn],[data-craft-nav],[data-craft-url],[data-craft-alert],[data-craft-toggle],[data-craft-scroll],[data-craft-set-text-target],[data-craft-slider-action]') : null;
+        var target = e.target && e.target.closest ? e.target.closest('[data-craft-fn],[data-craft-nav],[data-craft-url],[data-craft-alert],[data-craft-toggle],[data-craft-scroll],[data-craft-set-text-target],[data-craft-slider-action],[data-craft-accordion-toggle]') : null;
         if (!target) return;
         var fnName = target.getAttribute('data-craft-fn');
         if (fnName) {
@@ -1570,6 +2475,12 @@ ${pagesHtml}
           if (typeof fn === 'function') {
             try { fn(); } catch (err) { notify('Fonksiyon hatası (' + fnName + '): ' + err.message); }
           }
+          return;
+        }
+        var accordionTarget = target.getAttribute('data-craft-accordion-toggle');
+        if (accordionTarget) {
+          e.preventDefault();
+          toggleAccordion(accordionTarget);
           return;
         }
         var sliderAction = target.getAttribute('data-craft-slider-action');
@@ -1619,6 +2530,12 @@ ${pagesHtml}
         if (toggleId) {
           e.preventDefault();
           toggleVisible(toggleId);
+        }
+      });
+
+      window.addEventListener('message', function(evt) {
+        if (evt && evt.data && evt.data.type === 'craft-goto-page' && evt.data.target) {
+          goToPage(evt.data.target);
         }
       });
     })();

@@ -48,6 +48,21 @@ function createWindow() {
     console.log(`[Renderer ${level}] ${message} (${sourceId}:${line})`);
   });
 
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'question',
+      buttons: ['Kaydetmeden Çık', 'İptal'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Kaydedilmemiş Değişiklikler',
+      message: 'Projede kaydedilmemiş değişiklikler var. Yine de çıkmak istiyor musunuz?',
+      detail: 'Değişiklikleriniz yerel otomatik taslak olarak korunmaktadır.',
+    });
+    if (choice === 0) {
+      event.preventDefault();
+    }
+  });
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     mainWindow.focus();
@@ -119,11 +134,19 @@ ipcMain.handle('select-export-directory', async (event, defaultPath) => {
   return { canceled: false, directoryPath: result.filePaths[0] };
 });
 
+function resolveExportBaseDir(requestedDir) {
+  const trimmed = typeof requestedDir === 'string' ? requestedDir.trim() : '';
+  if (trimmed) return path.resolve(trimmed);
+  try {
+    return app.getPath('desktop');
+  } catch {
+    return app.getPath('home');
+  }
+}
+
 ipcMain.handle('check-export-target', async (event, payload = {}) => {
   try {
-    const baseDir = payload.targetBaseDir && fs.existsSync(payload.targetBaseDir)
-      ? payload.targetBaseDir
-      : app.getPath('desktop');
+    const baseDir = resolveExportBaseDir(payload.targetBaseDir);
     const folderSlug = sanitizeExportSlug(payload.folderName || 'yayinlanan-react-site');
     const targetPath = path.join(baseDir, folderSlug);
     const exists = fs.existsSync(targetPath);
@@ -147,15 +170,32 @@ ipcMain.handle('check-export-target', async (event, payload = {}) => {
 // IPC Handler: Export Complete Modular React Project + Live Standalone Build to user-specified directory!
 ipcMain.handle('export-to-desktop', async (event, project = {}) => {
   try {
-    const requestedBaseDir = project.targetBaseDir && fs.existsSync(project.targetBaseDir)
-      ? project.targetBaseDir
-      : app.getPath('desktop');
+    const requestedBaseDir = resolveExportBaseDir(project.targetBaseDir);
     const folderSlug = sanitizeExportSlug(project.folderName || project.title || 'yayinlanan-react-site');
     const targetPath = path.join(requestedBaseDir, folderSlug);
 
-    // Create directories
-    fs.mkdirSync(path.join(targetPath, 'src/components'), { recursive: true });
-    fs.mkdirSync(path.join(targetPath, 'public'), { recursive: true });
+    const hasReactSource = Boolean(project.files?.appCode) && project.mode !== 'html';
+    const isStandaloneOnly = !hasReactSource;
+    const standaloneHtml = project.standaloneHtml || project.files?.standaloneHtml || '';
+
+    if (isStandaloneOnly) {
+      fs.mkdirSync(targetPath, { recursive: true });
+      ['package.json', 'vite.config.js', 'vite.config.mjs', 'live-preview.html'].forEach((staleFile) => {
+        const stalePath = path.join(targetPath, staleFile);
+        if (fs.existsSync(stalePath)) {
+          try { fs.unlinkSync(stalePath); } catch {}
+        }
+      });
+      ['src', 'public', 'dist'].forEach((staleDir) => {
+        const staleDirPath = path.join(targetPath, staleDir);
+        if (fs.existsSync(staleDirPath)) {
+          try { fs.rmSync(staleDirPath, { recursive: true, force: true }); } catch {}
+        }
+      });
+    } else {
+      fs.mkdirSync(path.join(targetPath, 'public'), { recursive: true });
+      fs.mkdirSync(path.join(targetPath, 'src/components'), { recursive: true });
+    }
 
     const writtenFiles = [];
     const writeTrackedFile = (relPath, content) => {
@@ -170,8 +210,11 @@ ipcMain.handle('export-to-desktop', async (event, project = {}) => {
       });
     };
 
-    // Write modular React files
-    if (project.files) {
+    if (isStandaloneOnly) {
+      if (standaloneHtml) {
+        writeTrackedFile('index.html', standaloneHtml);
+      }
+    } else if (project.files) {
       writeTrackedFile('package.json', project.files.packageJson);
       writeTrackedFile('vite.config.js', project.files.viteConfig);
       writeTrackedFile('index.html', project.files.indexHtml);
@@ -185,13 +228,20 @@ ipcMain.handle('export-to-desktop', async (event, project = {}) => {
         writeTrackedFile('src/components/ProductCard.jsx', project.files.productCardCode);
         writeTrackedFile('src/components/ProductsSection.jsx', project.files.productsSectionCode);
         writeTrackedFile('src/components/Footer.jsx', project.files.footerCode);
+      } else {
+        // Avoid leaving stale template components behind when switching to 1:1 custom mode
+        ['Navbar.jsx', 'HeroSection.jsx', 'ProductCard.jsx', 'ProductsSection.jsx', 'Footer.jsx'].forEach((staleFile) => {
+          const stalePath = path.join(targetPath, 'src/components', staleFile);
+          if (fs.existsSync(stalePath)) {
+            try { fs.unlinkSync(stalePath); } catch {}
+          }
+        });
       }
 
       if (project.files.customElementsCode) {
         writeTrackedFile('src/components/CustomElementsSection.jsx', project.files.customElementsCode);
       }
 
-      const standaloneHtml = project.standaloneHtml || project.files.standaloneHtml;
       if (standaloneHtml) {
         writeTrackedFile('live-preview.html', standaloneHtml);
         writeTrackedFile('public/live-preview.html', standaloneHtml);
@@ -215,13 +265,14 @@ ipcMain.handle('export-to-desktop', async (event, project = {}) => {
     });
     writeTrackedFile('craft.project.json', JSON.stringify(craftProjectData, null, 2));
 
+    const hasReactProject = !isStandaloneOnly && Boolean(project.files?.packageJson);
     const readme = `# ${project.title || 'CraftStudio Web Projesi'}
 
 Bu web sitesi **CraftStudio** ile görsel olarak tasarlandı ve yayınlandı.
 
 ## 1. Anında Canlı Görüntüleme (Kurulumsuz)
-\`live-preview.html\` dosyasını doğrudan tarayıcıda açabilir veya CraftStudio'daki **"Tarayıcıda Canlı Aç"** butonunu kullanabilirsiniz.
-
+\`${isStandaloneOnly ? 'index.html' : 'live-preview.html'}\` dosyasına çift tıklayıp doğrudan tarayıcınızda açabilir veya CraftStudio'daki **"Tarayıcıda Canlı Aç"** butonunu kullanabilirsiniz.
+${hasReactProject ? `
 ## 2. React Geliştirme Ortamı (Vite + Tailwind CSS)
 \`\`\`bash
 cd "${targetPath}"
@@ -230,20 +281,25 @@ npm run dev
 \`\`\`
 
 Tarayıcınızda açılan adrese gidin (varsayılan: http://localhost:5173).
-`;
+` : ''}`;
     writeTrackedFile('README.md', readme);
 
     if (project.openFolderAfter !== false) {
       shell.openPath(targetPath);
     }
 
+    const resolvedEntryPath = isStandaloneOnly && fs.existsSync(path.join(targetPath, 'index.html'))
+      ? path.join(targetPath, 'index.html')
+      : fs.existsSync(path.join(targetPath, 'live-preview.html'))
+        ? path.join(targetPath, 'live-preview.html')
+        : null;
+
     return {
       success: true,
       folderPath: targetPath,
       folderSlug,
-      liveHtmlPath: fs.existsSync(path.join(targetPath, 'live-preview.html'))
-        ? path.join(targetPath, 'live-preview.html')
-        : null,
+      mode: isStandaloneOnly ? 'html' : 'react',
+      liveHtmlPath: resolvedEntryPath,
       writtenFiles,
       craftProjectData,
     };
@@ -300,14 +356,31 @@ ipcMain.handle('launch-live-server', async (event, payload = {}) => {
       livePreviewState.targetDir = payload.targetDir;
     }
 
-    if (!livePreviewState.server) {
-      livePreviewState.server = http.createServer((req, res) => {
+    const noCacheHeaders = {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      Pragma: 'no-cache',
+    };
+
+    if (!livePreviewState.server || !livePreviewState.server.listening || !livePreviewState.port) {
+      if (livePreviewState.server) {
+        try { livePreviewState.server.close(); } catch {}
+        livePreviewState.server = null;
+        livePreviewState.port = null;
+      }
+
+      const srv = http.createServer((req, res) => {
         try {
           const rawUrl = (req.url || '/').split('?')[0];
-          const relReq = decodeURIComponent(rawUrl === '/' ? '/live-preview.html' : rawUrl);
+          if (rawUrl === '/favicon.ico') {
+            res.writeHead(204);
+            res.end();
+            return;
+          }
+          const relReq = decodeURIComponent(rawUrl === '/' ? '/index.html' : rawUrl);
 
-          if ((rawUrl === '/' || rawUrl === '/live-preview.html') && livePreviewState.htmlContent) {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+          if ((rawUrl === '/' || rawUrl === '/index.html' || rawUrl === '/live-preview.html') && livePreviewState.htmlContent) {
+            res.writeHead(200, noCacheHeaders);
             res.end(livePreviewState.htmlContent);
             return;
           }
@@ -317,14 +390,18 @@ ipcMain.handle('launch-live-server', async (event, payload = {}) => {
             const resolved = path.resolve(safeRoot, relReq.replace(/^\/+/, ''));
             if (resolved.startsWith(safeRoot + path.sep) && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
               const ext = path.extname(resolved).toLowerCase();
-              res.writeHead(200, { 'Content-Type': getMimeTypeForExt(ext), 'Cache-Control': 'no-store' });
+              res.writeHead(200, {
+                'Content-Type': getMimeTypeForExt(ext),
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                Pragma: 'no-cache',
+              });
               fs.createReadStream(resolved).pipe(res);
               return;
             }
           }
 
           if (livePreviewState.htmlContent) {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+            res.writeHead(200, noCacheHeaders);
             res.end(livePreviewState.htmlContent);
             return;
           }
@@ -337,22 +414,36 @@ ipcMain.handle('launch-live-server', async (event, payload = {}) => {
         }
       });
 
+      srv.on('close', () => {
+        if (livePreviewState.server === srv) {
+          livePreviewState.server = null;
+          livePreviewState.port = null;
+        }
+      });
+
       await new Promise((resolve, reject) => {
-        livePreviewState.server.once('error', reject);
-        livePreviewState.server.listen(0, '127.0.0.1', () => {
-          const addr = livePreviewState.server.address();
+        srv.once('error', reject);
+        srv.listen(0, '127.0.0.1', () => {
+          srv.removeListener('error', reject);
+          const addr = srv.address();
+          livePreviewState.server = srv;
           livePreviewState.port = addr && typeof addr === 'object' ? addr.port : null;
-          livePreviewState.server.unref();
+          srv.unref();
           resolve();
         });
       });
     }
 
     const url = `http://127.0.0.1:${livePreviewState.port}/`;
+    let openWarning = null;
     if (payload.openInBrowser !== false) {
-      await shell.openExternal(url);
+      try {
+        await shell.openExternal(url);
+      } catch (openErr) {
+        openWarning = openErr?.message || 'Varsayılan tarayıcı açılamadı';
+      }
     }
-    return { success: true, url, port: livePreviewState.port };
+    return { success: true, url, port: livePreviewState.port, openWarning };
   } catch (error) {
     console.error('Live server error:', error);
     return { success: false, error: error.message };
@@ -380,24 +471,56 @@ ipcMain.handle('open-external-url', async (event, targetUrl) => {
   return { success: false, error: 'Geçersiz URL' };
 });
 
+function normalizeCraftProjectFilePath(targetPath = '') {
+  const cleaned = String(targetPath || '').trim();
+  if (!cleaned) return '';
+  return /\.(craft\.json|craft|json)$/i.test(cleaned) ? cleaned : `${cleaned}.craft.json`;
+}
+
+async function promptSaveCraftProjectDialog(payload = {}) {
+  const safeName = String(payload.defaultFileName || 'proje.craft.json').replace(/[/\\?%*:|"<>]/g, '-');
+  const defaultDir = payload.filePath ? path.dirname(payload.filePath) : app.getPath('desktop');
+  const defaultFile = normalizeCraftProjectFilePath(safeName);
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: payload.saveAs ? 'Projeyi Farklı Kaydet (.craft.json)' : 'Projeyi Kaydet (.craft.json)',
+    defaultPath: path.join(defaultDir, defaultFile),
+    filters: [
+      { name: 'CraftStudio Projesi (*.craft.json, *.craft)', extensions: ['json', 'craft'] },
+      { name: 'Tüm Dosyalar', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+  const normalizedPath = normalizeCraftProjectFilePath(result.filePath);
+  return {
+    canceled: false,
+    filePath: normalizedPath,
+    fileName: path.basename(normalizedPath),
+    name: path.basename(normalizedPath).replace(/\.(craft\.json|craft|json)$/i, '') || 'CraftStudio Projesi',
+  };
+}
+
+// IPC Handler: Prompt native Save Project dialog (.craft.json / .craft)
+ipcMain.handle('save-project-dialog', async (event, payload = {}) => {
+  try {
+    return await promptSaveCraftProjectDialog(payload);
+  } catch (error) {
+    console.error('Save project dialog error:', error);
+    return { canceled: true, error: error.message };
+  }
+});
+
 // IPC Handler: Save native .craft.json project file (supports Save & Save As)
 ipcMain.handle('save-project-file', async (event, payload = {}) => {
   try {
-    let targetPath = payload.filePath || null;
+    let targetPath = payload.filePath ? normalizeCraftProjectFilePath(payload.filePath) : null;
     if (!targetPath || payload.saveAs) {
-      const safeName = String(payload.defaultFileName || 'proje.craft.json').replace(/[/\\?%*:|"<>]/g, '-');
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: payload.saveAs ? 'Projeyi Farklı Kaydet (.craft.json)' : 'Projeyi Kaydet (.craft.json)',
-        defaultPath: path.join(app.getPath('desktop'), safeName),
-        filters: [
-          { name: 'CraftStudio Projesi (*.craft.json)', extensions: ['craft.json', 'json'] },
-          { name: 'Tüm Dosyalar', extensions: ['*'] },
-        ],
-      });
-      if (result.canceled || !result.filePath) {
+      const promptRes = await promptSaveCraftProjectDialog(payload);
+      if (promptRes.canceled || !promptRes.filePath) {
         return { canceled: true };
       }
-      targetPath = result.filePath;
+      targetPath = promptRes.filePath;
     }
 
     const rawText = typeof payload.content === 'string'
@@ -405,7 +528,7 @@ ipcMain.handle('save-project-file', async (event, payload = {}) => {
       : JSON.stringify(payload.content || {}, null, 2);
     fs.writeFileSync(targetPath, rawText, 'utf8');
 
-    const baseName = path.basename(targetPath).replace(/\.craft\.json$|\.json$/i, '');
+    const baseName = path.basename(targetPath).replace(/\.(craft\.json|craft|json)$/i, '');
     return {
       success: true,
       filePath: targetPath,
@@ -418,14 +541,16 @@ ipcMain.handle('save-project-file', async (event, payload = {}) => {
   }
 });
 
-// IPC Handler: Open native .craft.json project file via File Dialog
+// IPC Handler: Open native website code (.html, .jsx, .tsx) or .craft.json file via File Dialog
 ipcMain.handle('open-project-file-dialog', async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Proje Dosyası Aç (.craft.json)',
+      title: 'Web Sitesi veya Proje Dosyası Aç (.html, .jsx, .craft.json)',
       properties: ['openFile'],
       filters: [
-        { name: 'CraftStudio Projesi (*.craft.json, *.json)', extensions: ['craft.json', 'craft', 'json'] },
+        { name: 'Web & CraftStudio Dosyaları (*.html, *.jsx, *.tsx, *.craft.json)', extensions: ['html', 'htm', 'jsx', 'tsx', 'json', 'craft'] },
+        { name: 'HTML / React Web Sayfaları (*.html, *.htm, *.jsx, *.tsx)', extensions: ['html', 'htm', 'jsx', 'tsx'] },
+        { name: 'CraftStudio Projesi (*.craft.json, *.craft, *.json)', extensions: ['json', 'craft'] },
         { name: 'Tüm Dosyalar', extensions: ['*'] },
       ],
     });

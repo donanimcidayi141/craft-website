@@ -8,7 +8,7 @@ import {
   AlignStartVertical, AlignEndVertical, AlignStartHorizontal, AlignEndHorizontal,
   BoxSelect, Box, Group, Ungroup, Plus, Search, Code2, Eye, EyeOff, Tag as TagIcon,
   Check, ChevronDown, ChevronRight, CheckSquare, Square, Paintbrush, RefreshCw, Monitor, Tablet, Smartphone,
-  Zap, Play, Wand2, Info, AlertTriangle, ExternalLink
+  Zap, Play, Wand2, Info, AlertTriangle, ExternalLink, LayoutGrid
 } from 'lucide-react';
 import { 
   ALL_HTML_TAGS, TAG_INFO, isVoidTag, COMMON_ATTRIBUTES_PER_TAG, 
@@ -24,7 +24,43 @@ import { sanitizeFunctionIdentifier } from '../utils/interactionEngine';
 import { COLOR_PALETTES, ANIMATION_PRESETS, HOVER_PRESETS, TEXT_SHADOW_PRESETS } from '../constants';
 import TagPickerModal from './TagPickerModal';
 import SearchableOptionCombobox from './SearchableOptionCombobox';
+import BlockCustomizer from './BlockCustomizer';
+import { findOwningBlock } from '../utils/blockCustomizerUtils';
 import { toCamelCaseCss, toKebabCaseCss } from '../utils/propertySearch';
+
+/**
+ * Collapsible inspector section so advanced controls stay calm and scannable.
+ */
+function InspectorSection({ title, icon: Icon = null, badge = null, defaultOpen = true, children }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-[#18181b] rounded border border-[#27272d] overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setIsOpen((v) => !v)}
+        className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] transition-colors"
+      >
+        <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5 min-w-0 truncate">
+          {Icon && <Icon size={12} className="text-[#0d99ff] shrink-0" />}
+          <span className="truncate">{title}</span>
+        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {badge && (
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#101013] border border-[#27272d] text-zinc-400 font-mono">
+              {badge}
+            </span>
+          )}
+          {isOpen ? <ChevronDown size={12} className="text-zinc-500" /> : <ChevronRight size={12} className="text-zinc-500" />}
+        </div>
+      </button>
+      {isOpen && (
+        <div className="px-3 pb-3 pt-1.5 border-t border-[#27272d]/80 space-y-2.5">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 🌟 BACKGROUND & GRADIENT PICKER COMPONENT
 function BackgroundGradientPicker({ value = '#ffffff', onChange, label = 'Arka Plan' }) {
@@ -472,6 +508,7 @@ export default function PropertiesPanel({
   onSelectElement = null,
   onUpdateElement,
   onUpdateElementDirect,
+  onUpdateResolvedElements = null,
   onUpdateMultipleElements,
   onDeleteSelected,
   onDuplicateSelected,
@@ -1046,22 +1083,33 @@ export default function PropertiesPanel({
     return acc;
   }, {});
 
+  const blockContext = findOwningBlock(elements, el.id);
+  const effectiveTab = activePanelTab === 'block' && !blockContext ? 'style' : activePanelTab;
+
   return (
     <div className="w-full min-w-0 bg-[#141417] flex flex-col h-full text-xs text-zinc-300 select-none">
       
-      {/* 1. Header with Tag Badge & Top Actions */}
-      <div className="px-3 py-2.5 border-b border-[#27272d] bg-[#18181b] flex flex-col gap-2">
-        <div className="flex items-center justify-between">
+      {/* 1. Calm Header with Tag Badge, Quick Name & Actions */}
+      <div className="px-3 py-2 border-b border-[#27272d] bg-[#18181b] flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-1.5">
           {/* Tag Selector Button */}
           <button
             onClick={() => setShowTagModal(true)}
             title="HTML Tag'ini Değiştir"
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#101013] hover:bg-[#222228] border border-[#2c2c32] hover:border-[#0d99ff]/50 text-[#38bdf8] transition-all group font-mono text-xs"
+            className="flex items-center gap-1 px-2 py-1 rounded bg-[#101013] hover:bg-[#222228] border border-[#2c2c32] hover:border-[#0d99ff]/50 text-[#38bdf8] transition-all group font-mono text-[11px] shrink-0"
           >
-            <TagIcon size={12} className="text-[#0d99ff] group-hover:rotate-12 transition-transform" />
+            <TagIcon size={11} className="text-[#0d99ff]" />
             <span className="font-bold">&lt;{currentTag}&gt;</span>
-            <ChevronDown size={12} className="opacity-60 group-hover:opacity-100" />
+            <ChevronDown size={11} className="opacity-60 group-hover:opacity-100" />
           </button>
+
+          <input
+            type="text"
+            value={el.name || ''}
+            onChange={(e) => onUpdateElement({ name: e.target.value })}
+            placeholder="Öğe adı..."
+            className="flex-1 min-w-0 bg-[#101013] border border-[#27272d] focus:border-[#0d99ff] rounded px-2 py-1 text-[11px] text-zinc-100 focus:outline-none truncate"
+          />
 
           <div className="flex items-center gap-1">
             {onOpenAttributesInspector && (
@@ -1069,10 +1117,9 @@ export default function PropertiesPanel({
                 type="button"
                 onClick={onOpenAttributesInspector}
                 title="Öznitelikler & CSS'i Ayrı Geniş Pencerede Aç"
-                className="px-2 py-1 rounded bg-[#0d99ff]/15 hover:bg-[#0d99ff]/25 text-[#38bdf8] border border-[#0d99ff]/35 font-semibold text-[10px] flex items-center gap-1 transition-colors"
+                className="p-1 rounded bg-[#0d99ff]/15 hover:bg-[#0d99ff]/25 text-[#38bdf8] border border-[#0d99ff]/35 transition-colors shrink-0"
               >
-                <ExternalLink size={10} />
-                <span>Pencerede Aç</span>
+                <ExternalLink size={12} />
               </button>
             )}
             <button
@@ -1226,18 +1273,6 @@ export default function PropertiesPanel({
           </button>
         </div>
 
-        {/* Element Name Input */}
-        <div className="flex items-center gap-2 bg-[#101013] px-2 py-1 rounded border border-[#2c2c32] focus-within:border-[#0d99ff]">
-          <span className="text-[10px] text-zinc-500">Ad:</span>
-          <input
-            type="text"
-            value={el.name || ''}
-            onChange={(e) => onUpdateElement({ name: e.target.value })}
-            className="w-full bg-transparent text-zinc-100 text-xs focus:outline-none"
-            placeholder="Öğe Adı..."
-          />
-        </div>
-
         {/* Active Slider Slide Switcher (Editor Mode Authoring Control) */}
         {activeSliderOwner && (
           <div className="bg-[#101013] border border-[#2c2c32] rounded px-2 py-1.5 flex items-center justify-between gap-2">
@@ -1274,39 +1309,59 @@ export default function PropertiesPanel({
         )}
       </div>
 
-      {/* 2. Top Navigation Tabs: Stil, Düzen, Nitelik, CSS, Kod */}
+      {/* 2. Top Navigation Tabs: Blok, Stil, Düzen, Nitelik, CSS, Kod */}
       <div className="flex border-b border-[#27272d] bg-[#18181b] shrink-0 overflow-x-auto no-scrollbar">
         {[
+          ...(blockContext
+            ? [{
+                id: 'block',
+                label: 'Blok',
+                icon: LayoutGrid,
+                activeCls: 'text-[#38bdf8] border-[#0d99ff] bg-[#141417]',
+                hasDot: true,
+                dotCls: 'bg-emerald-400',
+                title: `${blockContext.blockNode?.name || 'Bileşen'} Hızlı Özelleştir`,
+              }]
+            : []),
           { id: 'style', label: 'Stil', icon: Sliders, activeCls: 'text-zinc-100 border-[#0d99ff] bg-[#141417]', hasDot: false, title: 'Stil & Tipografi' },
           { id: 'layout', label: 'Düzen', icon: Box, activeCls: 'text-zinc-100 border-[#0d99ff] bg-[#141417]', hasDot: false, title: 'Konum, Boyut & Flexbox' },
           { id: 'props', label: 'Nitelik', icon: TagIcon, activeCls: 'text-[#38bdf8] border-[#0d99ff] bg-[#141417]', hasDot: Object.keys(currentAttrs).length > 0 || (el.events?.onClick?.mode && el.events.onClick.mode !== 'none'), dotCls: 'bg-[#0d99ff]', title: `Nitelikler (${Object.keys(currentAttrs).length})` },
           { id: 'css', label: 'CSS', icon: Sparkles, activeCls: 'text-[#38bdf8] border-[#0d99ff] bg-[#141417]', hasDot: Object.keys(currentStyle).length > 0, dotCls: 'bg-[#0d99ff]', title: `Özel CSS (${Object.keys(currentStyle).length})` },
           { id: 'code', label: 'Kod', icon: Code2, activeCls: 'text-zinc-100 border-[#0d99ff] bg-[#141417]', hasDot: false, title: 'Canlı HTML & CSS Kodu' },
         ].map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activePanelTab === tab.id;
+          const isActive = effectiveTab === tab.id;
           return (
             <button
               key={tab.id}
               type="button"
               onClick={() => setActivePanelTab(tab.id)}
               title={tab.title}
-              className={`flex-1 min-w-0 py-2.5 px-1 text-[11px] font-semibold flex items-center justify-center gap-1 transition-all border-b-2 whitespace-nowrap ${
+              className={`flex-1 min-w-[44px] py-2.5 px-1.5 text-[11px] font-semibold flex items-center justify-center gap-1 transition-all border-b-2 whitespace-nowrap ${
                 isActive
                   ? tab.activeCls
                   : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-[#222228]'
               }`}
             >
-              <Icon size={12} className="shrink-0" />
-              <span className="truncate">{tab.label}</span>
+              <span>{tab.label}</span>
               {tab.hasDot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tab.dotCls}`} aria-hidden="true" />}
             </button>
           );
         })}
       </div>
 
+      {/* 3.0 TAB: BLOCK CUSTOMIZER (CONTEXTUAL NAVBAR / FOOTER / SLIDER / SECTION EDITOR) */}
+      {effectiveTab === 'block' && blockContext && (
+        <BlockCustomizer
+          elements={elements}
+          selectedElement={el}
+          onSelectElement={onSelectElement}
+          onUpdateElementDirect={onUpdateElementDirect}
+          onUpdateResolvedElements={onUpdateResolvedElements}
+        />
+      )}
+
       {/* 3.1 TAB: PROPS (NİTELİKLER & ÖZELLİKLER) */}
-      {activePanelTab === 'props' && (
+      {effectiveTab === 'props' && (
         <div className="p-3.5 space-y-4 overflow-y-auto flex-1">
           {/* 🌟 PROMINENT WINDOW LAUNCHER BANNER */}
           {onOpenAttributesInspector && (
@@ -1510,6 +1565,7 @@ export default function PropertiesPanel({
                 <option value="navigate_url">Dış Bağlantıya Git (URL)</option>
                 <option value="scroll_to">Sayfadaki Öğeye Kaydır (#id)</option>
                 <option value="toggle_visibility">Öğeyi Göster / Gizle</option>
+                <option value="accordion_toggle">Akordiyon Aç / Kapa</option>
                 <option value="set_text">Başka Öğenin Metnini Değiştir</option>
                 <option value="slider_prev">Slider: Önceki Slayt</option>
                 <option value="slider_next">Slider: Sonraki Slayt</option>
@@ -1633,6 +1689,7 @@ export default function PropertiesPanel({
 
             {(clickEvent.mode === 'scroll_to' ||
               clickEvent.mode === 'toggle_visibility' ||
+              clickEvent.mode === 'accordion_toggle' ||
               clickEvent.mode === 'set_text' ||
               clickEvent.mode === 'slider_prev' ||
               clickEvent.mode === 'slider_next' ||
@@ -1692,7 +1749,7 @@ export default function PropertiesPanel({
       )}
 
       {/* 3.2 TAB: LAYOUT (DÜZEN & BOYUT & FLEXBOX) */}
-      {activePanelTab === 'layout' && (
+      {effectiveTab === 'layout' && (
         <div className="p-3.5 space-y-4 overflow-y-auto flex-1">
           {/* Quick Alignment Bar */}
           <div className="bg-[#18181b] p-3 rounded border border-[#27272d] space-y-2">
@@ -1816,11 +1873,12 @@ export default function PropertiesPanel({
             </div>
           </div>
 
-          {/* Flexbox & Düzen Modu */}
-          <div className="bg-[#18181b] p-3 rounded border border-[#27272d] space-y-3">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">
-              Flexbox & Düzen Sistemi
-            </span>
+          {/* Flexbox & Düzen Modu (Gelişmiş - Varsayılan Kapalı) */}
+          <InspectorSection
+            title="Flexbox & Düzen Sistemi"
+            badge={currentStyle.display || 'flex'}
+            defaultOpen={false}
+          >
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <span className="text-[9px] text-zinc-500 block mb-1">Display</span>
@@ -1892,13 +1950,14 @@ export default function PropertiesPanel({
                 className="flex-1 min-w-0 bg-transparent text-zinc-100 font-mono text-xs focus:outline-none text-right"
               />
             </div>
-          </div>
+          </InspectorSection>
 
-          {/* Boşluklar (Padding & Margin) */}
-          <div className="bg-[#18181b] p-3 rounded border border-[#27272d] space-y-3">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">
-              İç / Dış Boşluklar
-            </span>
+          {/* Boşluklar (Padding & Margin - Varsayılan Kapalı) */}
+          <InspectorSection
+            title="İç / Dış Boşluklar"
+            badge={(currentStyle.padding || currentStyle.margin) ? 'aktif' : null}
+            defaultOpen={false}
+          >
             <div className="grid grid-cols-2 gap-2">
               <div className="min-w-0 bg-[#101013] px-2 py-1.5 rounded border border-[#2c2c32] focus-within:border-[#0d99ff] flex items-center gap-1.5">
                 <span className="text-[10px] text-zinc-400 shrink-0">Padding</span>
@@ -1923,25 +1982,19 @@ export default function PropertiesPanel({
                 />
               </div>
             </div>
-          </div>
+          </InspectorSection>
         </div>
       )}
 
       {/* 3.3 TAB: STYLE (STİL & TASARIM) */}
-      {activePanelTab === 'style' && (
-        <div className="p-3.5 space-y-4 overflow-y-auto flex-1">
-          {/* SECTION C: STİL (CSS STYLES) */}
-          <div className="bg-[#18181b] p-3 rounded border border-[#27272d] space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Palette size={12} className="text-[#0d99ff]" />
-                <span>Stil (CSS Styles)</span>
-              </label>
-              <span className="text-[9px] text-zinc-500 font-mono">
-                CSS inline
-              </span>
-            </div>
-
+      {effectiveTab === 'style' && (
+        <div className="p-3 space-y-3 overflow-y-auto flex-1">
+          <InspectorSection
+            title="Dolgu, Gradyan & Opaklık"
+            icon={Palette}
+            badge={`${el.opacity ?? 100}%`}
+            defaultOpen={true}
+          >
             {/* Opacity slider */}
             <div className="pb-2 border-b border-[#27272d]">
               <div className="flex items-center justify-between mb-1">
@@ -1958,33 +2011,6 @@ export default function PropertiesPanel({
               />
             </div>
 
-            {/* Boyutlar (Dimensions) */}
-            <div>
-              <span className="text-[10px] text-zinc-400 block mb-1">Genişlik & Yükseklik</span>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="bg-[#101013] px-2 py-1.5 rounded border border-[#2c2c32] focus-within:border-[#0d99ff] flex items-center">
-                  <span className="text-[10px] text-zinc-500 w-6">W</span>
-                  <input
-                    type="number"
-                    value={el.width}
-                    onChange={(e) => onUpdateElement({ width: Number(e.target.value) })}
-                    className="w-full bg-transparent text-zinc-100 font-mono text-xs tabular-nums focus:outline-none"
-                  />
-                  <span className="text-[9px] text-zinc-600">px</span>
-                </div>
-                <div className="bg-[#101013] px-2 py-1.5 rounded border border-[#2c2c32] focus-within:border-[#0d99ff] flex items-center">
-                  <span className="text-[10px] text-zinc-500 w-6">H</span>
-                  <input
-                    type="number"
-                    value={el.height}
-                    onChange={(e) => onUpdateElement({ height: Number(e.target.value) })}
-                    className="w-full bg-transparent text-zinc-100 font-mono text-xs tabular-nums focus:outline-none"
-                  />
-                  <span className="text-[9px] text-zinc-600">px</span>
-                </div>
-              </div>
-            </div>
-
             {/* Arka Plan Rengi & Gradyan (Background & Gradient) */}
             <BackgroundGradientPicker
               value={currentStyle.background || currentStyle.backgroundColor || '#ffffff'}
@@ -1997,11 +2023,12 @@ export default function PropertiesPanel({
               }}
               label="Arka Plan Rengi & Gradyan"
             />
+          </InspectorSection>
 
-            {/* Typography (for text, button, headings) */}
-            {(!isVoid && currentTag !== 'img') && (
-              <div className="space-y-2 pt-1 border-t border-[#27272d]">
-                <span className="text-[10px] text-zinc-400 block">Yazı & Tipografi</span>
+          {/* Typography (for text, button, headings) */}
+          {(!isVoid && currentTag !== 'img') && (
+            <InspectorSection title="Yazı & Tipografi" icon={Type} defaultOpen={true}>
+              <div className="space-y-2">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="min-w-0 bg-[#101013] px-2 py-1 rounded border border-[#2c2c32] focus-within:border-[#0d99ff] flex items-center gap-1.5">
                     <span className="text-[10px] text-zinc-400 shrink-0">Font</span>
@@ -2153,67 +2180,45 @@ export default function PropertiesPanel({
                   );
                 })()}
               </div>
+            </InspectorSection>
             )}
 
-            {/* Boşluklar (Padding & Margin) */}
-            <div className="space-y-1.5 pt-1 border-t border-[#27272d]">
-              <span className="text-[10px] text-zinc-400 block">Boşluklar (Padding & Margin)</span>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="min-w-0 bg-[#101013] px-2 py-1 rounded border border-[#2c2c32] focus-within:border-[#0d99ff] flex items-center gap-1.5">
-                  <span className="text-[10px] text-zinc-400 shrink-0">Padding</span>
-                  <input
-                    type="text"
-                    value={currentStyle.padding || ''}
-                    onChange={(e) => handleUpdateStyle('padding', e.target.value)}
-                    onBlur={() => onCommitHistory?.()}
-                    className="flex-1 min-w-0 bg-transparent text-zinc-100 font-mono text-xs focus:outline-none text-right"
-                    placeholder="16px"
-                  />
-                </div>
-                <div className="min-w-0 bg-[#101013] px-2 py-1 rounded border border-[#2c2c32] focus-within:border-[#0d99ff] flex items-center gap-1.5">
-                  <span className="text-[10px] text-zinc-400 shrink-0">Margin</span>
-                  <input
-                    type="text"
-                    value={currentStyle.margin || ''}
-                    onChange={(e) => handleUpdateStyle('margin', e.target.value)}
-                    onBlur={() => onCommitHistory?.()}
-                    className="flex-1 min-w-0 bg-transparent text-zinc-100 font-mono text-xs focus:outline-none text-right"
-                    placeholder="0px"
-                  />
-                </div>
+            {/* Kenarlık & Kutu Gölgesi (Varsayılan Kapalı) */}
+            <InspectorSection
+              title="Kenarlık & Gölge"
+              badge={(currentStyle.border || currentStyle.borderWidth || (currentStyle.boxShadow && currentStyle.boxShadow !== 'none')) ? 'aktif' : null}
+              defaultOpen={false}
+            >
+              <BorderManager
+                style={currentStyle}
+                onChange={(borderStyles) => handleUpdateMultipleStyles(borderStyles)}
+                onUpdateStyle={handleUpdateStyle}
+              />
+
+              <div className="pt-1 border-t border-[#27272d]">
+                <span className="text-[10px] text-zinc-400 block mb-1">Kutu Gölgesi (box-shadow)</span>
+                <select
+                  value={currentStyle.boxShadow || 'none'}
+                  onChange={(e) => handleUpdateStyle('boxShadow', e.target.value)}
+                  className="w-full bg-[#101013] border border-[#2c2c32] rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-[#0d99ff]"
+                >
+                  <option value="none">Gölge Yok</option>
+                  <option value="0 4px 12px rgba(0, 0, 0, 0.08)">Hafif Soft Gölge</option>
+                  <option value="0 10px 25px rgba(0, 0, 0, 0.15)">Orta Derinlik</option>
+                  <option value="0 20px 40px rgba(0, 0, 0, 0.35)">Güçlü Gölgelendirme</option>
+                  <option value="0 8px 24px rgba(212, 175, 55, 0.35)">Altın Işıltısı (Gold Glow)</option>
+                </select>
               </div>
-            </div>
+            </InspectorSection>
 
-            {/* Kenarlık & Çerçeve Yönetimi (Border with side selection & visual color picker) */}
-            <BorderManager
-              style={currentStyle}
-              onChange={(borderStyles) => handleUpdateMultipleStyles(borderStyles)}
-              onUpdateStyle={handleUpdateStyle}
-            />
-
-            {/* Gölge (Box Shadow) */}
-            <div className="pt-1 border-t border-[#27272d]">
-              <span className="text-[10px] text-zinc-400 block mb-1">Kutu Gölgesi (box-shadow)</span>
-              <select
-                value={currentStyle.boxShadow || 'none'}
-                onChange={(e) => handleUpdateStyle('boxShadow', e.target.value)}
-                className="w-full bg-[#101013] border border-[#2c2c32] rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-[#0d99ff]"
-              >
-                <option value="none">Gölge Yok</option>
-                <option value="0 4px 12px rgba(0, 0, 0, 0.08)">Hafif Soft Gölge</option>
-                <option value="0 10px 25px rgba(0, 0, 0, 0.15)">Orta Derinlik</option>
-                <option value="0 20px 40px rgba(0, 0, 0, 0.35)">Güçlü Gölgelendirme</option>
-                <option value="0 8px 24px rgba(212, 175, 55, 0.35)">Altın Işıltısı (Gold Glow)</option>
-              </select>
-            </div>
-
-            {/* 🌟 SECTION: ANİMASYON & GEÇİŞ EFEKTLERİ */}
-            <div className="pt-2 border-t border-[#27272d] space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                  <Sparkles size={12} className="text-[#0d99ff]" />
-                  <span>Animasyon & Efektler</span>
-                </span>
+            {/* 🌟 SECTION: ANİMASYON & GEÇİŞ EFEKTLERİ (Varsayılan Kapalı) */}
+            <InspectorSection
+              title="Animasyon & Hover Efektleri"
+              icon={Sparkles}
+              badge={el.animation?.type && el.animation?.type !== 'none' ? el.animation.type : (el.animation?.hover && el.animation?.hover !== 'none' ? 'hover' : null)}
+              defaultOpen={false}
+            >
+              <div className="flex items-center justify-end">
                 {el.animation?.type && el.animation?.type !== 'none' && (
                   <button
                     type="button"
@@ -2307,7 +2312,7 @@ export default function PropertiesPanel({
                         />
                         <span className="text-[9px] text-neutral-400 truncate">Renk</span>
                       </label>
-                      <label className="bg-[#0d0f15] border border-white/[0.08] rounded px-1.5 py-1 flex items-center gap-1">
+                      <label className="bg-[#101013] border border-white/[0.08] rounded px-1.5 py-1 flex items-center gap-1">
                         <span className="text-[9px] text-neutral-500">Kal.</span>
                         <input
                           type="number"
@@ -2322,7 +2327,7 @@ export default function PropertiesPanel({
                         />
                         <span className="text-[9px] text-neutral-500">px</span>
                       </label>
-                      <label className="bg-[#0d0f15] border border-white/[0.08] rounded px-1.5 py-1 flex items-center gap-1">
+                      <label className="bg-[#101013] border border-white/[0.08] rounded px-1.5 py-1 flex items-center gap-1">
                         <span className="text-[9px] text-neutral-500">Süre</span>
                         <input
                           type="number"
@@ -2342,7 +2347,7 @@ export default function PropertiesPanel({
                   </div>
                 )}
               </div>
-            </div>
+            </InspectorSection>
 
             {/* CSS Tab & Dedicated Inspector Shortcut */}
             <div className="pt-3 border-t border-[#27272d] bg-[#101013] p-2.5 rounded border border-[#2c2c32] flex items-center justify-between">
@@ -2372,13 +2377,11 @@ export default function PropertiesPanel({
               </div>
             </div>
 
-          </div>
-
         </div>
       )}
 
       {/* 3.3 TAB: CSS (ÖZEL CSS ÖZELLİKLERİ & DEVTOOLS STİLİ) */}
-      {activePanelTab === 'css' && (
+      {effectiveTab === 'css' && (
         <div className="p-3 space-y-3 overflow-y-auto flex-1 min-w-0">
           {/* Dedicated Floating Window Launcher */}
           {onOpenAttributesInspector && (
@@ -2593,7 +2596,7 @@ export default function PropertiesPanel({
       )}
 
       {/* 4. TAB 2: LIVE CODE EDITOR (CANLI KOD - ÇİFT YÖNLÜ SENKRONİZE) */}
-      {activePanelTab === 'code' && (
+      {effectiveTab === 'code' && (
         <div className="p-3.5 space-y-4 overflow-y-auto flex-1 flex flex-col">
           <div className="bg-[#18181b] p-2.5 rounded border border-[#27272d] flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-zinc-100 text-xs font-semibold">

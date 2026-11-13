@@ -37,7 +37,9 @@ export default function TopMenuBar({
   onOpenProjectFile = null,
   onSaveProject = null,
   projectName = 'Adsız Proje',
+  projectFilePath = null,
   onRenameProject = null,
+  onRenameTab = null,
   hasUnsavedChanges = false,
   selectedIds = [],
   onAlignHorizontalCenter,
@@ -46,6 +48,8 @@ export default function TopMenuBar({
   onUngroupSelected
 }) {
   const [openMenu, setOpenMenu] = useState(null);
+  const [editingTabId, setEditingTabId] = useState(null);
+  const [editingTabName, setEditingTabName] = useState('');
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -89,7 +93,7 @@ export default function TopMenuBar({
           </button>
 
           {/* Compact Studio Mark */}
-          <div className="hidden xl:flex items-center gap-1.5 px-2 py-1 rounded bg-[#121215] border border-[#27272d] text-zinc-200 font-semibold text-[11px] shrink-0">
+          <div className="hidden 2xl:flex items-center gap-1.5 px-2 py-1 rounded bg-[#121215] border border-[#27272d] text-zinc-200 font-semibold text-[11px] shrink-0">
             <span className="w-1.5 h-1.5 rounded-full bg-[#0d99ff]" />
             <span className="tracking-tight">CraftStudio</span>
           </div>
@@ -149,7 +153,7 @@ export default function TopMenuBar({
                     >
                       <span className="flex items-center gap-2">
                         <FileCode2 size={12} className="text-[#38bdf8]" />
-                        <span>Proje Dosyası Aç (.craft.json)...</span>
+                        <span>Site / Proje Aç (.html, .jsx, .craft)...</span>
                       </span>
                       <kbd className={kbdClass}>Ctrl+O</kbd>
                     </button>
@@ -341,9 +345,12 @@ export default function TopMenuBar({
                   >
                     <span className="flex items-center gap-2">
                       <Sparkles size={12} className="text-zinc-300" />
-                      <span>AI Ajanı (Gemini)</span>
+                      <span>AI Sohbet Çubuğu</span>
                     </span>
-                    {activePanels.aiAgent && <Check size={12} className="text-[#0d99ff]" />}
+                    <span className="flex items-center gap-1.5">
+                      <kbd className="text-[9.5px] font-mono text-zinc-500">Ctrl+K</kbd>
+                      {activePanels.aiAgent && <Check size={12} className="text-[#0d99ff]" />}
+                    </span>
                   </button>
                   <div className="h-px bg-[#27272d] my-1 mx-1" />
                   <button
@@ -372,7 +379,7 @@ export default function TopMenuBar({
                 value={projectName}
                 onChange={(e) => onRenameProject(e.target.value)}
                 title="Proje adını düzenle"
-                className="bg-transparent text-zinc-100 font-medium text-[11px] w-28 sm:w-36 focus:w-44 transition-all focus:outline-none truncate"
+                className="bg-transparent text-zinc-100 font-medium text-[11px] w-36 sm:w-44 xl:w-48 focus:w-56 transition-all focus:outline-none truncate"
               />
             ) : (
               <span className="text-zinc-100 font-medium text-[11px] max-w-[140px] truncate">{projectName}</span>
@@ -383,7 +390,13 @@ export default function TopMenuBar({
                   ? 'bg-[#1c1a14] text-amber-300 border-amber-500/30'
                   : 'bg-[#101c16] text-emerald-300 border-emerald-500/30'
               }`}
-              title={hasUnsavedChanges ? 'Kaydedilmemiş değişiklikler var (Ctrl+S)' : 'Tüm değişiklikler kaydedildi'}
+              title={
+                hasUnsavedChanges
+                  ? 'Kaydedilmemiş değişiklikler var (Ctrl+S)'
+                  : projectFilePath
+                    ? `Kaydedildi: ${projectFilePath}`
+                    : 'Tüm değişiklikler kaydedildi'
+              }
             >
               {hasUnsavedChanges ? '● Kaydedilmedi' : '✓ Kaydedildi'}
             </span>
@@ -505,7 +518,7 @@ export default function TopMenuBar({
           <button
             type="button"
             onClick={() => togglePanel('aiAgent')}
-            title="Gemini AI Tasarım Ajanı"
+            title="AI Sohbet Kutusunu Aç/Kapat (Ctrl+K)"
             className={`flex items-center gap-1.5 px-2 py-1 rounded font-medium text-[11px] transition-colors border ${
               activePanels.aiAgent
                 ? 'bg-[#25252c] border-[#0d99ff]/50 text-white'
@@ -513,7 +526,7 @@ export default function TopMenuBar({
             }`}
           >
             <Sparkles size={11} className="text-[#38bdf8]" />
-            <span className="hidden lg:inline">AI Ajan</span>
+            <span className="hidden lg:inline">AI Sohbet</span>
           </button>
 
           {/* Tutorial Guide */}
@@ -527,28 +540,30 @@ export default function TopMenuBar({
             <span className="hidden xl:inline text-[11px]">Rehber</span>
           </button>
 
-          {/* Live Preview */}
+          {/* Live Browser Presentation (PowerPoint-style) */}
           <button
             type="button"
             onClick={() => setPreviewMode(!previewMode)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium text-[11px] transition-colors border ${
+            title={previewMode ? 'Düzenleme moduna dön (Esc)' : 'Tam Ekran Tarayıcı Sunumu (PowerPoint Modu)'}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded font-semibold text-[11px] transition-colors border whitespace-nowrap ${
               previewMode
-                ? 'bg-[#0d99ff]/18 text-[#7dd3fc] border-[#0d99ff]/60'
+                ? 'bg-amber-500/20 text-amber-200 border-amber-400/55'
                 : 'bg-[#202026] hover:bg-[#282830] border-[#32323c] text-zinc-100'
             }`}
           >
             {previewMode ? <EyeOff size={12} /> : <Eye size={12} />}
-            <span>{previewMode ? 'Editöre Dön' : 'Canlı Önizle'}</span>
+            <span>{previewMode ? 'Editöre Dön' : 'Sun'}</span>
           </button>
 
           {/* Publish / Canlıya Al */}
           <button
             type="button"
             onClick={onOpenExportModal}
-            className="flex items-center gap-1.5 px-3 py-1 rounded bg-[#0d99ff] hover:bg-[#1fa3ff] text-white font-semibold text-[11px] transition-colors"
+            title="Canlıya Al & React / HTML Yayınla (Ctrl+E)"
+            className="flex items-center gap-1.5 px-3 py-1 rounded bg-[#0d99ff] hover:bg-[#1fa3ff] text-white font-semibold text-[11px] transition-colors whitespace-nowrap"
           >
             <FolderCheck size={12} />
-            <span>Canlıya Al · Yayınla</span>
+            <span>Yayınla</span>
           </button>
         </div>
       </div>
@@ -559,10 +574,24 @@ export default function TopMenuBar({
         <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">
           {tabs.map((tab) => {
             const isActive = tab.id === activeTabId;
+            const isEditing = editingTabId === tab.id;
+            const commitRename = () => {
+              const trimmed = editingTabName.trim();
+              if (trimmed && trimmed !== tab.name && onRenameTab) {
+                onRenameTab(tab.id, trimmed);
+              }
+              setEditingTabId(null);
+            };
             return (
               <div
                 key={tab.id}
                 onClick={() => setActiveTabId(tab.id)}
+                onDoubleClick={() => {
+                  if (!onRenameTab) return;
+                  setEditingTabId(tab.id);
+                  setEditingTabName(tab.name);
+                }}
+                title={onRenameTab ? `${tab.name} (Ad değiştirmek için çift tıklayın)` : tab.name}
                 className={`group flex items-center h-6 px-2.5 rounded-sm text-[11px] cursor-pointer transition-colors border shrink-0 ${
                   isActive
                     ? 'bg-[#1e1e24] text-white border-[#34343d] font-medium'
@@ -570,8 +599,29 @@ export default function TopMenuBar({
                 }`}
               >
                 <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${isActive ? 'bg-[#0d99ff]' : 'bg-zinc-600'}`} />
-                <span className="truncate max-w-[140px]">{tab.name}</span>
-                {tabs.length > 1 && (
+                {isEditing ? (
+                  <input
+                    type="text"
+                    autoFocus
+                    value={editingTabName}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setEditingTabName(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        commitRename();
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setEditingTabId(null);
+                      }
+                    }}
+                    className="bg-[#101013] border border-[#0d99ff] rounded px-1 py-0 text-[11px] text-white w-28 focus:outline-none"
+                  />
+                ) : (
+                  <span className="truncate max-w-[140px]">{tab.name}</span>
+                )}
+                {tabs.length > 1 && !isEditing && (
                   <button
                     type="button"
                     onClick={(e) => {

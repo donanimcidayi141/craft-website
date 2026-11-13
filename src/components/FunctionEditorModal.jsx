@@ -253,7 +253,7 @@ export default function FunctionEditorModal({
         </div>
 
         {/* Clickable Page Element ID Chips */}
-        <div className="px-5 py-2.5 bg-[#0d0f15] border-b border-white/[0.07] flex items-center gap-2 overflow-x-auto">
+        <div className="px-5 py-2.5 bg-[#101013] border-b border-white/[0.07] flex items-center gap-2 overflow-x-auto">
           <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400 shrink-0">
             Sayfa Öğeleri ({elementOptions.length}):
           </span>
@@ -354,7 +354,7 @@ export default function FunctionEditorModal({
                           <select
                             value={step.leftType || 'element'}
                             onChange={(e) => updateStep(step.id, { leftType: e.target.value })}
-                            className="bg-[#0b0d12] border border-white/[0.09] rounded px-1.5 py-1 text-[11px] text-neutral-300"
+                            className="bg-[#101013] border border-[#2c2c34] rounded px-1.5 py-1 text-[11px] text-neutral-300"
                           >
                             <option value="element">Öğeden Al</option>
                             <option value="number">Sabit Sayı</option>
@@ -364,13 +364,13 @@ export default function FunctionEditorModal({
                               type="number"
                               value={step.leftValue || '0'}
                               onChange={(e) => updateStep(step.id, { leftValue: e.target.value })}
-                              className="w-20 bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white font-mono text-xs"
+                              className="w-20 bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white font-mono text-xs"
                             />
                           ) : (
                             <select
                               value={step.leftValue || ''}
                               onChange={(e) => updateStep(step.id, { leftValue: e.target.value })}
-                              className="flex-1 min-w-[110px] bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white font-mono text-xs"
+                              className="flex-1 min-w-[110px] bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white font-mono text-xs"
                             >
                               <option value="">-- Öğe Seç --</option>
                               {elementOptions.map((o) => (
@@ -395,7 +395,7 @@ export default function FunctionEditorModal({
                           <select
                             value={step.rightType || 'number'}
                             onChange={(e) => updateStep(step.id, { rightType: e.target.value })}
-                            className="bg-[#0b0d12] border border-white/[0.09] rounded px-1.5 py-1 text-[11px] text-neutral-300"
+                            className="bg-[#101013] border border-[#2c2c34] rounded px-1.5 py-1 text-[11px] text-neutral-300"
                           >
                             <option value="element">Öğeden Al</option>
                             <option value="number">Sabit Sayı</option>
@@ -405,13 +405,13 @@ export default function FunctionEditorModal({
                               type="number"
                               value={step.rightValue || '0'}
                               onChange={(e) => updateStep(step.id, { rightValue: e.target.value })}
-                              className="w-20 bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white font-mono text-xs"
+                              className="w-20 bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white font-mono text-xs"
                             />
                           ) : (
                             <select
                               value={step.rightValue || ''}
                               onChange={(e) => updateStep(step.id, { rightValue: e.target.value })}
-                              className="flex-1 min-w-[110px] bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white font-mono text-xs"
+                              className="flex-1 min-w-[110px] bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white font-mono text-xs"
                             >
                               <option value="">-- Öğe Seç --</option>
                               {elementOptions.map((o) => (
@@ -428,7 +428,7 @@ export default function FunctionEditorModal({
                           <select
                             value={step.targetId || ''}
                             onChange={(e) => updateStep(step.id, { targetId: e.target.value })}
-                            className="flex-1 min-w-[120px] bg-[#0b0d12] border border-emerald-500/40 rounded px-2 py-1 text-emerald-300 font-mono text-xs"
+                            className="flex-1 min-w-[120px] bg-[#101013] border border-emerald-500/40 rounded px-2 py-1 text-emerald-300 font-mono text-xs"
                           >
                             <option value="">-- Hedef Metin --</option>
                             {elementOptions.map((o) => (
@@ -442,14 +442,14 @@ export default function FunctionEditorModal({
                             value={step.prefix || ''}
                             onChange={(e) => updateStep(step.id, { prefix: e.target.value })}
                             placeholder="Önek"
-                            className="w-16 bg-[#0b0d12] border border-white/[0.09] rounded px-1.5 py-1 text-xs text-white"
+                            className="w-16 bg-[#101013] border border-[#2c2c34] rounded px-1.5 py-1 text-xs text-white"
                           />
                           <input
                             type="text"
                             value={step.suffix || ''}
                             onChange={(e) => updateStep(step.id, { suffix: e.target.value })}
                             placeholder="Birim (TL)"
-                            className="w-20 bg-[#0b0d12] border border-white/[0.09] rounded px-1.5 py-1 text-xs text-white"
+                            className="w-20 bg-[#101013] border border-[#2c2c34] rounded px-1.5 py-1 text-xs text-white"
                           />
                         </div>
                       </div>
@@ -462,7 +462,7 @@ export default function FunctionEditorModal({
                           <select
                             value={step.leftValue || ''}
                             onChange={(e) => updateStep(step.id, { leftValue: e.target.value })}
-                            className="flex-1 bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white font-mono text-xs"
+                            className="flex-1 bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white font-mono text-xs"
                           >
                             <option value="">-- Öğe Seç --</option>
                             {elementOptions.map((o) => (
@@ -487,14 +487,14 @@ export default function FunctionEditorModal({
                             value={step.compareValue || ''}
                             onChange={(e) => updateStep(step.id, { compareValue: e.target.value })}
                             placeholder="Değer"
-                            className="w-24 bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white text-xs"
+                            className="w-24 bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white text-xs"
                           />
                         </div>
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <select
                             value={step.targetId || ''}
                             onChange={(e) => updateStep(step.id, { targetId: e.target.value })}
-                            className="bg-[#0b0d12] border border-emerald-500/40 rounded px-2 py-1 text-emerald-300 font-mono text-xs"
+                            className="bg-[#101013] border border-emerald-500/40 rounded px-2 py-1 text-emerald-300 font-mono text-xs"
                           >
                             <option value="">-- Hedef Öğe --</option>
                             {elementOptions.map((o) => (
@@ -508,14 +508,14 @@ export default function FunctionEditorModal({
                             value={step.thenText || ''}
                             onChange={(e) => updateStep(step.id, { thenText: e.target.value })}
                             placeholder="Doğruysa yaz..."
-                            className="flex-1 min-w-[90px] bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white text-xs"
+                            className="flex-1 min-w-[90px] bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white text-xs"
                           />
                           <input
                             type="text"
                             value={step.elseText || ''}
                             onChange={(e) => updateStep(step.id, { elseText: e.target.value })}
                             placeholder="Değilse (opsiyonel)"
-                            className="flex-1 min-w-[90px] bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white text-xs"
+                            className="flex-1 min-w-[90px] bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white text-xs"
                           />
                         </div>
                       </div>
@@ -526,7 +526,7 @@ export default function FunctionEditorModal({
                         <select
                           value={step.targetId || ''}
                           onChange={(e) => updateStep(step.id, { targetId: e.target.value })}
-                          className="min-w-[180px] bg-[#0b0d12] border border-white/[0.09] rounded px-2 py-1 text-white font-mono text-xs"
+                          className="min-w-[180px] bg-[#101013] border border-[#2c2c34] rounded px-2 py-1 text-white font-mono text-xs"
                         >
                           <option value="">-- Hedef Öğe --</option>
                           {elementOptions.map((o) => (
@@ -541,7 +541,7 @@ export default function FunctionEditorModal({
                             value={step.text || ''}
                             onChange={(e) => updateStep(step.id, { text: e.target.value })}
                             placeholder="Yazdırılacak yeni metin..."
-                            className="flex-1 bg-[#0b0d12] border border-white/[0.09] rounded px-2.5 py-1 text-white text-xs"
+                            className="flex-1 bg-[#101013] border border-[#2c2c34] rounded px-2.5 py-1 text-white text-xs"
                           />
                         )}
                       </div>
@@ -553,7 +553,7 @@ export default function FunctionEditorModal({
                         value={step.message || ''}
                         onChange={(e) => updateStep(step.id, { message: e.target.value })}
                         placeholder="Kullanıcıya gösterilecek bildirim mesajı..."
-                        className="w-full bg-[#0b0d12] border border-white/[0.09] rounded px-2.5 py-1.5 text-white text-xs"
+                        className="w-full bg-[#101013] border border-[#2c2c34] rounded px-2.5 py-1.5 text-white text-xs"
                       />
                     )}
 
@@ -561,7 +561,7 @@ export default function FunctionEditorModal({
                       <select
                         value={step.targetPageId || ''}
                         onChange={(e) => updateStep(step.id, { targetPageId: e.target.value })}
-                        className="w-full bg-[#0b0d12] border border-white/[0.09] rounded px-2.5 py-1.5 text-white text-xs"
+                        className="w-full bg-[#101013] border border-[#2c2c34] rounded px-2.5 py-1.5 text-white text-xs"
                       >
                         <option value="">-- Hedef Sayfayı Seç --</option>
                         {tabs.map((t) => (
@@ -587,7 +587,7 @@ export default function FunctionEditorModal({
                       setCode(previewCompiledJs);
                       setEditorMode('code');
                     }}
-                    className="text-[10px] text-purple-300 hover:text-purple-200 underline"
+                    className="text-[10px] text-[#38bdf8] hover:text-[#7dd3fc] underline"
                   >
                     Kod Editörüne Aktar →
                   </button>
@@ -600,7 +600,7 @@ export default function FunctionEditorModal({
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[10px] text-neutral-400 mr-1">Hızlı Yardımcı Ekle:</span>
+                <span className="text-[10px] text-zinc-400 mr-1">Hızlı Yardımcı Ekle:</span>
                 {[
                   { label: 'getValue(id)', snippet: "const val = Number(getValue('id')) || 0;\n" },
                   { label: 'setText(id, txt)', snippet: "setText('id', 'Yeni Değer');\n" },
@@ -614,7 +614,7 @@ export default function FunctionEditorModal({
                     key={h.label}
                     type="button"
                     onClick={() => insertSnippetIntoCode(h.snippet)}
-                    className="px-2 py-0.5 rounded bg-[#171a24] hover:bg-purple-600/30 border border-white/[0.09] text-purple-300 font-mono text-[10px]"
+                    className="px-2 py-0.5 rounded bg-[#141417] hover:bg-[#0d99ff]/20 border border-[#2c2c34] text-[#7dd3fc] font-mono text-[10px]"
                   >
                     {h.label}
                   </button>

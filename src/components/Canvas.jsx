@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { 
   ShoppingBag, Search, Compass, ChevronDown, ChevronRight, 
   MoveVertical, ShieldAlert, Group, CornerDownRight, RefreshCw,
-  FolderOpen, Zap, ArrowDownToLine, Pin, Lock
+  FolderOpen, Zap, ArrowDownToLine, Pin, Lock, Sparkles
 } from 'lucide-react';
 import { 
   getNodePath, 
@@ -27,6 +27,7 @@ import {
   getAutoContrastTextColor,
 } from '../utils/selectionUtils';
 import { createTagElement } from '../data/tagRegistry';
+import { resolveWheelPanDelta } from '../utils/canvasInputUtils';
 
 /**
  * 🌟 RECURSIVE CANVAS NODE COMPONENT
@@ -57,7 +58,12 @@ function CanvasNode({
   canvasSettings,
   isPreviewGhost = false,
   interactionCursor = null,
-  parentSliderState = null
+  parentSliderState = null,
+  parentAccordionOpen = null,
+  accordionDeltaY = 0,
+  accordionResolvedOpen = null,
+  accordionResolvedHeight = null,
+  aiHighlightedIds = []
 }) {
   const runtimePatch = previewMode ? (previewRuntimeOverrides[node.id] || null) : null;
   const effectiveNode = runtimePatch
@@ -83,12 +89,22 @@ function CanvasNode({
     nextSliderState &&
     Number(effectiveNode.slideIndex ?? 0) === Number(nextSliderState.activeSlideIndex ?? 0);
 
+  const ownAccordionOpen = effectiveNode.accordionRole === 'item'
+    ? (accordionResolvedOpen !== null
+        ? accordionResolvedOpen
+        : (runtimePatch?.accordionOpen !== undefined
+            ? Boolean(runtimePatch.accordionOpen)
+            : Boolean(effectiveNode.accordionOpen)))
+    : null;
+
   if (effectiveNode.isHidden) return null;
+  if (effectiveNode.accordionRole === 'panel' && parentAccordionOpen === false) return null;
 
   const isSelected = !isPreviewGhost && selectedIds.includes(node.id) && !previewMode;
   const isCandidate = !isPreviewGhost && hoveredCandidateId === node.id && !isSelected && !previewMode;
   const isInEditingScope = !isPreviewGhost && editingGroupId === node.id && !previewMode;
   const isDropTarget = !isPreviewGhost && dropTargetContainerId === node.id && !previewMode;
+  const isAiHighlighted = !isPreviewGhost && !previewMode && aiHighlightedIds.includes(node.id);
   const hasChildren = Array.isArray(node.children) && node.children.length > 0;
 
   // Border radius computation
@@ -130,12 +146,32 @@ function CanvasNode({
     ? Math.min(effectiveNode.width, canvasSettings.width)
     : effectiveNode.width;
 
+  let previewContainerExtraH = 0;
+  if (hasChildren) {
+    let accOffset = 0;
+    node.children.forEach((ch) => {
+      if (ch.accordionRole === 'item') {
+        const chPatch = previewMode ? previewRuntimeOverrides[ch.id] : null;
+        const chOpen = chPatch?.accordionOpen !== undefined ? Boolean(chPatch.accordionOpen) : Boolean(ch.accordionOpen);
+        const chCollapsed = Number(ch.accordionCollapsedHeight) || 58;
+        const chExpanded = Number(ch.accordionExpandedHeight) || 108;
+        const chTargetH = chOpen ? chExpanded : chCollapsed;
+        const chBaseH = Number(ch.height) || chTargetH;
+        accOffset += (chTargetH - chBaseH);
+      }
+    });
+    previewContainerExtraH = Math.max(0, accOffset);
+  }
+
+  const resolvedNodeY = (Number(effectiveNode.y) || 0) + (Number(accordionDeltaY) || 0);
+  const resolvedNodeHeight = (accordionResolvedHeight ?? effectiveNode.height) + previewContainerExtraH;
+
   let positionStyle = {
     position: 'absolute',
     left: `${effectiveNode.x}px`,
-    top: `${effectiveNode.y}px`,
+    top: `${resolvedNodeY}px`,
     width: `${nodeWidth}px`,
-    height: `${effectiveNode.height}px`,
+    height: `${resolvedNodeHeight}px`,
     zIndex: effectiveNode.zIndex || (isSticky || isFixed ? 100 : depth + 1),
   };
 
@@ -230,18 +266,26 @@ function CanvasNode({
           ? 'outline outline-2 outline-dashed outline-emerald-400'
           : isDropTarget 
             ? 'ring-2 ring-blue-500 bg-blue-500/15' 
-            : isInEditingScope
-              ? 'outline outline-2 outline-dashed outline-indigo-400/90'
-              : isCandidate 
-                ? 'outline outline-1.5 outline-sky-400 outline-offset-1' 
-                : isSelected && selectedIds.length > 1
-                  ? 'outline-1 outline-blue-400 outline-dashed'
-                  : ''
+            : isAiHighlighted
+              ? 'ring-2 ring-cyan-400 shadow-[0_0_28px_rgba(56,189,248,0.45)]'
+              : isInEditingScope
+                ? 'outline outline-2 outline-dashed outline-indigo-400/90'
+                : isCandidate 
+                  ? 'outline outline-1.5 outline-sky-400 outline-offset-1' 
+                  : isSelected && selectedIds.length > 1
+                    ? 'outline-1 outline-blue-400 outline-dashed'
+                    : ''
       } ${effectiveNode.animation?.className || ''} ${effectiveNode.animation?.hoverClassName || ''}`}
     >
-      {/* Visual Position & Group Badges (Show on Hover, Selection, Scope, or Drop-target only to keep canvas clean) */}
-      {!previewMode && (isSelected || isCandidate || isDropTarget || isInEditingScope) && (
+      {/* Visual Position & Group Badges (Show on Hover, Selection, Scope, AI Highlight, or Drop-target only) */}
+      {!previewMode && (isSelected || isCandidate || isDropTarget || isInEditingScope || isAiHighlighted) && (
         <div className="absolute -top-5 left-1 flex items-center gap-1 pointer-events-none z-30">
+          {isAiHighlighted && (
+            <span className="px-1.5 py-0.5 rounded text-[8px] font-bold tracking-wider bg-cyan-500 text-slate-950 shadow-md inline-flex items-center gap-1 animate-pulse">
+              <Sparkles size={9} />
+              <span>AI Yeniledi</span>
+            </span>
+          )}
           <span className={`px-1.5 py-0.5 rounded text-[8px] font-mono font-semibold tracking-wider border shadow-sm inline-flex items-center gap-1 ${
             isInEditingScope
               ? 'bg-[#6366f1] text-white border-indigo-400/80'
@@ -426,7 +470,7 @@ function CanvasNode({
             }}
             className="pointer-events-none"
           >
-            {effectiveNode.textContent || effectiveNode.content || (!hasChildren ? 'Buton' : '')}
+            {effectiveNode.sliderRole === 'dot' ? '' : (effectiveNode.textContent || effectiveNode.content || (!hasChildren ? 'Buton' : ''))}
           </div>
         ) : null
       )}
@@ -465,7 +509,7 @@ function CanvasNode({
             }}
             className="w-full h-full bg-[#101013]/95 p-1.5 rounded border-2 border-[#0d99ff] focus:outline-none resize-none shadow-2xl z-50"
           />
-        ) : (!hasChildren || Boolean(effectiveNode.textContent || effectiveNode.content)) ? (
+        ) : (Boolean(effectiveNode.textContent || effectiveNode.content) || effectiveNode.accordionRole === 'indicator' || (!hasChildren && tagType === 'text')) ? (
           <div
             style={{
               color: effectiveNode.style?.color || effectiveNode.textColor || '#1f2937',
@@ -483,7 +527,9 @@ function CanvasNode({
             }}
             className="pointer-events-none"
           >
-            {effectiveNode.textContent || effectiveNode.content || (!hasChildren ? 'Metin buraya gelecek...' : '')}
+            {effectiveNode.accordionRole === 'indicator' && parentAccordionOpen !== null
+              ? (parentAccordionOpen ? '−' : '+')
+              : (effectiveNode.textContent || effectiveNode.content || (!hasChildren && tagType === 'text' ? 'Metin buraya gelecek...' : ''))}
           </div>
         ) : null
       )}
@@ -531,44 +577,66 @@ function CanvasNode({
       )}
 
       {/* 9. RECURSIVE CHILDREN NODES */}
-      {hasChildren && node.children.map(child => {
-        if (
-          ownSliderActiveIndex !== null &&
-          child.sliderRole === 'slide' &&
-          Number(child.slideIndex ?? 0) !== ownSliderActiveIndex
-        ) {
-          return null;
-        }
-        return (
-          <CanvasNode
-            key={child.id}
-            node={child}
-            depth={depth + 1}
-            elements={elements}
-            selectedIds={selectedIds}
-            editingGroupId={editingGroupId}
-            hoveredCandidateId={hoveredCandidateId}
-            dropTargetContainerId={dropTargetContainerId}
-            onNodeMouseDown={onNodeMouseDown}
-            onNodeDoubleClick={onNodeDoubleClick}
-            onNodeMouseEnter={onNodeMouseEnter}
-            onNodeMouseLeave={onNodeMouseLeave}
-            editingTextNodeId={editingTextNodeId}
-            setEditingTextNodeId={setEditingTextNodeId}
-            onUpdateElementText={onUpdateElementText}
-            onCommitHistory={onCommitHistory}
-            previewMode={previewMode}
-            previewRuntimeOverrides={previewRuntimeOverrides}
-            onPreviewExecuteEvent={onPreviewExecuteEvent}
-            onPreviewInputChange={onPreviewInputChange}
-            viewportMode={viewportMode}
-            canvasSettings={canvasSettings}
-            isPreviewGhost={isPreviewGhost}
-            interactionCursor={interactionCursor}
-            parentSliderState={nextSliderState}
-          />
-        );
-      })}
+      {hasChildren && (() => {
+        let runningAccordionOffsetY = 0;
+        const nextAccordionParentOpen = ownAccordionOpen !== null ? ownAccordionOpen : parentAccordionOpen;
+        return node.children.map(child => {
+          if (
+            ownSliderActiveIndex !== null &&
+            child.sliderRole === 'slide' &&
+            Number(child.slideIndex ?? 0) !== ownSliderActiveIndex
+          ) {
+            return null;
+          }
+          let childAccordionDeltaY = 0;
+          let childAccordionOpen = null;
+          let childAccordionHeight = null;
+          if (child.accordionRole === 'item') {
+            const chPatch = previewMode ? previewRuntimeOverrides[child.id] : null;
+            childAccordionOpen = chPatch?.accordionOpen !== undefined ? Boolean(chPatch.accordionOpen) : Boolean(child.accordionOpen);
+            const chCollapsed = Number(child.accordionCollapsedHeight) || 58;
+            const chExpanded = Number(child.accordionExpandedHeight) || 108;
+            childAccordionHeight = childAccordionOpen ? chExpanded : chCollapsed;
+            const chBaseH = Number(child.height) || childAccordionHeight;
+            childAccordionDeltaY = runningAccordionOffsetY;
+            runningAccordionOffsetY += (childAccordionHeight - chBaseH);
+          }
+          return (
+            <CanvasNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              elements={elements}
+              selectedIds={selectedIds}
+              editingGroupId={editingGroupId}
+              hoveredCandidateId={hoveredCandidateId}
+              dropTargetContainerId={dropTargetContainerId}
+              onNodeMouseDown={onNodeMouseDown}
+              onNodeDoubleClick={onNodeDoubleClick}
+              onNodeMouseEnter={onNodeMouseEnter}
+              onNodeMouseLeave={onNodeMouseLeave}
+              editingTextNodeId={editingTextNodeId}
+              setEditingTextNodeId={setEditingTextNodeId}
+              onUpdateElementText={onUpdateElementText}
+              onCommitHistory={onCommitHistory}
+              previewMode={previewMode}
+              previewRuntimeOverrides={previewRuntimeOverrides}
+              onPreviewExecuteEvent={onPreviewExecuteEvent}
+              onPreviewInputChange={onPreviewInputChange}
+              viewportMode={viewportMode}
+              canvasSettings={canvasSettings}
+              isPreviewGhost={isPreviewGhost}
+              interactionCursor={interactionCursor}
+              parentSliderState={nextSliderState}
+              parentAccordionOpen={nextAccordionParentOpen}
+              accordionDeltaY={childAccordionDeltaY}
+              accordionResolvedOpen={childAccordionOpen}
+              accordionResolvedHeight={childAccordionHeight}
+              aiHighlightedIds={aiHighlightedIds}
+            />
+          );
+        });
+      })()}
     </div>
   );
 }
@@ -605,7 +673,8 @@ export default function Canvas({
   editingGroupId,
   setEditingGroupId,
   viewportMode = 'desktop',
-  onResetViewportFromDesktop
+  onResetViewportFromDesktop,
+  aiHighlightedIds = []
 }) {
   const containerRef = useRef(null);
   const [isAltPressed, setIsAltPressed] = useState(false);
@@ -904,20 +973,17 @@ export default function Canvas({
           setZoom(nextZoom);
           setPanOffset(nextPan);
         }
-      } else if (e.shiftKey) {
-        // Horizontal scroll
-        setPanOffset((prev) => {
-          const next = { ...prev, x: prev.x - e.deltaY };
-          latestPanOffsetRef.current = next;
-          return next;
-        });
       } else {
-        // Natural vertical scroll
-        setPanOffset((prev) => {
-          const next = { ...prev, y: prev.y - e.deltaY };
-          latestPanOffsetRef.current = next;
-          return next;
-        });
+        // Keep mouse wheel strictly vertical even while Shift is held for multi-select;
+        // horizontal scrolling uses native trackpad/tilt deltaX without sideways drift.
+        const { dx, dy } = resolveWheelPanDelta({ deltaX: e.deltaX, deltaY: e.deltaY });
+        if (dx !== 0 || dy !== 0) {
+          setPanOffset((prev) => {
+            const next = { x: prev.x + dx, y: prev.y + dy };
+            latestPanOffsetRef.current = next;
+            return next;
+          });
+        }
       }
     };
 
@@ -1180,6 +1246,7 @@ export default function Canvas({
   const handleNodeMouseDown = (e, node) => {
     if (previewMode) return;
     if (isSpacePressedRef.current || activeTool === 'hand') return;
+    if (editingTextNodeIdRef.current === node.id) return;
 
     e.stopPropagation();
 
@@ -1641,11 +1708,17 @@ export default function Canvas({
           transformOrigin: '0 0',
           transition: isPanning || isDraggingElement || resizingHandle || isExtendingHeight || isMarqueeActive ? 'none' : 'transform 0.05s ease-out',
         }}
-        className="absolute top-10 left-16 pb-32"
+        className="absolute top-0 left-0 pb-32"
       >
         {/* 🌟 ARTBOARD HEADER & INTERACTIVE BREADCRUMB */}
         {!previewMode && (
-          <div className="absolute -top-9 left-0 flex items-center gap-2 text-[11px] font-mono text-slate-400 select-none">
+          <div
+            style={{
+              transform: `scale(${Math.min(1.65, Math.max(1, +(0.88 / Math.max(zoom, 0.2)).toFixed(3)))})`,
+              transformOrigin: 'bottom left',
+            }}
+            className="absolute -top-8 left-0 w-max whitespace-nowrap flex items-center gap-1.5 text-[11px] font-mono text-zinc-400 select-none"
+          >
             {/* Breadcrumb Navigation */}
             <div className="flex items-center gap-1.5 bg-[#18181b]/95 backdrop-blur-md border border-[#2c2c32] px-2.5 py-1 rounded shadow-lg text-zinc-200">
               <button
@@ -1778,6 +1851,7 @@ export default function Canvas({
               viewportMode={viewportMode}
               canvasSettings={canvasSettings}
               interactionCursor={nodeInteractionCursor}
+              aiHighlightedIds={aiHighlightedIds}
             />
           ))}
 
@@ -1945,9 +2019,15 @@ export default function Canvas({
               }}
               className="absolute -bottom-7 left-0 w-full h-6 flex items-center justify-center cursor-ns-resize group"
             >
-              <div className="px-3.5 py-1 rounded bg-[#18181b]/95 backdrop-blur hover:bg-[#0d99ff] border border-[#2c2c32] hover:border-[#0d99ff] text-zinc-400 hover:text-white font-medium text-[10px] flex items-center gap-1.5 shadow-lg transition-all">
-                <MoveVertical size={12} />
-                <span>Sayfa Boyunu Uzat (Yükseklik: {canvasSettings.height}px)</span>
+              <div
+                style={{
+                  transform: `scale(${Math.min(1.65, Math.max(1, +(0.88 / Math.max(zoom, 0.2)).toFixed(3)))})`,
+                  transformOrigin: 'top center',
+                }}
+                className="px-3 py-0.5 rounded bg-[#18181b]/95 backdrop-blur hover:bg-[#0d99ff] border border-[#2c2c32] hover:border-[#0d99ff] text-zinc-400 hover:text-white font-medium text-[10px] flex items-center gap-1.5 shadow-lg transition-colors whitespace-nowrap"
+              >
+                <MoveVertical size={11} />
+                <span>Sayfa Boyunu Uzat ({canvasSettings.height}px)</span>
               </div>
             </div>
           )}
@@ -2138,24 +2218,18 @@ export default function Canvas({
         </div>
       </div>
 
-      {/* Floating Info Badge on bottom-left */}
+      {/* Top-Right Compact Canvas Telemetry & Control Hint (keeps bottom-center clear for Floating AI Dock) */}
       {!previewMode && (
-        <div className="absolute bottom-3 left-3 bg-[#11131b]/90 backdrop-blur-md border border-white/[0.08] px-3 py-1.5 rounded-lg text-[11px] text-slate-400 flex items-center gap-2.5 shadow-xl pointer-events-none flex-wrap">
-          <span>
-            <kbd className="px-1.5 py-0.5 bg-white/[0.07] border border-white/[0.08] text-slate-200 rounded text-[10px] font-mono">Alt+Öğe Sürükle</kbd> Kopyala
-          </span>
-          <span className="text-slate-600">•</span>
-          <span>
-            <kbd className="px-1.5 py-0.5 bg-white/[0.07] border border-white/[0.08] text-slate-200 rounded text-[10px] font-mono">Boşluk</kbd> / <kbd className="px-1.5 py-0.5 bg-white/[0.07] border border-white/[0.08] text-slate-200 rounded text-[10px] font-mono">Alt(Boş)</kbd> Kaydır
-          </span>
-          <span className="text-slate-600">•</span>
-          <span>
-            <kbd className="px-1.5 py-0.5 bg-white/[0.07] border border-white/[0.08] text-slate-200 rounded text-[10px] font-mono">Ctrl+Tekerlek</kbd> Yakınlaş
-          </span>
-          <span className="text-slate-600">•</span>
-          <span>
-            <kbd className="px-1.5 py-0.5 bg-white/[0.07] border border-white/[0.08] text-slate-200 rounded text-[10px] font-mono">Çift Tık</kbd> Düzenle
-          </span>
+        <div className="hidden lg:flex absolute top-2.5 right-3 items-center gap-2 pointer-events-none z-20">
+          <div className="bg-[#18181b]/90 backdrop-blur border border-[#2c2c32] px-2.5 py-1 rounded text-[10px] font-mono tabular-nums text-zinc-400 flex items-center gap-2 shadow-lg whitespace-nowrap">
+            <span className="hidden 2xl:inline text-zinc-500">Boşluk: Kaydır · Ctrl+Tekerlek: Zoom</span>
+            <span className="hidden 2xl:inline text-zinc-700">|</span>
+            <span className="text-[#38bdf8] uppercase">{viewportMode}</span>
+            <span className="text-zinc-700">|</span>
+            <span>{canvasSettings.width} × {canvasSettings.height} px</span>
+            <span className="text-zinc-700">|</span>
+            <span>{Math.round(zoom * 100)}%</span>
+          </div>
         </div>
       )}
     </div>

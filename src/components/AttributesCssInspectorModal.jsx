@@ -360,28 +360,28 @@ export default function AttributesCssInspectorModal({
 
           <button
             onClick={() => setActiveTab('attrs')}
-            className={`px-4 py-2.5 text-xs font-semibold flex items-center gap-2 border-b-2 transition-all ${
+            className={`px-3.5 py-2 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors ${
               activeTab === 'attrs'
-                ? 'border-blue-400 text-blue-300 bg-[#13151d]'
-                : 'border-transparent text-neutral-400 hover:text-white hover:bg-white/[0.04]'
+                ? 'border-[#0d99ff] text-white bg-[#18181b]'
+                : 'border-transparent text-zinc-400 hover:text-white hover:bg-white/[0.04]'
             }`}
           >
-            <TagIcon size={13} />
+            <TagIcon size={12} />
             <span>HTML Öznitelikleri (Attributes)</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-blue-400/20 text-blue-300 font-bold">
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#0d99ff]/20 text-[#7dd3fc] font-semibold">
               {Object.keys(currentAttrs).length}
             </span>
           </button>
 
           <button
             onClick={() => setActiveTab('raw_css')}
-            className={`px-4 py-2.5 text-xs font-semibold flex items-center gap-2 border-b-2 transition-all ${
+            className={`px-3.5 py-2 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors ${
               activeTab === 'raw_css'
-                ? 'border-purple-400 text-purple-300 bg-[#13151d]'
-                : 'border-transparent text-neutral-400 hover:text-white hover:bg-white/[0.04]'
+                ? 'border-[#0d99ff] text-white bg-[#18181b]'
+                : 'border-transparent text-zinc-400 hover:text-white hover:bg-white/[0.04]'
             }`}
           >
-            <Code2 size={13} />
+            <Code2 size={12} />
             <span>Ham CSS Metni</span>
           </button>
         </div>

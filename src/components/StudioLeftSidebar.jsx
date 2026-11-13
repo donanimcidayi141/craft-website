@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Layers, Box, LayoutTemplate, Code2, MousePointer, Square, Hand,
   Type, Image as ImageIcon, RectangleHorizontal, Wand2, Plus,
@@ -10,10 +10,11 @@ import { canHaveChildren, isExplicitContainer } from '../utils/treeUtils.js';
 import { PRESET_ASSETS } from '../constants.js';
 import { elementToHtml, styleObjectToCss } from '../utils/codeSync.js';
 import PresetThumbnail from './PresetThumbnail.jsx';
+import LeftAiChatPanel from './LeftAiChatPanel.jsx';
 
-const DEFAULT_LEFT_WIDTH = 276;
-const MIN_LEFT_WIDTH = 236;
-const MAX_LEFT_WIDTH = 400;
+const DEFAULT_LEFT_WIDTH = 248;
+const MIN_LEFT_WIDTH = 220;
+const MAX_LEFT_WIDTH = 440;
 
 function getLayerNodeIcon(type) {
   const t = (type || 'div').toLowerCase();
@@ -27,7 +28,7 @@ function getLayerNodeIcon(type) {
 }
 
 export default function StudioLeftSidebar({
-  activeTab = 'layers', // 'layers' | 'elements' | 'templates' | 'code' | null
+  activeTab = 'layers', // 'layers' | 'elements' | 'templates' | 'code' | 'ai' | null
   setActiveTab,
   // Layer tree props
   elements = [],
@@ -57,9 +58,8 @@ export default function StudioLeftSidebar({
   // Live Code sync props
   onUpdateElement,
   onCommitHistory,
-  // AI Agent props
-  onToggleAIAgent,
-  isAIAgentOpen,
+  // Shared Gemini AI session controller
+  aiChat,
   viewportMode = 'desktop',
 }) {
   const [collapsedMap, setCollapsedMap] = useState({});
@@ -391,6 +391,14 @@ export default function StudioLeftSidebar({
     );
   };
 
+  const presetCategoryCounts = useMemo(() => {
+    const counts = { Hepsi: PRESET_ASSETS.length };
+    PRESET_ASSETS.forEach((item) => {
+      counts[item.category] = (counts[item.category] || 0) + 1;
+    });
+    return counts;
+  }, []);
+
   const filteredAssets = PRESET_ASSETS.filter((item) => {
     const q = templateSearch.toLowerCase();
     const matchesSearch =
@@ -438,23 +446,26 @@ export default function StudioLeftSidebar({
             );
           })}
 
-          {onToggleAIAgent && (
-            <>
-              <div className="w-4 h-px bg-[#2c2c32] my-1" />
-              <button
-                type="button"
-                onClick={onToggleAIAgent}
-                title="Gemini AI Tasarım Ajanı (API ile Site Tasarla)"
-                className={`relative w-full h-8 flex items-center justify-center rounded transition-colors border ${
-                  isAIAgentOpen
-                    ? 'bg-[#1a222b] border-[#2c435a] text-[#7dd3fc]'
-                    : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]'
-                }`}
-              >
-                <Sparkles size={15} strokeWidth={1.75} />
-              </button>
-            </>
-          )}
+          <div className="w-4 h-px bg-[#2c2c32] my-1" />
+          <button
+            type="button"
+            data-left-rail-tab="ai"
+            onClick={() => setActiveTab(activeTab === 'ai' ? null : 'ai')}
+            title="Gemini AI Sohbet & Konuşma Geçmişi"
+            className={`relative w-full h-8 flex items-center justify-center rounded transition-colors border ${
+              activeTab === 'ai'
+                ? 'bg-[#1a222b] border-[#2c435a] text-[#7dd3fc]'
+                : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]'
+            }`}
+          >
+            {activeTab === 'ai' && (
+              <span className="absolute -left-1 top-1.5 bottom-1.5 w-0.5 rounded-r bg-[#0d99ff]" />
+            )}
+            <Sparkles size={15} strokeWidth={1.75} className={aiChat?.isLoading ? 'animate-pulse text-[#38bdf8]' : ''} />
+            {activeTab !== 'ai' && ((aiChat?.savedUserTurnsCount || 0) > 0 || (aiChat?.conversations?.length || 0) > 1) && (
+              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
+            )}
+          </button>
         </div>
 
         {/* Bottom Color Swatches */}
@@ -500,7 +511,7 @@ export default function StudioLeftSidebar({
                 <button
                   type="button"
                   onClick={() => setShowColorModal(false)}
-                  className="text-slate-400 hover:text-white p-0.5 rounded hover:bg-white/[0.08]"
+                  className="text-zinc-400 hover:text-white p-0.5 rounded hover:bg-white/[0.08]"
                 >
                   <X size={12} />
                 </button>
@@ -513,11 +524,11 @@ export default function StudioLeftSidebar({
                   if (editingColorType === 'primary') setPrimaryColor(e.target.value);
                   else setSecondaryColor(e.target.value);
                 }}
-                className="w-full h-8 cursor-pointer rounded-lg border border-white/[0.1] bg-transparent"
+                className="w-full h-8 cursor-pointer rounded border border-[#2c2c34] bg-transparent"
               />
 
-              <div className="flex items-center gap-1.5 bg-[#0b0d12] border border-white/[0.08] rounded-lg px-2 py-1">
-                <span className="text-[10px] text-slate-500 font-mono">HEX</span>
+              <div className="flex items-center gap-1.5 bg-[#101013] border border-[#2c2c34] rounded px-2 py-1">
+                <span className="text-[10px] text-zinc-500 font-mono">HEX</span>
                 <input
                   type="text"
                   value={editingColorType === 'primary' ? primaryColor : secondaryColor}
@@ -551,7 +562,7 @@ export default function StudioLeftSidebar({
       {/* 2. RESIZABLE ACTIVE PANEL DRAWER */}
       {activeTab && (
         <div
-          style={{ width: `${drawerWidth}px` }}
+          style={{ width: `${activeTab === 'ai' ? Math.max(drawerWidth, 296) : drawerWidth}px` }}
           className="relative bg-[#18181b] flex flex-col h-full text-xs text-zinc-300 min-w-0"
         >
           {/* TAB 1: LAYERS */}
@@ -660,7 +671,7 @@ export default function StudioLeftSidebar({
 
               <div className="flex-1 overflow-y-auto p-3 space-y-4">
                 <div>
-                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
+                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block mb-2">
                     Çizim &amp; Seçim Araçları
                   </span>
                   <div className="grid grid-cols-3 gap-1.5">
@@ -761,7 +772,7 @@ export default function StudioLeftSidebar({
                   type="button"
                   onClick={() => setActiveTab(null)}
                   title="Sol paneli gizle"
-                  className="p-1 text-slate-400 hover:text-white rounded-md hover:bg-white/[0.06]"
+                  className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
                 >
                   <ChevronsLeft size={13} />
                 </button>
@@ -800,7 +811,7 @@ export default function StudioLeftSidebar({
                           : 'bg-[#101013] text-zinc-400 border-[#27272d] hover:text-white'
                       }`}
                     >
-                      {cat}
+                      {cat} <span className="opacity-65 font-normal">({presetCategoryCounts[cat] ?? 0})</span>
                     </button>
                   ))}
                 </div>
@@ -917,6 +928,14 @@ export default function StudioLeftSidebar({
                 )}
               </div>
             </div>
+          )}
+
+          {/* TAB 5: GEMINI AI CHAT & CONVERSATION HISTORY */}
+          {activeTab === 'ai' && (
+            <LeftAiChatPanel
+              aiChat={aiChat}
+              onClosePanel={() => setActiveTab(null)}
+            />
           )}
 
           {/* Right-Edge Smooth Width Splitter */}

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openDesktopFolder: (folderPath) => ipcRenderer.invoke('open-desktop-folder', folderPath),
   openProjectDialog: () => ipcRenderer.invoke('open-project-dialog'),
   importProjectFolder: (folderPath) => ipcRenderer.invoke('import-project-folder', folderPath),
+  saveProjectDialog: (payload) => ipcRenderer.invoke('save-project-dialog', payload),
   saveProjectFile: (payload) => ipcRenderer.invoke('save-project-file', payload),
   openProjectFileDialog: () => ipcRenderer.invoke('open-project-file-dialog'),
   readProjectFile: (filePath) => ipcRenderer.invoke('read-project-file', filePath),

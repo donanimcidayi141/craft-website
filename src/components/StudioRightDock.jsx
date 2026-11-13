@@ -1,20 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
+  LayoutGrid,
   Sliders,
   Box,
   Tag as TagIcon,
   Sparkles,
   Code2,
-  Bot,
   ExternalLink,
   PanelRightClose,
   PanelRightOpen,
   ChevronsRight,
 } from 'lucide-react';
 
-const MIN_DOCK_WIDTH = 308;
-const MAX_DOCK_WIDTH = 560;
-export const DEFAULT_RIGHT_DOCK_WIDTH = 360;
+const MIN_DOCK_WIDTH = 296;
+const MAX_DOCK_WIDTH = 540;
+export const DEFAULT_RIGHT_DOCK_WIDTH = 336;
 
 /**
  * Obsidian Studio Right Workspace Dock + Vertical Tool Rail.
@@ -32,7 +32,6 @@ export default function StudioRightDock({
   onOpenFloatingInspector,
   isFloatingInspectorOpen = false,
   propertiesContent,
-  aiAgentContent,
 }) {
   const [isResizing, setIsResizing] = useState(false);
   const resizeStateRef = useRef(null);
@@ -63,6 +62,15 @@ export default function StudioRightDock({
   }, [isResizing, onChangeDockWidth]);
 
   const railItems = [
+    {
+      id: 'prop-block',
+      label: 'Bileşen Özelleştirici',
+      icon: LayoutGrid,
+      isActive: isOpen && activeModule === 'properties' && propertiesTab === 'block',
+      accent: 'text-[#38bdf8] bg-[#23232b] border-[#383844]',
+      indicator: 'bg-emerald-400',
+      onClick: () => onSelectDockTarget('properties', 'block'),
+    },
     {
       id: 'prop-style',
       label: 'Stil ve Görünüm',
@@ -138,33 +146,11 @@ export default function StudioRightDock({
             }`} />
           </div>
 
-          {/* Studio Panel Group Switcher Bar */}
-          <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#141417] border-b border-[#27272d] shrink-0 gap-1.5">
-            <div className="flex items-center gap-0.5 bg-[#101013] p-0.5 rounded border border-[#27272d] min-w-0">
-              <button
-                type="button"
-                onClick={() => onSelectDockTarget('properties', propertiesTab)}
-                className={`px-2.5 py-1 rounded-sm text-[11px] font-medium transition-colors flex items-center gap-1.5 ${
-                  activeModule === 'properties'
-                    ? 'bg-[#23232a] text-white border border-[#35353f]'
-                    : 'text-zinc-400 hover:text-zinc-100 border border-transparent'
-                }`}
-              >
-                <Sliders size={11} className="text-[#38bdf8] shrink-0" />
-                <span>Özellikler</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onSelectDockTarget('aiAgent')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all flex items-center gap-1.5 ${
-                  activeModule === 'aiAgent'
-                    ? 'bg-violet-500/20 text-violet-200 border border-violet-400/35 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-100 border border-transparent'
-                }`}
-              >
-                <Bot size={11} className="text-violet-400 shrink-0" />
-                <span>Gemini AI</span>
-              </button>
+          {/* Studio Panel Header Bar */}
+          <div className="flex items-center justify-between px-3 py-1.5 bg-[#141417] border-b border-[#27272d] shrink-0 gap-1.5">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-200 min-w-0">
+              <Sliders size={12} className="text-[#38bdf8] shrink-0" />
+              <span className="truncate">Özellikler &amp; Tasarım</span>
             </div>
 
             <div className="flex items-center gap-0.5 shrink-0">
@@ -172,10 +158,10 @@ export default function StudioRightDock({
                 type="button"
                 onClick={onOpenFloatingInspector}
                 title="Yüzen CSS & Nitelik Penceresini Aç/Kapat"
-                className={`p-1.5 rounded-lg transition-colors ${
+                className={`p-1.5 rounded transition-colors ${
                   isFloatingInspectorOpen
-                    ? 'bg-violet-500/20 text-violet-300 border border-violet-400/30'
-                    : 'text-slate-400 hover:text-white hover:bg-white/[0.06]'
+                    ? 'bg-[#0d99ff]/18 text-[#7dd3fc] border border-[#0d99ff]/40'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.06]'
                 }`}
               >
                 <ExternalLink size={12} />
@@ -184,7 +170,7 @@ export default function StudioRightDock({
                 type="button"
                 onClick={onToggleCollapse}
                 title="Sağ paneli daralt"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+                className="p-1.5 rounded text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors"
               >
                 <ChevronsRight size={13} />
               </button>
@@ -193,7 +179,7 @@ export default function StudioRightDock({
 
           {/* Active Module Body */}
           <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
-            {activeModule === 'aiAgent' ? aiAgentContent : propertiesContent}
+            {propertiesContent}
           </div>
         </div>
       )}
@@ -224,22 +210,6 @@ export default function StudioRightDock({
           })}
 
           <div className="w-4 h-px bg-[#2c2c32] my-1" />
-
-          <button
-            type="button"
-            onClick={() => onSelectDockTarget('aiAgent')}
-            title="Gemini AI Tasarım Asistanı"
-            className={`relative w-full h-8 rounded flex items-center justify-center transition-colors border ${
-              isOpen && activeModule === 'aiAgent'
-                ? 'bg-[#1a222b] border-[#2c435a] text-[#7dd3fc]'
-                : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]'
-            }`}
-          >
-            {isOpen && activeModule === 'aiAgent' && (
-              <span className="absolute -right-1 top-1.5 bottom-1.5 w-0.5 rounded-l bg-[#0d99ff]" />
-            )}
-            <Bot size={14} strokeWidth={1.75} />
-          </button>
 
           <button
             type="button"

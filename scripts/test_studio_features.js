@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { parse as parseBabel } from '@babel/parser';
 import { 
   migrateFlatToNestedTree, sanitizeTree, findNodeAndParent, getNodePath,
   getAbsoluteCoords, updateNodeInTree, updateMultipleNodesInTree,
@@ -54,12 +55,18 @@ import {
 import {
   buildSerializableProjectSchema,
   parseAndMigrateLoadedProject,
+  normalizeProjectTab,
+  detectInitializedViewports,
+  slugifyTabRoute,
   loadRecentProjects,
   upsertRecentProject,
   removeRecentProject,
   saveProjectToWebStorage,
+  loadProjectFromWebStorage,
+  deleteProjectFromWebStorage,
   saveAutosaveDraft,
   loadAutosaveDraft,
+  clearAutosaveDraft,
 } from '../src/utils/projectStorage.js';
 import { DEFAULT_UNIVERSAL_PROJECT, PRESET_ASSETS } from '../src/constants.js';
 import { CONTENT_PACK_ASSETS } from '../src/data/contentPacks.js';
@@ -71,6 +78,34 @@ import {
   resolveCatalogSelectionOnEnter,
   clampFloatingRect,
 } from '../src/utils/propertySearch.js';
+import {
+  clampCanvasZoom,
+  resolveWheelPanDelta,
+  isEditableElementTarget,
+  shouldHandleGlobalCanvasShortcut,
+  resolveSingleKeyToolShortcut,
+} from '../src/utils/canvasInputUtils.js';
+import {
+  detectBlockKind,
+  findOwningBlock,
+  extractBlockInspectorModel,
+  applyBlockThemePreset,
+  addNavbarLinkItem,
+  removeBlockChildById,
+  addSliderSlideItem,
+  removeSliderSlideItem,
+} from '../src/utils/blockCustomizerUtils.js';
+import {
+  resolveAiTargetScope,
+  detectAiRedesignIntent,
+  resolveAiTemperature,
+  buildAiSystemPrompt,
+  buildGeminiRequestContents,
+  parseAiJsonResponse,
+  sanitizeAiAstNodes,
+  applyAiResponseToTree,
+} from '../src/utils/aiAgentUtils.js';
+import { importSiteCodeToProjectSchema } from '../src/utils/codeFileImporter.js';
 
 let passed = 0;
 let failed = 0;
@@ -1480,7 +1515,11 @@ test('generateModularReactProject respects blank & custom canvases instead of fo
   assert.equal(customProj.appCode.includes('HeroSection'), false);
   assert.equal(customProj.appCode.includes('ProductsSection'), false);
   assert.ok(customProj.customElementsCode.includes('Özel Pırlanta Koleksiyonu'));
-  assert.ok(customProj.customElementsCode.includes('120px'));
+  assert.ok(customProj.customElementsCode.includes('9.375%'));
+  assert.ok(customProj.customElementsCode.includes('37.5%'));
+  assert.ok(customProj.customElementsCode.includes('84px'));
+  assert.equal(customProj.appCode.includes("maxWidth: '1280px'"), false);
+  assert.ok(customProj.standaloneHtml.includes('max-width:none;'));
   assert.ok(customProj.standaloneHtml.includes('Özel Pırlanta Koleksiyonu'));
   assert.ok(customProj.standaloneHtml.includes('Teklif Al'));
 
@@ -1570,6 +1609,82 @@ test('buildStandaloneHtmlSite outputs multi-page routes, responsive @media rules
     projectFunctions: [],
   });
   assert.ok(emptyHtml.includes('<!DOCTYPE html>'));
+});
+
+test('Faz A: Export escapes <18ms / {braces} in JSX, maps rectangle->div, parses all modules via Babel, and enforces 100% viewport fluid width', () => {
+  const desktopCanvas = { width: 1280, height: 900, backgroundColor: '#ffffff' };
+  const canvasByVp = createDefaultCanvasByViewport(desktopCanvas);
+  const kpiPreset = PRESET_ASSETS.find((a) => a.presetKey === 'block-stats-kpi');
+  assert.ok(kpiPreset, 'block-stats-kpi preset must exist');
+  const kpiPack = clonePresetSubtree(kpiPreset.element, { x: 0, y: 20 });
+  const trickyElements = [
+    kpiPack,
+    {
+      id: 'tricky-rect',
+      type: 'rectangle',
+      x: 64,
+      y: 260,
+      width: 640,
+      height: 120,
+      textContent: 'Hız <18ms & {özel} teklif > %99 memnuniyet',
+      style: { 'background-color': '#18181b', color: '#fafafa', 'border-radius': '12px' },
+    },
+    {
+      id: 'mobile-only-cta',
+      type: 'button',
+      x: 20,
+      y: 400,
+      width: 240,
+      height: 44,
+      isHidden: true,
+      textContent: 'Mobil İletişim',
+      style: { backgroundColor: '#2563eb', color: '#ffffff' },
+      responsive: {
+        mobile: { x: 16, y: 380, width: 343, height: 48, isHidden: false },
+      },
+    },
+  ];
+
+  const proj = generateModularReactProject(trickyElements, desktopCanvas, canvasByVp, {
+    projectName: 'Faz A Validation',
+    folderSlug: 'faz-a-validation',
+    tabs: [{ id: 'tab-main', name: 'Ana Sayfa', route: '/', elements: trickyElements, canvasSettings: desktopCanvas, canvasByViewport: canvasByVp }],
+    activeTabId: 'tab-main',
+  });
+
+  // 1. All JSX/JS files parse with zero syntax errors under Babel
+  const filesToParse = [
+    ['main.jsx', proj.mainJsx],
+    ['App.jsx', proj.appCode],
+    ['CustomElementsSection.jsx', proj.customElementsCode],
+    ['Navbar.jsx', proj.navbarCode],
+    ['HeroSection.jsx', proj.heroCode],
+    ['ProductCard.jsx', proj.productCardCode],
+    ['ProductsSection.jsx', proj.productsSectionCode],
+    ['Footer.jsx', proj.footerCode],
+  ];
+  for (const [label, code] of filesToParse) {
+    assert.ok(typeof code === 'string' && code.length > 0, `Missing code output for ${label}`);
+    assert.doesNotThrow(
+      () => parseBabel(code, { sourceType: 'module', plugins: ['jsx'] }),
+      `Babel JSX parse failed for ${label}`
+    );
+  }
+
+  // 2. JSX escaping & rectangle/style normalization
+  assert.ok(proj.customElementsCode.includes("{'<'}18ms"));
+  assert.ok(proj.customElementsCode.includes("{'{'}özel{'}'}"));
+  assert.equal(proj.customElementsCode.includes('<rectangle'), false);
+  assert.ok(proj.customElementsCode.includes('"backgroundColor":"#18181b"'));
+
+  // 3. Full viewport fluid width (no 1280px max-width cage) + hidden-on-desktop -> visible-on-mobile rule
+  assert.ok(proj.indexCss.includes('overflow-x: clip;'));
+  assert.ok(proj.appCode.includes('overflow-x-clip'));
+  assert.ok(proj.customElementsCode.includes('relative w-full'));
+  assert.equal(proj.indexCss.includes('max-width: 1280px'), false);
+  assert.equal(proj.appCode.includes("maxWidth: '1280px'"), false);
+  assert.ok(proj.standaloneHtml.includes('max-width:none;'));
+  assert.ok(proj.standaloneHtml.includes('display: flex !important;'));
 });
 
 // -----------------------------------------------------------------------------
@@ -1670,6 +1785,1022 @@ test('generateModularReactProject & buildStandaloneHtmlSite emit working multi-s
   assert.ok(project.standaloneHtml.includes('is-slide-hidden'));
   assert.ok(project.standaloneHtml.includes('function switchSlider('));
   assert.ok(project.standaloneHtml.includes('ATELIER STUDIO'));
+});
+
+// -----------------------------------------------------------------------------
+// [11] FAZ B: WHEEL PANNING & KEYBOARD SHORTCUT GUARDS
+// -----------------------------------------------------------------------------
+console.log('\n⌨️ [11] Faz B Wheel Panning & Keyboard Shortcut Guards');
+
+test('resolveWheelPanDelta keeps Shift+Wheel strictly vertical during multi-select while preserving native deltaX', () => {
+  const shiftWheel = resolveWheelPanDelta({ deltaX: 0, deltaY: 120, shiftKey: true });
+  assert.deepEqual(shiftWheel, { dx: 0, dy: -120 });
+
+  const normalWheel = resolveWheelPanDelta({ deltaX: 0, deltaY: -80, shiftKey: false });
+  assert.deepEqual(normalWheel, { dx: 0, dy: 80 });
+
+  const trackpadSwipe = resolveWheelPanDelta({ deltaX: 45, deltaY: 30, shiftKey: true });
+  assert.deepEqual(trackpadSwipe, { dx: -45, dy: -30 });
+});
+
+test('shouldHandleGlobalCanvasShortcut & resolveSingleKeyToolShortcut block edits inside contentEditable, inputs, modals, and modifier combos', () => {
+  assert.equal(isEditableElementTarget({ tagName: 'div', isContentEditable: true }), true);
+  assert.equal(isEditableElementTarget({ tagName: 'INPUT', isContentEditable: false }), true);
+  assert.equal(isEditableElementTarget({ tagName: 'DIV', isContentEditable: false }), false);
+
+  assert.equal(shouldHandleGlobalCanvasShortcut({ activeElement: { tagName: 'SPAN', isContentEditable: true }, isAnyModalOpen: false }), false);
+  assert.equal(shouldHandleGlobalCanvasShortcut({ activeElement: { tagName: 'BODY', isContentEditable: false }, isAnyModalOpen: true }), false);
+  assert.equal(shouldHandleGlobalCanvasShortcut({ activeElement: { tagName: 'BODY', isContentEditable: false }, isAnyModalOpen: false }), true);
+
+  assert.equal(resolveSingleKeyToolShortcut('r', {}), 'rectangle');
+  assert.equal(resolveSingleKeyToolShortcut('R', {}), 'rectangle');
+  assert.equal(resolveSingleKeyToolShortcut('r', { isCtrlOrMeta: true }), null);
+  assert.equal(resolveSingleKeyToolShortcut('t', { altKey: true }), null);
+  assert.equal(resolveSingleKeyToolShortcut('v', { shiftKey: true }), null);
+
+  assert.equal(clampCanvasZoom(4.2), 3.5);
+  assert.equal(clampCanvasZoom(0.05), 0.2);
+  assert.equal(clampCanvasZoom(0.95), 0.95);
+});
+
+// -----------------------------------------------------------------------------
+// [12] FAZ C: EXPANDED CONTENT PACKS & CONTEXTUAL BLOCK CUSTOMIZER
+// -----------------------------------------------------------------------------
+console.log('\n🧩 [12] Faz C Expanded Content Packs & Block Customizer');
+
+test('CONTENT_PACK_ASSETS contains 5+ Navbars, 4+ Footers, 3+ Sliders, 7+ Content Blocks with unique node IDs', () => {
+  const navs = PRESET_ASSETS.filter((a) => a.category === 'Navbar');
+  const footers = PRESET_ASSETS.filter((a) => a.category === 'Footer');
+  const sliders = PRESET_ASSETS.filter((a) => a.category === 'Slider');
+  const blocks = PRESET_ASSETS.filter((a) => a.category === 'İçerik Blokları');
+
+  assert.ok(navs.length >= 5, `Expected >=5 navbars, got ${navs.length}`);
+  assert.ok(footers.length >= 4, `Expected >=4 footers, got ${footers.length}`);
+  assert.ok(sliders.length >= 3, `Expected >=3 sliders, got ${sliders.length}`);
+  assert.ok(blocks.length >= 7, `Expected >=7 blocks, got ${blocks.length}`);
+
+  const presetKeys = CONTENT_PACK_ASSETS.map((p) => p.presetKey);
+  assert.equal(new Set(presetKeys).size, CONTENT_PACK_ASSETS.length, 'Duplicate presetKey found in CONTENT_PACK_ASSETS');
+});
+
+test('blockCustomizerUtils resolves enclosing navbar/slider, adds/removes links & slides, and rethemes contrast cleanly', () => {
+  const nav = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'nav-saas-split').element, { x: 0, y: 0 });
+  const slider = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'slider-hero-showcase').element, { x: 40, y: 100 });
+  const tree = [nav, slider];
+
+  const firstLink = nav.children.find((c) => c.type === 'a');
+  const owned = findOwningBlock(tree, firstLink.id);
+  assert.equal(owned.blockNode.id, nav.id);
+  assert.equal(owned.blockKind, 'navbar');
+  assert.equal(owned.isAncestor, true);
+
+  const navModel = extractBlockInspectorModel(nav);
+  assert.ok(navModel.brandNode && navModel.brandNode.text === 'STUDIO PRO');
+  assert.equal(navModel.linkNodes.length, 4);
+  assert.equal(navModel.ctaNodes.length, 2);
+
+  // Add and remove nav link
+  const navWith5Links = addNavbarLinkItem(nav, 'Blog', '#blog');
+  const navModel5 = extractBlockInspectorModel(navWith5Links);
+  assert.equal(navModel5.linkNodes.length, 5);
+  const addedLink = navModel5.linkNodes.find((l) => l.text === 'Blog');
+  assert.ok(addedLink);
+
+  const navBackTo4 = removeBlockChildById(navWith5Links, addedLink.id);
+  assert.equal(extractBlockInspectorModel(navBackTo4).linkNodes.length, 4);
+
+  // Retheme to light
+  const lightNav = applyBlockThemePreset(navWith5Links, 'light');
+  assert.equal(lightNav.style.backgroundColor, '#ffffff');
+  const lightModel = extractBlockInspectorModel(lightNav);
+  assert.equal(lightModel.brandNode.color, '#09090b');
+
+  // Slider add & remove slide
+  assert.equal(detectBlockKind(slider), 'slider');
+  const sliderWith4 = addSliderSlideItem(slider);
+  assert.equal(sliderWith4.sliderConfig.totalSlides, 4);
+  assert.equal(sliderWith4.sliderConfig.slideIds.length, 4);
+  const dots4 = sliderWith4.children.filter((c) => c.events?.onClick?.mode === 'slider_goto');
+  assert.equal(dots4.length, 4);
+  assert.equal(dots4[3].events.onClick.slideIndex, 3);
+
+  const lastSlideId = sliderWith4.sliderConfig.slideIds[3];
+  const sliderBack3 = removeSliderSlideItem(sliderWith4, lastSlideId);
+  assert.equal(sliderBack3.sliderConfig.totalSlides, 3);
+  assert.equal(sliderBack3.sliderConfig.slideIds.length, 3);
+});
+
+// -----------------------------------------------------------------------------
+// [13] FAZ D: AI AGENT FULL-SITE & SECTION-SCOPED EDITING
+// -----------------------------------------------------------------------------
+console.log('\n🤖 [13] Faz D AI Agent Full-Site & Section-Scoped Editing');
+
+test('aiAgentUtils resolves full_site vs selection scope, parses markdown JSON, sanitizes AST tags/styles, and patches ONLY targeted section', () => {
+  const nav = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'nav-corporate-dark').element, { x: 0, y: 0 });
+  const hero = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'block-split-hero').element, { x: 40, y: 90 });
+  const footer = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'footer-enterprise-dark').element, { x: 0, y: 580 });
+  const pageTree = [nav, hero, footer];
+
+  // Auto scope with selection -> selection mode targeting ONLY hero
+  const selScope = resolveAiTargetScope(pageTree, [hero.id], 'auto');
+  assert.equal(selScope.effectiveMode, 'selection');
+  assert.deepEqual(selScope.targetIds, [hero.id]);
+
+  // Empty selection with selection mode requested -> falls back to full_site
+  const emptyScope = resolveAiTargetScope(pageTree, [], 'selection');
+  assert.equal(emptyScope.effectiveMode, 'full_site');
+
+  const promptSel = buildAiSystemPrompt({
+    effectiveMode: 'selection',
+    elements: pageTree,
+    targetNodes: selScope.targetNodes,
+    userPrompt: 'Hero arka planını değiştir',
+  });
+  assert.ok(promptSel.includes('updatedNodes'));
+  assert.ok(promptSel.includes(hero.id));
+
+  // Simulated markdown-wrapped Gemini JSON with rectangle + kebab-case CSS + modified hero title
+  const fakeAiReply = '```json\n' + JSON.stringify({
+    message: 'Hero bölümü yenilendi.',
+    updatedNodes: [
+      {
+        id: hero.id,
+        type: 'section',
+        name: 'Yeni Hero',
+        x: 40,
+        y: 90,
+        width: 1200,
+        height: 460,
+        style: { 'background-color': '#1e1b4b', 'border-radius': '24px' },
+        children: [
+          {
+            id: 'ai-hero-box',
+            type: 'rectangle',
+            x: 40,
+            y: 40,
+            width: 500,
+            height: 80,
+            textContent: 'Yapay Zeka İle Güçlendirildi',
+            style: { color: '#ffffff' },
+          },
+        ],
+      },
+    ],
+  }) + '\n```';
+
+  const parsed = parseAiJsonResponse(fakeAiReply);
+  const patched = applyAiResponseToTree({
+    elements: pageTree,
+    parsedResponse: parsed,
+    effectiveMode: 'selection',
+    targetIds: [hero.id],
+    currentStageHeight: 1350,
+  });
+
+  // Navbar and Footer must remain completely untouched; Hero updated & rectangle -> div, backgroundColor camelCase
+  assert.equal(patched.nextElements.length, 3);
+  assert.equal(patched.nextElements[0].id, nav.id);
+  assert.deepEqual(patched.nextElements[0], nav);
+  assert.deepEqual(patched.nextElements[2], footer);
+  assert.equal(patched.nextElements[1].style.backgroundColor, '#1e1b4b');
+  assert.equal(patched.nextElements[1].style.borderRadius, '24px');
+  assert.equal(patched.nextElements[1].children[0].type, 'div');
+
+  // Full-site sanitization ensures unique IDs and tall stage height
+  const sanitizedDup = sanitizeAiAstNodes([
+    { id: 'dup', type: 'nav', x: 0, y: 0, width: 1280, height: 72 },
+    { id: 'dup', type: 'footer', x: 0, y: 1800, width: 1280, height: 260 },
+  ]);
+  assert.notEqual(sanitizedDup[0].id, sanitizedDup[1].id);
+  const fullResult = applyAiResponseToTree({
+    elements: [],
+    parsedResponse: { elements: sanitizedDup },
+    effectiveMode: 'full_site',
+  });
+  assert.ok(fullResult.recommendedHeight >= 2140);
+});
+
+// -----------------------------------------------------------------------------
+// 19. FAZ 2: AUTOSAVE DRAFT RECOVERY, WEB SNAPSHOT FALLBACK & LOSS-FREE SAVE AS
+// -----------------------------------------------------------------------------
+console.log('\n💾 [19] Faz 2 Autosave Recovery, Save As & Responsive Init Integrity');
+
+test('normalizeProjectTab detects initialized viewports accurately without over-marking tablet/mobile', () => {
+  const desktopOnly = createTagElement('text', { id: 'dt-only', textContent: 'Masaüstü' });
+  const tabA = normalizeProjectTab({
+    id: 't1',
+    name: 'Hakkımızda.craft',
+    elements: [desktopOnly],
+    canvasByViewport: createDefaultCanvasByViewport(),
+  }, 1);
+  assert.equal(tabA.route, '/hakkimizda');
+  assert.deepEqual(tabA.initializedViewports, { desktop: true, tablet: false, mobile: false });
+  assert.equal(slugifyTabRoute('Hakkımızda.craft', 0), '/');
+
+  const withMobile = {
+    ...desktopOnly,
+    responsive: { mobile: { x: 12, y: 20, width: 340 } },
+  };
+  assert.deepEqual(detectInitializedViewports([withMobile], true), {
+    desktop: true,
+    tablet: false,
+    mobile: true,
+  });
+});
+
+test('web storage fallback, clearAutosaveDraft & Save As distinct file preservation work end-to-end', () => {
+  const map = {};
+  const storageWithRemove = {
+    getItem: (k) => (k in map ? map[k] : null),
+    setItem: (k, v) => { map[k] = String(v); },
+    removeItem: (k) => { delete map[k]; },
+  };
+  const minimalStorage = {
+    getItem: (k) => (k in map ? map[k] : null),
+    setItem: (k, v) => { map[k] = String(v); },
+  };
+
+  const proj1 = buildSerializableProjectSchema({
+    id: 'proj-f2-1',
+    name: 'Ana Proje',
+    filePath: '/tmp/ana-proje.craft.json',
+    tabs: [{ id: 'tab-home', name: 'Anasayfa.craft', elements: [createTagElement('text', { id: 'tx1', textContent: 'Merhaba' })] }],
+    pageLinks: [{ label: 'Ana', href: '/' }],
+  });
+
+  // Save As creates distinct recent project entry without erasing original path
+  const proj2 = buildSerializableProjectSchema({
+    ...proj1,
+    id: 'proj-f2-2',
+    name: 'Ana Proje v2',
+    filePath: '/tmp/ana-proje-v2.craft.json',
+  });
+
+  upsertRecentProject(proj1, storageWithRemove);
+  const afterSaveAs = upsertRecentProject(proj2, storageWithRemove);
+  assert.equal(afterSaveAs.length, 2);
+  assert.equal(afterSaveAs[0].hasWebSnapshot, true);
+  assert.equal(afterSaveAs[1].hasWebSnapshot, true);
+
+  // Saved project can be loaded directly from web storage even if snapshot removed, then deleted
+  assert.equal(saveProjectToWebStorage(proj1, storageWithRemove), true);
+  const restoredProj = loadProjectFromWebStorage('proj-f2-1', storageWithRemove);
+  assert.equal(restoredProj.name, 'Ana Proje');
+  assert.equal(restoredProj.pageLinks.length, 1);
+  assert.equal(deleteProjectFromWebStorage('proj-f2-1', storageWithRemove), true);
+  assert.equal(loadProjectFromWebStorage('proj-f2-1', storageWithRemove), null);
+
+  // Autosave draft save -> load -> clear works with both storage types
+  assert.equal(saveAutosaveDraft(proj2, storageWithRemove), true);
+  assert.equal(loadAutosaveDraft(storageWithRemove).name, 'Ana Proje v2');
+  assert.equal(clearAutosaveDraft(storageWithRemove), true);
+  assert.equal(loadAutosaveDraft(storageWithRemove), null);
+
+  assert.equal(saveAutosaveDraft(proj2, minimalStorage), true);
+  assert.equal(clearAutosaveDraft(minimalStorage), true);
+  assert.equal(loadAutosaveDraft(minimalStorage), null);
+});
+
+// -----------------------------------------------------------------------------
+// FAZ 4 — EXPANDED PRESET LIBRARY, THUMBNAILS & MULTI-CARD SLIDER EDITING
+// -----------------------------------------------------------------------------
+console.log('\n🧩 [13] Faz 4 Expanded Content Packs, Multi-Card Sliders & Export Integrity');
+
+test('CONTENT_PACK_ASSETS reaches 6+ Navbars, 5+ Footers, 4+ Interactive Sliders & 7+ Blocks with unique internal node IDs', () => {
+  const navs = PRESET_ASSETS.filter((a) => a.category === 'Navbar');
+  const footers = PRESET_ASSETS.filter((a) => a.category === 'Footer');
+  const sliders = PRESET_ASSETS.filter((a) => a.category === 'Slider');
+  const blocks = PRESET_ASSETS.filter((a) => a.category === 'İçerik Blokları');
+
+  assert.ok(navs.length >= 6, `Expected >=6 navbars, got ${navs.length}`);
+  assert.ok(footers.length >= 5, `Expected >=5 footers, got ${footers.length}`);
+  assert.ok(sliders.length >= 4, `Expected >=4 sliders, got ${sliders.length}`);
+  assert.ok(blocks.length >= 7, `Expected >=7 content blocks, got ${blocks.length}`);
+
+  ['nav-ecommerce-search', 'footer-contact-map', 'slider-logo-clients'].forEach((key) => {
+    assert.ok(CONTENT_PACK_ASSETS.some((p) => p.presetKey === key), `Missing presetKey ${key}`);
+  });
+
+  CONTENT_PACK_ASSETS.forEach((pack) => {
+    const flat = flattenTree([pack.element]);
+    const ids = flat.map((n) => n.id);
+    assert.equal(new Set(ids).size, ids.length, `Duplicate internal node id inside ${pack.presetKey}`);
+  });
+});
+
+test('multi-card slider active-slide editing exposes extraTexts & extraImages cleanly', () => {
+  const logoSlider = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'slider-logo-clients').element, { x: 60, y: 120 });
+  const logoModel = extractBlockInspectorModel(logoSlider);
+  assert.equal(logoModel.blockKind, 'slider');
+  assert.equal(logoModel.slides.length, 3);
+  // Slide 1 has 1 kicker + 4 cards * 3 texts (code, h4, p) -> titleNode (first h4) + descNode (first >10ch p/span) + remaining texts
+  assert.ok(logoModel.slides[0].titleNode, 'First client brand heading should be bound to titleNode');
+  assert.ok(logoModel.slides[0].extraTexts.length >= 10, `Expected multi-card extraTexts >= 10, got ${logoModel.slides[0].extraTexts.length}`);
+
+  const collectionSlider = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'slider-collection-strip').element, { x: 60, y: 500 });
+  const colModel = extractBlockInspectorModel(collectionSlider);
+  assert.ok(colModel.slides[0].imgNode, 'Primary card image should populate imgNode');
+  assert.equal(colModel.slides[0].extraImages.length, 1, 'Second collection card image should populate extraImages');
+  assert.ok(colModel.slides[0].extraTexts.some((t) => t.text.includes('Altın Kolye')), 'Second card title should be directly editable in extraTexts');
+});
+
+test('new Faz 4 presets export to valid parseable React JSX and Standalone HTML5', () => {
+  const ecomNav = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'nav-ecommerce-search').element, { x: 0, y: 0 });
+  const clientSlider = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'slider-logo-clients').element, { x: 60, y: 120 });
+  const contactFooter = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'footer-contact-map').element, { x: 0, y: 460 });
+
+  const prevBtn = clientSlider.children.find((c) => c.events?.onClick?.mode === 'slider_prev');
+  assert.equal(prevBtn.events.onClick.targetElementId, clientSlider.id, 'Cloned slider control targetElementId must remap to cloned slider root');
+
+  const elements = [ecomNav, clientSlider, contactFooter];
+  const stage = { width: 1280, height: 750, backgroundColor: '#111113' };
+  const samplePageLinks = [
+    { id: 'pl-1', sourceElementId: 'nav-link-1', targetTabId: 'tab-about', label: 'Hakkımızda' },
+  ];
+  const generated = generateModularReactProject(elements, stage, null, {
+    projectName: 'Faz4 Vitrin Test',
+    tabs: [{ id: 'tab-faz4', name: 'Anasayfa.craft', route: '/', elements }],
+    pageLinks: samplePageLinks,
+    viewportMode: 'tablet',
+    activeTabId: 'tab-faz4',
+  });
+  const jsxFields = [
+    'mainJsx',
+    'appCode',
+    'navbarCode',
+    'heroCode',
+    'productCardCode',
+    'productsSectionCode',
+    'customElementsCode',
+    'footerCode',
+  ];
+  let parsedJsxCount = 0;
+  jsxFields.forEach((fieldKey) => {
+    const code = generated[fieldKey];
+    assert.equal(typeof code, 'string', `${fieldKey} should be generated`);
+    assert.ok(code.length > 0, `${fieldKey} should be non-empty`);
+    assert.doesNotThrow(
+      () => parseBabel(code, { sourceType: 'module', plugins: ['jsx'] }),
+      `${fieldKey} JSX parse failed`
+    );
+    parsedJsxCount++;
+  });
+  assert.equal(parsedJsxCount, jsxFields.length);
+  assert.ok(generated.customElementsCode.includes('KARTAL STORE'), 'Navbar brand missing in generated.customElementsCode');
+  assert.ok(generated.customElementsCode.includes('NORDIC LABS'), 'Partner slider content missing in generated.customElementsCode');
+
+  const parsedProjectJson = JSON.parse(generated.craftProjectJson);
+  assert.deepEqual(parsedProjectJson.pageLinks, samplePageLinks, 'craftProjectJson must preserve pageLinks');
+  assert.equal(parsedProjectJson.viewportMode, 'tablet', 'craftProjectJson must preserve viewportMode');
+
+  assert.ok(generated.standaloneHtml.includes('KARTAL STORE'), 'Navbar brand missing in generated.standaloneHtml');
+  assert.ok(generated.standaloneHtml.includes('NORDIC LABS'), 'Partner slider content missing in generated.standaloneHtml');
+
+  const html = buildStandaloneHtmlSite({
+    projectName: 'Faz4 Vitrin Test',
+    tabs: [{ id: 'tab-faz4', name: 'Anasayfa.craft', route: '/', elements, canvasSettings: stage }],
+    elements,
+    canvasSettings: stage,
+    activeTabId: 'tab-faz4',
+  });
+  assert.ok(html.includes('KARTAL STORE'), 'Navbar brand missing in standalone HTML');
+  assert.ok(html.includes('type="search"'), 'Search input attribute missing in standalone HTML');
+  assert.ok(html.includes('NORDIC LABS'), 'Partner slider content missing in standalone HTML');
+  assert.ok(html.includes('ÇALIŞMA SAATLERİ'), 'Contact footer content missing in standalone HTML');
+  assert.ok(html.includes('switchSlider('), 'Interactive slider runtime missing in standalone HTML');
+});
+
+test('addSliderSlideItem and removeSliderSlideItem keep .slideIndex and dots synchronized through 0..N-1', () => {
+  const slider = clonePresetSubtree(
+    PRESET_ASSETS.find((a) => a.presetKey === 'slider-logo-clients').element,
+    { x: 60, y: 120 }
+  );
+
+  // Add 4th slide
+  const added = addSliderSlideItem(slider, 2);
+  assert.equal(added.sliderConfig.activeSlideIndex, 3, 'New slide should become active');
+  const addedSlides = added.children.filter((c) => c.sliderRole === 'slide');
+  const addedDots = added.children.filter((c) => c.sliderRole === 'dot');
+  assert.equal(addedSlides.length, 4);
+  assert.equal(addedDots.length, 4);
+  assert.deepEqual(addedSlides.map((s) => s.slideIndex), [0, 1, 2, 3], 'Slides must have sequential .slideIndex 0..3');
+  assert.deepEqual(addedDots.map((d) => d.slideIndex), [0, 1, 2, 3], 'Dots must have sequential .slideIndex 0..3');
+  assert.deepEqual(
+    addedDots.map((d) => d.events?.onClick?.slideIndex),
+    [0, 1, 2, 3],
+    'Dot click events must target sequential slide indices 0..3'
+  );
+
+  const inspectorAfterAdd = extractBlockInspectorModel(added);
+  assert.equal(inspectorAfterAdd.slides.length, 4);
+  assert.deepEqual(inspectorAfterAdd.slides.map((s) => s.slideIndex), [0, 1, 2, 3]);
+
+  // Verify 4th slide renders visibly (no display:none / is-slide-hidden on slide 3)
+  const jsxSlide4 = renderAstElementToJsx(added, '  ', { preserveCanvasCoords: true });
+  assert.ok(jsxSlide4.includes('data-craft-slide-index="3"'), 'JSX must emit slideIndex 3');
+  assert.ok(!jsxSlide4.includes('data-craft-slide-index="3" style={') || !/data-craft-slide-index="3"[^>]*display":"none"/.test(jsxSlide4));
+  const htmlSlide4 = buildStandaloneHtmlSite({
+    projectName: 'Slider 4 Test',
+    tabs: [{ id: 'tab-s4', name: 'Home', route: '/', elements: [added] }],
+    elements: [added],
+    activeTabId: 'tab-s4',
+  });
+  const slide4TagMatch = htmlSlide4.match(/<div[^>]*data-craft-slide-index="3"[^>]*>/);
+  assert.ok(slide4TagMatch, 'Slide 4 tag must exist in standalone HTML');
+  assert.ok(!slide4TagMatch[0].includes('is-slide-hidden'), 'Newly activated Slide 4 must be visible (not is-slide-hidden)');
+
+  // Delete middle slide (index 1, by slideId) -> remaining 3 slides must re-index cleanly to 0, 1, 2
+  const removedMid = removeSliderSlideItem(added, addedSlides[1].id);
+  const remSlides = removedMid.children.filter((c) => c.sliderRole === 'slide');
+  const remDots = removedMid.children.filter((c) => c.sliderRole === 'dot');
+  assert.equal(remSlides.length, 3);
+  assert.equal(remDots.length, 3);
+  assert.deepEqual(remSlides.map((s) => s.slideIndex), [0, 1, 2], 'Remaining slides must re-index to 0..2');
+  assert.deepEqual(remDots.map((d) => d.slideIndex), [0, 1, 2], 'Remaining dots must re-index to 0..2');
+  assert.deepEqual(
+    remDots.map((d) => d.events?.onClick?.slideIndex),
+    [0, 1, 2],
+    'Dot click indices must re-index to 0..2'
+  );
+  assert.ok(removedMid.sliderConfig.activeSlideIndex <= 2, 'activeSlideIndex must stay within bounds');
+});
+
+test('applyBlockThemePreset rethemes <article>, <blockquote>, <input>, slides and supports light <-> midnight round-trip', () => {
+  const collection = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'slider-collection-strip').element);
+  const testimonials = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'slider-testimonials').element);
+  const ecomNav = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'nav-ecommerce-search').element);
+  const showcase = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'block-product-showcase').element);
+
+  const lightCollection = applyBlockThemePreset(collection, 'light');
+  const lightArticles = flattenTree([lightCollection]).filter((n) => (n.type || '').toLowerCase() === 'article');
+  assert.ok(lightArticles.length >= 2);
+  lightArticles.forEach((art) => {
+    assert.equal(art.style?.backgroundColor, '#f8fafc', 'Light theme must paint <article> cards with light cardBg');
+  });
+
+  const darkAgainCollection = applyBlockThemePreset(lightCollection, 'midnight');
+  const darkArticles = flattenTree([darkAgainCollection]).filter((n) => (n.type || '').toLowerCase() === 'article');
+  darkArticles.forEach((art) => {
+    assert.equal(art.style?.backgroundColor, '#18181c', 'Midnight theme must restore <article> cards after Light theme');
+  });
+
+  const lightTestimonials = applyBlockThemePreset(testimonials, 'light');
+  const quotes = flattenTree([lightTestimonials]).filter((n) => (n.type || '').toLowerCase() === 'blockquote');
+  assert.ok(quotes.length >= 1);
+  assert.equal(quotes[0].style?.color, '#09090b', 'Light theme must recolor <blockquote> text to dark ink');
+  const slidesAfterLight = flattenTree([lightTestimonials]).filter((n) => n.sliderRole === 'slide');
+  assert.ok(slidesAfterLight.every((s) => s.style?.backgroundColor === '#ffffff' && !s.style?.background), 'Light theme must recolor gradient slides');
+
+  const lightNav = applyBlockThemePreset(ecomNav, 'light');
+  const searchInput = flattenTree([lightNav]).find((n) => (n.type || '').toLowerCase() === 'input');
+  assert.ok(searchInput, 'E-commerce nav must contain <input>');
+  assert.equal(searchInput.style?.backgroundColor, '#f4f4f5', 'Light theme must paint <input> with inputBg');
+  assert.equal(searchInput.style?.color, '#09090b', 'Light theme must paint <input> text dark');
+
+  const lightShowcase = applyBlockThemePreset(showcase, 'light');
+  const showcaseCards = flattenTree([lightShowcase]).filter((n) => (n.name || '').startsWith('Ürün Kartı'));
+  assert.equal(showcaseCards.length, 3);
+  showcaseCards.forEach((card) => {
+    assert.equal(card.style?.backgroundColor, '#f8fafc', 'Showcase cards must switch to light cardBg');
+  });
+
+  const clientSlider = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'slider-logo-clients').element);
+  const lightClients = applyBlockThemePreset(clientSlider, 'light');
+  const clientArticles = flattenTree([lightClients]).filter((n) => (n.type || '').toLowerCase() === 'article');
+  assert.ok(clientArticles.length >= 4);
+  clientArticles.forEach((card) => {
+    assert.equal(card.style?.backgroundColor, '#f8fafc', 'Client logo <article> cards must switch to light cardBg');
+  });
+});
+
+test('FAQ accordion toggles interactively across AST, React JSX and Standalone HTML and exposes navbar/footer inputs in BlockCustomizer', () => {
+  const faq = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'block-faq-accordion').element, { x: 80, y: 120 });
+  const faqFlat = flattenTree([faq]);
+  const items = faqFlat.filter((n) => n.accordionRole === 'item');
+  assert.equal(items.length, 3, 'FAQ block should contain 3 accordion items');
+  assert.equal(items[0].accordionOpen, true, 'First FAQ item starts open');
+  assert.equal(items[1].accordionOpen, false, 'Second FAQ item starts collapsed');
+  items.forEach((item) => {
+    assert.equal(item.events?.onClick?.mode, 'accordion_toggle');
+    assert.equal(item.events?.onClick?.targetElementId, item.id, 'clonePresetSubtree must remap accordion_toggle targetElementId');
+  });
+
+  // React onClick helper codegen
+  assert.equal(buildReactOnClickExpression(items[1].events.onClick), `() => toggleAccordion(${JSON.stringify(items[1].id)})`);
+
+  // Preview mode toggle simulation
+  let runtimeOverrides = {};
+  const toggleRes = executeNodeClickEvent(items[1], {
+    elements: [faq],
+    runtimeOverrides,
+    setRuntimeOverrides: (next) => {
+      runtimeOverrides = next;
+    },
+  });
+  assert.equal(toggleRes.ok, true);
+  assert.equal(toggleRes.action, 'accordion_toggle');
+  assert.equal(toggleRes.accordionOpen, true, 'Clicking collapsed FAQ item should return accordionOpen: true');
+  assert.equal(runtimeOverrides[items[1].id]?.accordionOpen, true, 'runtimeOverrides should record opened state for clicked FAQ item');
+
+  // React JSX & Standalone HTML serialization
+  const faqGenerated = generateModularReactProject([faq], { width: 1280, height: 600, backgroundColor: '#111113' }, null, {
+    projectName: 'FAQ Export Test',
+    tabs: [{ id: 'tab-faq', name: 'FAQ', route: '/', elements: [faq] }],
+  });
+  assert.doesNotThrow(
+    () => parseBabel(faqGenerated.customElementsCode, { sourceType: 'module', plugins: ['jsx'] }),
+    'FAQ customElementsCode must parse cleanly as JSX'
+  );
+  assert.ok(faqGenerated.customElementsCode.includes('const toggleAccordion ='), 'React runtime must include toggleAccordion');
+  assert.ok(faqGenerated.customElementsCode.includes('data-craft-accordion-item="1"'), 'React JSX must emit accordion item metadata');
+  assert.ok(faqGenerated.standaloneHtml.includes('function toggleAccordion('), 'Standalone HTML must include toggleAccordion');
+  assert.ok(faqGenerated.standaloneHtml.includes('data-craft-accordion-toggle='), 'Standalone HTML must include accordion toggle delegates');
+  assert.ok(faqGenerated.standaloneHtml.includes('data-craft-accordion-panel="1"'), 'Standalone HTML must include accordion panel markers');
+
+  // BlockCustomizer inputNodes extraction for search nav & newsletter footer
+  const ecomNav = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'nav-ecommerce-search').element);
+  const newsletterFooter = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'footer-newsletter-cta').element);
+  const navModel = extractBlockInspectorModel(ecomNav);
+  const footerModel = extractBlockInspectorModel(newsletterFooter);
+  assert.equal(navModel.inputNodes.length, 1, 'Search navbar must expose 1 inputNode');
+  assert.equal(navModel.inputNodes[0].inputType, 'search');
+  assert.ok(navModel.inputNodes[0].placeholder.includes('Ürün'), 'Search navbar placeholder must be exposed');
+  assert.equal(footerModel.inputNodes.length, 1, 'Newsletter footer must expose 1 inputNode');
+  assert.equal(footerModel.inputNodes[0].inputType, 'email');
+  assert.equal(footerModel.inputNodes[0].placeholder, 'ornek@marka.com', 'Newsletter placeholder must be exposed');
+});
+
+// -----------------------------------------------------------------------------
+// 21. FLOATING CONVERSATIONAL AI CHAT: REDESIGN INTENT, MEMORY & UNDO SAFETY
+// -----------------------------------------------------------------------------
+console.log('\n🤖 [21] Floating Conversational AI & Redesign Intent');
+
+test('AI utils detect redesign critique ("bu olmamış"), build multi-turn contents & preserve section anchor position', () => {
+  assert.equal(detectAiRedesignIntent('bu olmamış knk baştan tasarla'), true);
+  assert.equal(detectAiRedesignIntent('beğenmedim şurayı'), true);
+  assert.equal(detectAiRedesignIntent('başlığı sadece ortala'), false);
+
+  assert.ok(
+    resolveAiTemperature({ effectiveMode: 'selection', isRedesign: true }) >
+      resolveAiTemperature({ effectiveMode: 'selection', isRedesign: false }),
+    'Redesign intent must raise creativity temperature'
+  );
+
+  const nav = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'nav-corporate-dark').element, { x: 0, y: 0 });
+  const hero = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'block-split-hero').element, { x: 40, y: 520 });
+  const promptRedesign = buildAiSystemPrompt({
+    effectiveMode: 'selection',
+    elements: [nav, hero],
+    targetNodes: [hero],
+    userPrompt: 'knk burası olmamış, daha lüks yap',
+  });
+  assert.ok(promptRedesign.includes('YENİDEN TASARIM (REDESIGN) MODU AKTİF'));
+  assert.ok(promptRedesign.includes('Tamam knk'));
+
+  const multiTurn = buildGeminiRequestContents({
+    conversationHistory: [
+      { id: 'welcome', role: 'assistant', text: 'Selam' },
+      { id: 'u1', role: 'user', promptText: 'hero olmamış', text: 'hero olmamış' },
+      { id: 'a1', role: 'assistant', rawMessage: 'Tamam knk, Hero kısmını yeniledim.', text: 'Tamam knk' },
+      { id: 'err1', role: 'assistant', isError: true, text: 'timeout error' },
+    ],
+    systemPrompt: 'FINAL_LIVE_PROMPT',
+  });
+  assert.equal(multiTurn.length, 3);
+  assert.equal(multiTurn[0].role, 'user');
+  assert.equal(multiTurn[1].role, 'model');
+  assert.equal(multiTurn[2].role, 'user');
+  assert.equal(multiTurn[2].parts[0].text, 'FINAL_LIVE_PROMPT');
+
+  // If AI omits x/y or emits 0/0 while patching lower section, preserve section's original anchor (x:40, y:520)
+  const patchedPreserved = applyAiResponseToTree({
+    elements: [nav, hero],
+    parsedResponse: {
+      message: 'Tamam knk, yeniledim.',
+      updatedNodes: [{ id: hero.id, type: 'section', height: 480, style: { backgroundColor: '#111113' }, children: [] }],
+    },
+    effectiveMode: 'selection',
+    targetIds: [hero.id],
+  });
+  assert.equal(patchedPreserved.nextElements[1].x, 40);
+  assert.equal(patchedPreserved.nextElements[1].y, 520);
+  assert.deepEqual(patchedPreserved.appliedTargetIds, [hero.id]);
+  assert.ok(Array.isArray(patchedPreserved.changes) && patchedPreserved.changes.length >= 1, 'AI apply without explicit changes must produce deterministic AST diff bullets');
+  assert.ok(patchedPreserved.changes.some((c) => /Hero|arka plan|yükseklik/i.test(c)));
+
+  const withExplicitChanges = applyAiResponseToTree({
+    elements: [nav, hero],
+    parsedResponse: {
+      message: 'Tamam knk, adım adım düzenledim.',
+      changes: ['Hero arka planı mat siyaha çekildi', 'Ana başlık boyutu büyütüldü'],
+      updatedNodes: [{ id: hero.id, type: 'section', height: 500, style: { backgroundColor: '#111113' }, children: [] }],
+    },
+    effectiveMode: 'selection',
+    targetIds: [hero.id],
+  });
+  assert.deepEqual(withExplicitChanges.changes, ['Hero arka planı mat siyaha çekildi', 'Ana başlık boyutu büyütüldü']);
+  const sysPromptStr = buildAiSystemPrompt({ effectiveMode: 'full_site', elements: [nav], userPrompt: 'Kafe sitesi yap' });
+  assert.ok(sysPromptStr.includes('"changes"'), 'AI system prompt must request teker teker changes array');
+});
+
+console.log('\n🚀 [22] Publish / Export Reliability Regression Suite');
+
+test('mixed Demo + FAQ/Slider keeps modular template, respects edited hero fillColor, omits removed sections & normalizes custom top offset', () => {
+  const clonedStarter = structuredClone(DEFAULT_UNIVERSAL_PROJECT);
+  const withoutFooterAndProducts = clonedStarter.filter(
+    (el) => el.id !== 'elem-footer' && el.name !== 'Footer' && el.id !== 'elem-features-section' && el.name !== 'FeaturesSection'
+  );
+  const heroNode = withoutFooterAndProducts.find((el) => el.name === 'HeroSection' || el.id === 'elem-hero' || el.name?.includes('Hero'));
+  assert.ok(heroNode, 'Cloned starter should contain Hero node');
+  heroNode.fillType = 'solid';
+  heroNode.fillColor = '#312e81';
+
+  const faqBlock = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'block-faq-accordion').element, { x: 60, y: 1400 });
+  const floatingBadge = createTagElement('div', {
+    x: 24,
+    y: 24,
+    width: 140,
+    height: 36,
+    textContent: 'CANLI',
+    positionMode: 'fixed',
+  });
+
+  const elements = [...withoutFooterAndProducts, faqBlock, floatingBadge];
+  const stage = { width: 1440, height: 1800, backgroundColor: '#111113' };
+  const generated = generateModularReactProject(elements, stage, null, {
+    projectName: 'Karma Vitrin',
+    tabs: [{ id: 'tab-home', name: 'Anasayfa', route: '/', elements, canvasSettings: stage }],
+    activeTabId: 'tab-missing-fallback',
+  });
+
+  assert.equal(generated.usesModularTemplate, true);
+  assert.ok(generated.heroCode.includes('#312e81'), 'Edited Hero fillColor must override default starter style.background');
+  assert.ok(!generated.appCode.includes('<Footer'), 'Removed Footer must be omitted from App.jsx');
+  assert.ok(!generated.appCode.includes('<ProductsSection'), 'Removed ProductsSection must be omitted from App.jsx');
+  assert.ok(generated.customElementsCode.includes('"position":"fixed"'), 'positionMode: fixed must stay fixed in CustomElementsSection');
+  assert.ok(generated.customElementsCode.includes('"top":"1400px"'), 'Unified modular stage renders custom elements at exact canvas top coordinate');
+  assert.ok(generated.standaloneHtml.includes('#312e81') || generated.standaloneHtml.includes('Hero'), 'Standalone HTML must generate cleanly even when activeTabId misses');
+
+  ['mainJsx', 'appCode', 'navbarCode', 'heroCode', 'productCardCode', 'productsSectionCode', 'customElementsCode', 'footerCode'].forEach((key) => {
+    assert.doesNotThrow(
+      () => parseBabel(generated[key], { sourceType: 'module', plugins: ['jsx'] }),
+      `${key} should parse as valid JSX`
+    );
+  });
+});
+
+test('multi-page React SPA routing & Standalone HTML case-insensitive page navigation', () => {
+  const homeNav = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'nav-corporate-dark').element, { x: 0, y: 0 });
+  const homeHero = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'block-split-hero').element, { x: 40, y: 120 });
+  const aboutFaq = clonePresetSubtree(PRESET_ASSETS.find((a) => a.presetKey === 'block-faq-accordion').element, { x: 40, y: 120 });
+  const aboutBtn = createTagElement('button', {
+    x: 40,
+    y: 40,
+    width: 180,
+    height: 44,
+    textContent: 'Hakkımıza Git',
+    style: { display: 'flex', justifyContent: 'center', alignItems: 'center' },
+    events: { onClick: { mode: 'navigate_page', targetPageId: 'tab-about' } },
+  });
+
+  const tabs = [
+    { id: 'tab-home', name: 'Anasayfa', route: '/', elements: [homeNav, homeHero, aboutBtn], canvasSettings: { width: 1280, height: 900, backgroundColor: '#111113' } },
+    { id: 'tab-about', name: 'Hakkımızda', route: '/hakkimizda', elements: [aboutFaq], canvasSettings: { width: 1280, height: 900, backgroundColor: '#111113' } },
+  ];
+
+  const generated = generateModularReactProject(tabs[0].elements, tabs[0].canvasSettings, null, {
+    projectName: 'Çok Sayfalı Site',
+    tabs,
+    activeTabId: 'tab-home',
+  });
+
+  assert.ok(generated.appCode.includes('CRAFT_ROUTES'), 'Multi-page React project must emit CRAFT_ROUTES');
+  assert.ok(generated.appCode.includes('handleNavigatePage'), 'Multi-page React project must emit handleNavigatePage');
+  assert.ok(generated.customElementsCode.includes('goToPage("tab-about")'), 'Button onClick must emit goToPage("tab-about") handler');
+  assert.ok(generated.customElementsCode.includes('Hakkımızda') || generated.customElementsCode.includes('/hakkimizda') || generated.appCode.includes('/hakkimizda'), 'Route metadata for second page must be emitted');
+  assert.ok(generated.customElementsCode.includes('"alignItems":"center"'), 'Flex button style should keep alignItems center cleanly');
+
+  ['mainJsx', 'appCode', 'customElementsCode'].forEach((key) => {
+    assert.doesNotThrow(
+      () => parseBabel(generated[key], { sourceType: 'module', plugins: ['jsx'] }),
+      `${key} multi-page JSX must parse cleanly`
+    );
+  });
+
+  assert.ok(generated.customElementsCode.includes('data-craft-route="/hakkimizda"') || generated.customElementsCode.includes('data-craft-route={"/hakkimizda"}'), 'CustomElementsSection must emit secondary page route');
+  const html = buildStandaloneHtmlSite({
+    projectName: 'Çok Sayfalı Site',
+    tabs,
+    activeTabId: 'tab-home',
+  });
+  assert.ok(html.includes('data-route="/hakkimizda"'), 'Standalone HTML must emit secondary page section');
+  assert.ok(html.includes('toLowerCase()'), 'Standalone goToPage should match routes and page names case-insensitively');
+  assert.ok(/text-align:\s*center/.test(html) && html.includes('text-align:inherit;') && html.includes('Hakkımıza Git'), 'Standalone HTML flex button label span must center-align cleanly and inherit responsive overrides');
+});
+
+test('export sanitizes tricky HTML/JSX attrs, escapes </script> in functions, preserves form inputs & emits responsive CSS rules', () => {
+  const textareaNode = createTagElement('textarea', {
+    x: 20,
+    y: 20,
+    width: 240,
+    height: 80,
+    textContent: 'Merhaba mesaj',
+    attrs: { value: 'Merhaba mesaj', placeholder: 'Mesajınız' },
+  });
+  const checkboxNode = createTagElement('input', {
+    x: 280,
+    y: 20,
+    width: 22,
+    height: 22,
+    attrs: { type: 'checkbox', checked: true },
+  });
+  const selectNode = createTagElement('select', {
+    x: 20,
+    y: 120,
+    width: 240,
+    height: 40,
+    children: [
+      createTagElement('option', { x: 0, y: 0, width: 200, height: 30, textContent: 'Seçenek A' }),
+    ],
+  });
+  const trickySvg = createTagElement('svg', {
+    x: 20,
+    y: 180,
+    width: 48,
+    height: 48,
+    attrs: {
+      style: 'padding: 12px 16px; border-radius: 10px;',
+      class: 'raw-icon',
+      className: 'dup-icon',
+      onclick: 'alert(1)',
+      'stroke-width': '2',
+      viewbox: '0 0 24 24',
+    },
+    customData: {
+      responsive: {
+        mobile: {
+          opacity: 75,
+          fillColor: '#f59e0b',
+          borderRadius: 16,
+        },
+      },
+    },
+  });
+  const actionBtn = createTagElement('button', {
+    x: 20,
+    y: 250,
+    width: 160,
+    height: 42,
+    textContent: 'Aç',
+    events: {
+      onClick: { mode: 'open_url', url: 'https://example.com', newTab: true },
+    },
+  });
+  const classBtn = createTagElement('button', {
+    x: 200,
+    y: 250,
+    width: 160,
+    height: 42,
+    textContent: 'Sınıf',
+    events: {
+      onClick: { mode: 'add_class', targetElementId: trickySvg.id, className: 'is-active' },
+    },
+  });
+
+  const functions = [
+    {
+      id: 'fn-1',
+      name: 'Guvenli Fonksiyon',
+      steps: [{ type: 'custom_code', code: 'const s = "</script><script>alert(1)</script>";' }],
+    },
+  ];
+  const elements = [textareaNode, checkboxNode, selectNode, trickySvg, actionBtn, classBtn];
+  const stage = { width: 1280, height: 800, backgroundColor: '#111113' };
+
+  const jsx = renderAstElementToJsx(trickySvg, 0, { functions });
+  assert.ok(!jsx.includes(' onclick='), 'Inline onclick HTML attribute must be stripped from JSX');
+  assert.ok(jsx.includes('strokeWidth='), 'SVG stroke-width must convert to strokeWidth');
+  assert.ok(jsx.includes('viewBox='), 'SVG viewbox must convert to viewBox');
+  assert.equal((jsx.match(/\bclassName=/g) || []).length, 1, 'Duplicate class + className must collapse to one className');
+
+  const checkboxJsx = renderAstElementToJsx(checkboxNode, 0, { functions });
+  assert.ok(checkboxJsx.includes('defaultChecked'), 'input checked attribute must convert to defaultChecked in JSX');
+
+  const generated = generateModularReactProject(elements, stage, null, {
+    projectName: 'Sanitize Test',
+    tabs: [{ id: 't1', name: 'Ana', route: '/', elements, canvasSettings: stage }],
+    functions,
+    activeTabId: 't1',
+  });
+
+  assert.doesNotThrow(
+    () => parseBabel(generated.customElementsCode, { sourceType: 'module', plugins: ['jsx'] }),
+    'Sanitized tricky attributes & events must parse cleanly in Babel JSX'
+  );
+  assert.ok(generated.customElementsCode.includes('defaultValue'), 'Form input/textarea value must use defaultValue in JSX');
+  assert.ok(generated.customElementsCode.includes('addClass'), 'add_class action helper must be emitted in CustomElementsSection');
+
+  const html = buildStandaloneHtmlSite({
+    projectName: 'Sanitize Test',
+    tabs: [{ id: 't1', name: 'Ana', route: '/', elements, canvasSettings: stage }],
+    functions,
+    activeTabId: 't1',
+  });
+  assert.ok(!html.includes('<textarea[^>]*><span>') && !html.includes('<span>Merhaba mesaj</span></textarea>'), 'Textarea content must be plain text, not wrapped in <span>');
+  assert.ok(!html.includes('<span>Seçenek A</span></option>'), 'Option content must be plain text, not wrapped in <span>');
+  assert.ok(!html.includes('alert(1)</script>";'), 'Raw </script> inside inline JSON/script must be escaped');
+  assert.ok(html.includes('opacity: 0.75'), 'Responsive mobile opacity override must be emitted in standalone CSS');
+  assert.ok(html.includes('border-radius: 16px'), 'Responsive mobile borderRadius override must be emitted in standalone CSS');
+  assert.ok(html.includes('background-color: #f59e0b'), 'Responsive mobile fillColor override must be emitted in standalone CSS');
+});
+
+test('Canvas 1:1 Publish parity: strips position:relative, respects left text align, gradient override, stage min-height & product_card', () => {
+  const demoClone = structuredClone(DEFAULT_UNIVERSAL_PROJECT);
+  const hero = demoClone.find((n) => n.id === 'elem-hero');
+  assert.ok(hero, 'Starter project should have elem-hero');
+  hero.style = { ...(hero.style || {}), background: 'linear-gradient(90deg, #000000, #111111)' };
+  hero.fillType = 'gradient';
+  hero.gradient = { angle: 120, color1: '#ff0080', color2: '#7928ca' };
+
+  const card1Title = flattenTree(demoClone).find((n) => n.id === 'elem-card-1-title');
+  assert.ok(card1Title, 'Starter project should have elem-card-1-title');
+  card1Title.textContent = '1:1 Özelleştirilmiş Başlık';
+
+  const standaloneProduct = createTagElement('product_card', {
+    x: 40,
+    y: 2300,
+    width: 320,
+    height: 360,
+    customData: {
+      productName: 'Lüks Kolye',
+      productDesc: '18K Altın kaplama',
+      productPrice: '₺4.900',
+      productTag: 'Yeni',
+    },
+  });
+  const allEls = [...demoClone, standaloneProduct];
+  const stage = { width: 1280, height: 1350, bgColor: '#faf7f2' };
+
+  const reactProject = generateModularReactProject(allEls, stage, null, {
+    projectName: 'Birebir Fidelity',
+    tabs: [{ id: 'tab-1', name: 'Anasayfa', route: '/', elements: allEls, canvasSettings: stage }],
+    activeTabId: 'tab-1',
+  });
+
+  // 1. Starter cards must NOT keep position:relative
+  assert.ok(!reactProject.productsSectionCode.includes('"position":"relative"'), 'Published React cards must strip preset position:relative');
+  assert.ok(!reactProject.heroCode.includes('"position":"relative"'), 'Published React hero must strip preset position:relative');
+  assert.ok(reactProject.heroCode.includes('#ff0080') && reactProject.heroCode.includes('#7928ca'), 'Gradient fill must override stale style.background in JSX');
+  assert.ok(reactProject.productsSectionCode.includes('1:1 Özelleştirilmiş Başlık'), 'User edits to starter card AST must propagate into ProductsSection.jsx');
+  const heroTitleLine = reactProject.heroCode.split('\n').find((l) => l.includes('data-craft-id="elem-hero-title"'));
+  assert.ok(heroTitleLine && heroTitleLine.includes('"textAlign":"left"'), 'Left-aligned Hero heading must emit textAlign:"left" on elem-hero-title');
+  assert.ok(reactProject.customElementsCode.includes('Lüks Kolye'), 'Lone product_card must render structured product UI in JSX');
+
+  ['appCode', 'navbarCode', 'heroCode', 'productsSectionCode', 'footerCode', 'customElementsCode'].forEach((k) => {
+    assert.doesNotThrow(
+      () => parseBabel(reactProject[k], { sourceType: 'module', plugins: ['jsx'] }),
+      `${k} must parse cleanly in Babel`
+    );
+  });
+
+  const html = reactProject.standaloneHtml;
+  assert.ok(!html.includes('position:relative;top:') && !html.includes('id="elem-card-1" style="[^"]*position:relative'), 'Standalone cards must use position:absolute');
+  assert.ok(!/data-craft-id="elem-card-1"[^>]*style="[^"]*position:relative/.test(html), 'elem-card-1 in HTML must not keep position:relative');
+  assert.ok(!/data-craft-id="elem-hero-title"[^>]*style="[^"]*text-align:center/.test(html), 'elem-hero-title must remain left aligned');
+  assert.ok(html.includes('#ff0080') && html.includes('#7928ca'), 'Gradient fill must override stale style.background in HTML');
+  assert.ok(html.includes('<body style="margin:0;padding:0;background:#faf7f2;">'), 'Standalone HTML body must adopt stage background');
+  assert.ok(html.includes('h1, h2, h3, h4, h5, h6, p') && html.includes('margin: 0; padding: 0;'), 'Standalone HTML must reset heading/paragraph default margins to match Canvas Tailwind Preflight');
+  assert.ok(html.includes('min-height:2660px'), 'Stage min-height must expand to bottom-most element (2300+360=2660)');
+  assert.ok(html.includes('Lüks Kolye') && html.includes('₺4.900'), 'Standalone HTML product_card must render product fields');
+});
+
+test('Responsive export fixes: overlaid mobile sliders, compact flat nav, aligned footer columns, zero dot Buton text & React file:// fallback', () => {
+  const byKey = (k) => PRESET_ASSETS.find((a) => a.presetKey === k).element;
+  const nav = clonePresetSubtree(byKey('nav-boutique-commerce'), { x: 0, y: 0 });
+  const slider = clonePresetSubtree(byKey('slider-hero-showcase'), { x: 40, y: 92 });
+  const faq = clonePresetSubtree(byKey('block-faq-accordion'), { x: 40, y: 560 });
+  const footer = clonePresetSubtree(byKey('footer-newsletter-cta'), { x: 0, y: 1020 });
+  const els = [nav, slider, faq, footer];
+
+  const adaptedMob = ensureViewportAdapted(els, 'mobile', { forceReset: true }).tree;
+  const resolvedMob = resolveTreeForViewport(adaptedMob, 'mobile');
+
+  const mobNav = resolvedMob[0];
+  assert.ok(mobNav.height <= 165, `Mobile boutique navbar must stay compact (got ${mobNav.height}px)`);
+
+  const mobSlider = resolvedMob[1];
+  const mobSlides = mobSlider.children.filter((c) => c.sliderRole === 'slide');
+  const mobDots = mobSlider.children.filter((c) => c.sliderRole === 'dot');
+  assert.ok(mobSlider.height < 950, `Mobile slider must overlay slides instead of stacking vertically (got ${mobSlider.height}px)`);
+  mobSlides.forEach((s) => {
+    assert.equal(s.x, 0, 'All mobile slides must stay anchored at x=0');
+    assert.equal(s.y, 0, 'All mobile slides must stay overlaid at y=0');
+  });
+  mobDots.forEach((d) => {
+    assert.equal(d.width, 10, `Slider dot width must stay 10px on mobile (got ${d.width})`);
+  });
+
+  const mobFooter = resolvedMob[3];
+  const mobColHeading = mobFooter.children.find((c) => c.textContent === 'KOLEKSİYONLAR');
+  assert.ok(mobColHeading && mobColHeading.x <= 24, `Stacked mobile footer column must align left at padX (got x=${mobColHeading?.x})`);
+
+  const stage = { width: 1280, height: 1350, backgroundColor: '#09090b' };
+  const reactOut = generateModularReactProject(els, stage, null, { projectName: 'Mobile Parity' });
+  const htmlOut = buildStandaloneHtmlSite({ projectName: 'Mobile Parity', elements: els, canvasSettings: stage });
+
+  assert.ok(reactOut.viteConfig.includes("base: './'"), 'Exported vite.config.js must set base: "./"');
+  assert.ok(reactOut.indexCss.includes("font-family: 'Inter'"), 'Exported index.css must set Inter base font');
+  assert.ok(reactOut.indexHtml.includes("location.protocol === 'file:'"), 'Vite index.html must redirect to live-preview.html if opened via file://');
+  assert.ok(!htmlOut.includes('>Buton<'), 'Slider dot buttons must never inject Buton placeholder text in HTML');
+  assert.ok(!reactOut.customElementsCode.includes('<span>Buton</span>'), 'Slider dot buttons must never inject Buton placeholder text in React');
+
+  // Re-anchoring check: Cart button inside resized navbar (1280 -> 375) must keep 32% (120px) on mobile instead of desktop 9.375%
+  const cartNode = nav.children.find((c) => c.textContent === 'Sepetim (2)');
+  assert.ok(cartNode, 'Boutique nav must contain Sepetim (2) button');
+  assert.ok(htmlOut.includes(`[data-craft-id="${cartNode.id}"]`) && htmlOut.includes('width: 32% !important'), 'Mobile CSS must re-anchor cart button width to 375px parent');
+});
+
+// -----------------------------------------------------------------------------
+// 23. CODE FILE IMPORT (.html / .jsx), AI CREATIVITY & AURELIA LUXURY STARTER
+// -----------------------------------------------------------------------------
+console.log('\n💎 [23] Website Code Importer, AI Creativity & Luxury Starter');
+
+test('importSiteCodeToProjectSchema parses raw HTML, React JSX, and multi-page exported HTML into editable CraftStudio projects', () => {
+  const rawHtml = `<!DOCTYPE html>
+  <html>
+    <head>
+      <title>Solstice Takı</title>
+      <style>
+        .hero-box { background-color: #161311; color: #f5efe6; border-radius: 20px; }
+      </style>
+    </head>
+    <body style="background-color:#0b0a09;">
+      <nav style="background:#12100e;color:#f5efe6;">
+        <a href="#kolye">Koleksiyon</a>
+        <button>Randevu</button>
+      </nav>
+      <section class="hero-box">
+        <h1 style="font-size:48px;color:#d4af37;">El Yapımı Altın Koleksiyon</h1>
+        <p>Sınırlı üretim 18K takılar.</p>
+        <img src="https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=800" alt="Altın" />
+      </section>
+      <footer><span>© 2026 Solstice</span></footer>
+    </body>
+  </html>`;
+
+  const htmlSchema = importSiteCodeToProjectSchema(rawHtml, 'solstice.html');
+  assert.equal(htmlSchema.name, 'Solstice Takı');
+  assert.equal(htmlSchema.tabs.length, 1);
+  const rootEls = htmlSchema.tabs[0].elements;
+  assert.ok(rootEls.some((n) => n.type === 'nav'), 'Must import <nav> element');
+  const heroSec = rootEls.find((n) => n.type === 'section');
+  assert.ok(heroSec && heroSec.fillColor === '#161311', 'Must cascade CSS class rules into fillColor');
+  assert.ok(flattenTree(rootEls).some((n) => n.type === 'h1' && n.textContent.includes('El Yapımı Altın')), 'Must extract h1 headline');
+  assert.ok(flattenTree(rootEls).some((n) => n.type === 'img' && n.attrs?.src?.includes('unsplash')), 'Must preserve img src attribute');
+
+  // Round-trip exported multi-page standalone HTML
+  const exportedMulti = buildStandaloneHtmlSite({
+    projectName: 'Multi Roundtrip',
+    tabs: [
+      { id: 't1', name: 'Anasayfa.craft', route: '/', elements: DEFAULT_UNIVERSAL_PROJECT, canvasSettings: { width: 1280, height: 1350, backgroundColor: '#0b0a09' } },
+      { id: 't2', name: 'Hakkimizda.craft', route: '/hakkimizda', elements: [createTagElement('h2', { x: 80, y: 60, width: 600, height: 50, textContent: 'Atölye Tarihi' })], canvasSettings: { width: 1280, height: 900, backgroundColor: '#0b0a09' } },
+    ],
+  });
+  const roundtripSchema = importSiteCodeToProjectSchema(exportedMulti, 'exported.html');
+  assert.equal(roundtripSchema.tabs.length, 2, 'Multi-page standalone HTML export must round-trip all tabs');
+  assert.equal(roundtripSchema.tabs[1].route, '/hakkimizda');
+
+  // React JSX component file import
+  const jsxCode = `
+    import React from 'react';
+    export default function LandingPage() {
+      return (
+        <section className="bg-[#12100e] rounded-2xl">
+          <h1 className="text-4xl font-bold text-[#e5c465]">Atölye Modern</h1>
+          <button>İncele</button>
+        </section>
+      );
+    }
+  `;
+  const jsxSchema = importSiteCodeToProjectSchema(jsxCode, 'LandingPage.jsx');
+  assert.equal(jsxSchema.name, 'LandingPage');
+  assert.ok(flattenTree(jsxSchema.tabs[0].elements).some((n) => n.type === 'h1' && n.textContent === 'Atölye Modern'));
+  assert.ok(flattenTree(jsxSchema.tabs[0].elements).some((n) => n.type === 'button' && n.textContent === 'İncele'));
+});
+
+test('AI prompt system enforces non-cliche creative art direction & higher creative temperatures', () => {
+  assert.ok(resolveAiTemperature({ effectiveMode: 'full_site', isRedesign: false }) >= 0.8);
+  assert.ok(resolveAiTemperature({ effectiveMode: 'full_site', isRedesign: true }) >= 0.9);
+  assert.ok(resolveAiTemperature({ effectiveMode: 'selection', isRedesign: true }) >= 0.8);
+
+  const prompt = buildAiSystemPrompt({
+    effectiveMode: 'full_site',
+    userPrompt: 'Lüks bir saat markası sitesi tasarla',
+  });
+  assert.ok(prompt.includes('SANAT YÖNETMENLİĞİ'), 'System prompt must embed creative art direction rules');
+  assert.ok(prompt.includes('Playfair Display'), 'System prompt must instruct editorial serif + sans pairings');
+  assert.ok(!DEFAULT_UNIVERSAL_PROJECT.find((n) => n.id === 'elem-badge')?.textContent?.includes('🚀'), 'Starter badge must be clean editorial copy without cliché emojis');
+  assert.ok(flattenTree(DEFAULT_UNIVERSAL_PROJECT).some((n) => n.id === 'elem-hero-visual' && n.type === 'img'), 'Luxury starter must include hero editorial image');
 });
 
 // -----------------------------------------------------------------------------

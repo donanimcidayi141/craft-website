@@ -61,13 +61,14 @@ export default function ExportModal({
   viewportMode = 'desktop',
   tabs = [],
   projectFunctions = [],
+  pageLinks = [],
   projectName = 'CraftStudio Projesi',
   projectFilePath = '',
 }) {
   const hasElectron = typeof window !== 'undefined' && Boolean(window.electronAPI?.exportToDesktop);
 
   const [rightTab, setRightTab] = useState('preview'); // 'preview' | 'structure' | 'code'
-  const [buildMode, setBuildMode] = useState('react'); // 'react' | 'html'
+  const [buildMode, setBuildMode] = useState('html'); // 'html' | 'react'
   const [folderNameInput, setFolderNameInput] = useState('');
   const [targetBaseDir, setTargetBaseDir] = useState('');
   const [defaultsInfo, setDefaultsInfo] = useState({ desktopPath: '', documentsPath: '', homePath: '' });
@@ -78,6 +79,8 @@ export default function ExportModal({
   );
   const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   const previewContainerRef = useRef(null);
+  const backdropMouseDownRef = useRef(false);
+  const prevIsOpenRef = useRef(false);
   const [previewContainerSize, setPreviewContainerSize] = useState({ width: 720, height: 500 });
 
   const [activeFileKey, setActiveFileKey] = useState('liveHtml');
@@ -91,22 +94,42 @@ export default function ExportModal({
     [folderNameInput, projectName]
   );
 
-  // Generate React source bundle + pixel-accurate multi-page Standalone HTML
-  const projectFiles = useMemo(() => {
-    if (!isOpen) return null;
-    return generateModularReactProject(elements, canvasSettings, canvasByViewport, {
-      projectFunctions,
-      tabs,
-      activeTabId,
-      projectName,
-      folderSlug: normalizedSlug,
-    });
-  }, [isOpen, elements, canvasSettings, canvasByViewport, projectFunctions, tabs, activeTabId, projectName, normalizedSlug]);
+  // Generate React source bundle + pixel-accurate multi-page Standalone HTML safely
+  const { projectFiles, buildError } = useMemo(() => {
+    if (!isOpen) return { projectFiles: null, buildError: null };
+    try {
+      const files = generateModularReactProject(elements, canvasSettings, canvasByViewport, {
+        projectFunctions,
+        tabs,
+        pageLinks,
+        viewportMode,
+        activeTabId,
+        projectName,
+        folderSlug: normalizedSlug,
+      });
+      return { projectFiles: files, buildError: null };
+    } catch (err) {
+      console.error('Yayın paketi derleme hatası:', err);
+      return {
+        projectFiles: null,
+        buildError: err?.message || 'Yayın paketi derlenirken beklenmedik bir hata oluştu.',
+      };
+    }
+  }, [isOpen, elements, canvasSettings, canvasByViewport, projectFunctions, tabs, pageLinks, viewportMode, activeTabId, projectName, normalizedSlug]);
 
-  // Reset modal session & load OS defaults on open
+  // Reset modal session & load OS defaults only when transitioning open
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      prevIsOpenRef.current = false;
+      backdropMouseDownRef.current = false;
+      return;
+    }
+    const justOpened = !prevIsOpenRef.current;
+    prevIsOpenRef.current = true;
+    if (!justOpened) return;
+
     setExportResult(null);
+    setLiveServerInfo((prev) => ({ ...prev, error: null }));
     setFolderNameInput(slugifyProjectFolderName(projectName || 'yayinlanan-react-site'));
     setPreviewViewport(viewportMode === 'mobile' || viewportMode === 'tablet' ? viewportMode : 'desktop');
     setRightTab('preview');
@@ -192,10 +215,13 @@ export default function ExportModal({
     const list = [
       {
         key: 'liveHtml',
-        path: 'live-preview.html',
-        downloadName: `${normalizedSlug}-canli-site.html`,
+        path: buildMode === 'html' ? 'index.html' : 'live-preview.html',
+        downloadName: buildMode === 'html' ? 'index.html' : `${normalizedSlug}-canli-site.html`,
         mime: 'text/html;charset=utf-8',
-        role: 'Kurulumsuz canlı çok sayfalı HTML5 build',
+        role:
+          buildMode === 'html'
+            ? 'Çift tıklayınca doğrudan açılan çok sayfalı hazır web sitesi'
+            : 'Kurulumsuz canlı çok sayfalı HTML5 önizleme',
         content: projectFiles.standaloneHtml,
       },
     ];
@@ -240,6 +266,15 @@ export default function ExportModal({
         { key: 'pkg', path: 'package.json', downloadName: 'package.json', role: 'Bağımlılık ve script bildirimi', content: projectFiles.packageJson },
         { key: 'craftJson', path: 'craft.project.json', downloadName: `${normalizedSlug}.craft.json`, mime: 'application/json;charset=utf-8', role: 'CraftStudio kayıpsız proje şeması', content: projectFiles.craftProjectJson }
       );
+    } else {
+      list.push({
+        key: 'craftJson',
+        path: 'craft.project.json',
+        downloadName: `${normalizedSlug}.craft.json`,
+        mime: 'application/json;charset=utf-8',
+        role: 'CraftStudio kayıpsız yeniden içe aktarma şeması',
+        content: projectFiles.craftProjectJson,
+      });
     }
 
     return list;
@@ -255,7 +290,7 @@ export default function ExportModal({
   const activeFileItem = outputManifest.find((f) => f.key === activeFileKey) || outputManifest[0] || null;
 
   const resolvedTargetPath = useMemo(() => {
-    if (!hasElectron) return `Tarayıcı İndirme · ${normalizedSlug}-canli-site.html`;
+    if (!hasElectron) return `Tarayıcı İndirme · ${normalizedSlug}.html`;
     return targetCheck?.targetPath || joinPathDisplay(targetBaseDir || defaultsInfo.desktopPath, normalizedSlug);
   }, [hasElectron, targetCheck, targetBaseDir, defaultsInfo.desktopPath, normalizedSlug]);
 
@@ -274,6 +309,47 @@ export default function ExportModal({
     setTimeout(() => setCopiedKey(null), 1800);
   }, [activeFileItem]);
 
+  const buildExportPayload = useCallback(
+    (openFolderAfter = false) => ({
+      title: projectName,
+      folderName: normalizedSlug,
+      targetBaseDir: targetBaseDir || defaultsInfo.desktopPath,
+      openFolderAfter,
+      mode: buildMode,
+      tabName,
+      activeTabId,
+      viewportMode,
+      canvasSettings,
+      canvasByViewport,
+      elements,
+      tabs,
+      projectFunctions,
+      pageLinks,
+      standaloneHtml: projectFiles?.standaloneHtml || '',
+      files:
+        buildMode === 'html'
+          ? { standaloneHtml: projectFiles?.standaloneHtml || '', usesModularTemplate: false }
+          : projectFiles,
+    }),
+    [
+      projectFiles,
+      projectName,
+      normalizedSlug,
+      targetBaseDir,
+      defaultsInfo.desktopPath,
+      buildMode,
+      tabName,
+      activeTabId,
+      viewportMode,
+      canvasSettings,
+      canvasByViewport,
+      elements,
+      tabs,
+      projectFunctions,
+      pageLinks,
+    ]
+  );
+
   const handleBuildAndExport = useCallback(async (openFolderAfter = false) => {
     if (!projectFiles) return;
     setIsExporting(true);
@@ -281,31 +357,13 @@ export default function ExportModal({
 
     try {
       if (hasElectron && window.electronAPI?.exportToDesktop) {
-        const res = await window.electronAPI.exportToDesktop({
-          title: projectName,
-          folderName: normalizedSlug,
-          targetBaseDir: targetBaseDir || defaultsInfo.desktopPath,
-          openFolderAfter,
-          mode: buildMode,
-          tabName,
-          activeTabId,
-          viewportMode,
-          canvasSettings,
-          canvasByViewport,
-          elements,
-          tabs,
-          projectFunctions,
-          standaloneHtml: projectFiles.standaloneHtml,
-          files: buildMode === 'html'
-            ? { standaloneHtml: projectFiles.standaloneHtml, usesModularTemplate: false }
-            : projectFiles,
-        });
+        const res = await window.electronAPI.exportToDesktop(buildExportPayload(openFolderAfter));
         setExportResult(res);
         return res;
       }
 
       // Honest Browser mode: download standalone interactive HTML5 build directly
-      const fileName = `${normalizedSlug}-canli-site.html`;
+      const fileName = `${normalizedSlug}.html`;
       triggerBrowserDownload(fileName, projectFiles.standaloneHtml, 'text/html;charset=utf-8');
       const webRes = {
         success: true,
@@ -327,68 +385,47 @@ export default function ExportModal({
     } finally {
       setIsExporting(false);
     }
-  }, [
-    projectFiles,
-    hasElectron,
-    projectName,
-    normalizedSlug,
-    targetBaseDir,
-    defaultsInfo.desktopPath,
-    buildMode,
-    tabName,
-    activeTabId,
-    viewportMode,
-    canvasSettings,
-    canvasByViewport,
-    elements,
-    tabs,
-    projectFunctions,
-  ]);
+  }, [projectFiles, hasElectron, normalizedSlug, buildExportPayload]);
 
   const handleOpenLiveInBrowser = useCallback(async () => {
     if (!projectFiles?.standaloneHtml) return;
     if (hasElectron && window.electronAPI?.launchLiveServer) {
       setIsExporting(true);
+      setLiveServerInfo((prev) => ({ ...prev, error: null }));
       try {
-        let exportedDir = exportResult?.folderPath;
-        if (!exportedDir) {
-          const exportRes = await window.electronAPI.exportToDesktop({
-            title: projectName,
-            folderName: normalizedSlug,
-            targetBaseDir: targetBaseDir || defaultsInfo.desktopPath,
-            openFolderAfter: false,
-            mode: buildMode,
-            tabName,
-            activeTabId,
-            viewportMode,
-            canvasSettings,
-            canvasByViewport,
-            elements,
-            tabs,
-            projectFunctions,
-            standaloneHtml: projectFiles.standaloneHtml,
-            files: buildMode === 'html'
-              ? { standaloneHtml: projectFiles.standaloneHtml, usesModularTemplate: false }
-              : projectFiles,
-          });
-          if (!exportRes?.success) {
+        let resolvedFolder = targetCheck?.targetPath || targetBaseDir || defaultsInfo.desktopPath || '';
+        if (window.electronAPI?.exportToDesktop) {
+          const exportRes = await window.electronAPI.exportToDesktop(buildExportPayload(false));
+          if (exportRes) {
             setExportResult(exportRes);
-            return;
+            if (exportRes.success && exportRes.folderPath) {
+              resolvedFolder = exportRes.folderPath;
+            }
           }
-          setExportResult(exportRes);
-          exportedDir = exportRes.folderPath;
         }
 
         const srvRes = await window.electronAPI.launchLiveServer({
-          targetDir: exportedDir,
+          targetDir: resolvedFolder,
           htmlContent: projectFiles.standaloneHtml,
           openInBrowser: true,
         });
         if (srvRes?.success) {
-          setLiveServerInfo({ running: true, url: srvRes.url, port: srvRes.port, error: null });
+          setLiveServerInfo({
+            running: true,
+            url: srvRes.url,
+            port: srvRes.port,
+            error: srvRes.openWarning ? `Sunucu açık (${srvRes.url}), tarayıcı otomatik açılamadı: ${srvRes.openWarning}` : null,
+          });
         } else {
           setLiveServerInfo({ running: false, url: '', port: null, error: srvRes?.error || 'Yerel canlı sunucu başlatılamadı.' });
         }
+      } catch (err) {
+        setLiveServerInfo({
+          running: false,
+          url: '',
+          port: null,
+          error: err?.message || 'Canlı önizleme sunucusu başlatılırken hata oluştu.',
+        });
       } finally {
         setIsExporting(false);
       }
@@ -398,25 +435,23 @@ export default function ExportModal({
     // Browser mode: launch live Blob preview window cleanly
     const blob = new Blob([projectFiles.standaloneHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    window.open(url, '_blank', 'noopener,noreferrer');
+    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!popup) {
+      setLiveServerInfo((prev) => ({
+        ...prev,
+        error: 'Tarayıcı açılır pencereyi engelledi. İzin verin veya "Canlı Siteyi İndir (.html)" butonunu kullanın.',
+      }));
+    } else {
+      setLiveServerInfo((prev) => ({ ...prev, error: null }));
+    }
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }, [
     projectFiles,
     hasElectron,
-    exportResult,
-    projectName,
-    normalizedSlug,
+    targetCheck?.targetPath,
     targetBaseDir,
     defaultsInfo.desktopPath,
-    buildMode,
-    tabName,
-    activeTabId,
-    viewportMode,
-    canvasSettings,
-    canvasByViewport,
-    elements,
-    tabs,
-    projectFunctions,
+    buildExportPayload,
   ]);
 
   const handleStopLiveServer = useCallback(async () => {
@@ -444,10 +479,59 @@ export default function ExportModal({
     );
   }, [projectFiles, projectName, normalizedSlug, outputManifest]);
 
-  if (!isOpen || !projectFiles) return null;
+  if (!isOpen) return null;
+
+  if (buildError || !projectFiles) {
+    return (
+      <div
+        data-testid="export-modal-backdrop"
+        className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-[2px] flex items-center justify-center p-3"
+        onMouseDown={(e) => {
+          backdropMouseDownRef.current = e.target === e.currentTarget;
+        }}
+        onClick={(e) => {
+          const startedOnBackdrop = backdropMouseDownRef.current;
+          backdropMouseDownRef.current = false;
+          if (startedOnBackdrop && e.target === e.currentTarget) onClose?.();
+        }}
+      >
+        <div className="w-full max-w-md bg-[#18181b] border border-red-500/40 rounded-md shadow-2xl p-5 text-zinc-200 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-red-300 font-semibold text-[13px]">
+              <AlertTriangle size={16} />
+              <span>Yayın Paketi Oluşturulamadı</span>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              title="Kapat"
+              className="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06]"
+            >
+              <X size={15} />
+            </button>
+          </div>
+          <p className="text-[12px] text-zinc-300 font-mono bg-[#101013] border border-[#2c2c31] rounded p-3 break-all">
+            {buildError || 'Proje dosyaları derlenemedi.'}
+          </p>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 rounded bg-[#27272a] hover:bg-[#3f3f46] text-xs font-medium text-zinc-100"
+            >
+              Kapat
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Virtual viewport dimensions & proportional scale for faithful media query testing
-  const virtualViewportWidth = previewViewport === 'mobile' ? 375 : previewViewport === 'tablet' ? 768 : Math.max(960, Number(canvasSettings?.width) || 1280);
+  const activeStageCanvas = canvasByViewport?.[previewViewport] || canvasSettings || {};
+  const virtualViewportWidth = previewViewport === 'mobile' ? 375 : previewViewport === 'tablet' ? 768 : Math.max(960, Number(activeStageCanvas?.width || canvasSettings?.width) || 1280);
+  const virtualStageHeight = Number(activeStageCanvas?.height || canvasSettings?.height) || 1350;
+  const virtualStageBg = activeStageCanvas?.bgColor || activeStageCanvas?.backgroundColor || canvasSettings?.bgColor || canvasSettings?.backgroundColor || '#ffffff';
   const availW = Math.max(260, previewContainerSize.width - 36);
   const availH = Math.max(240, previewContainerSize.height - 64);
   const previewScale = Math.min(1, availW / virtualViewportWidth);
@@ -455,12 +539,18 @@ export default function ExportModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-[2px] flex items-center justify-center p-3 select-none"
+      data-testid="export-modal-backdrop"
+      className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-[2px] flex items-center justify-center p-3"
+      onMouseDown={(e) => {
+        backdropMouseDownRef.current = e.target === e.currentTarget;
+      }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose?.();
+        const startedOnBackdrop = backdropMouseDownRef.current;
+        backdropMouseDownRef.current = false;
+        if (startedOnBackdrop && e.target === e.currentTarget) onClose?.();
       }}
     >
-      <div className="w-[96vw] max-w-[1280px] h-[88vh] min-h-[580px] max-h-[860px] bg-[#18181b] border border-[#2c2c31] rounded-md shadow-2xl flex flex-col overflow-hidden text-zinc-200">
+      <div className="w-[96vw] max-w-[1280px] h-[88vh] min-h-[580px] max-h-[860px] bg-[#18181b] border border-[#2c2c31] rounded-md shadow-2xl flex flex-col overflow-hidden text-zinc-200 select-text">
         {/* Top Workstation Header */}
         <div className="h-11 px-4 bg-[#141417] border-b border-[#2c2c31] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3 min-w-0">
@@ -649,17 +739,6 @@ export default function ExportModal({
                 <div className="grid grid-cols-2 gap-1 p-0.5 bg-[#0f0f12] border border-[#27272c] rounded">
                   <button
                     type="button"
-                    onClick={() => setBuildMode('react')}
-                    className={`py-1.5 px-2 rounded text-[11px] font-medium transition-colors ${
-                      buildMode === 'react'
-                        ? 'bg-[#25252c] text-zinc-100 border border-[#3a3a44]'
-                        : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
-                    }`}
-                  >
-                    React + Canlı HTML
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setBuildMode('html')}
                     className={`py-1.5 px-2 rounded text-[11px] font-medium transition-colors ${
                       buildMode === 'html'
@@ -667,9 +746,25 @@ export default function ExportModal({
                         : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
                     }`}
                   >
-                    Tek Dosya HTML5
+                    Hazır Site (index.html)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBuildMode('react')}
+                    className={`py-1.5 px-2 rounded text-[11px] font-medium transition-colors ${
+                      buildMode === 'react'
+                        ? 'bg-[#25252c] text-zinc-100 border border-[#3a3a44]'
+                        : 'text-zinc-400 hover:text-zinc-200 border border-transparent'
+                    }`}
+                  >
+                    React + Vite Projesi
                   </button>
                 </div>
+                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                  {buildMode === 'html'
+                    ? 'Kurulumsuz tek tıkla çalışan index.html üretir; tarayıcıda doğrudan açılır ve sunucuya yüklenmeye hazırdır.'
+                    : 'Tam React + Vite kaynak kodunu (npm run dev) ve doğrudan açılabilir live-preview.html dosyasını birlikte üretir.'}
+                </p>
               </section>
 
               {/* 3. Telemetry & Build Architecture */}
@@ -927,7 +1022,7 @@ export default function ExportModal({
                       </span>
                     </div>
                     <span className="tabular-nums text-zinc-500 shrink-0 ml-2">
-                      {virtualViewportWidth} × {canvasSettings?.height || 1350}px
+                      {virtualViewportWidth} × {virtualStageHeight}px
                     </span>
                   </div>
 
@@ -938,7 +1033,7 @@ export default function ExportModal({
                       height: `${Math.round(virtualIframeHeight * previewScale)}px`,
                       overflow: 'hidden',
                       position: 'relative',
-                      background: canvasSettings?.bgColor || '#ffffff',
+                      background: virtualStageBg,
                     }}
                   >
                     <iframe
@@ -952,7 +1047,7 @@ export default function ExportModal({
                         border: 'none',
                         transform: `scale(${previewScale})`,
                         transformOrigin: 'top left',
-                        background: '#ffffff',
+                        background: virtualStageBg,
                       }}
                     />
                   </div>

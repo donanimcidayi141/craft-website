@@ -349,8 +349,7 @@ export function createTagElement(tag, overrides = {}) {
     defaultWidth = 160;
     defaultHeight = 40;
   } else if (cleanTag === 'button') {
-    // 🔘 Button: e.g. "Hemen Başlayın 🚀"
-    textContent = overrides.textContent || 'Hemen Başlayın 🚀';
+    textContent = overrides.textContent || 'Hemen Başlayın';
     attrs.type = overrides.attrs?.type || 'button';
     attrs.class = overrides.attrs?.class || 'btn-primary';
     style = {
@@ -598,8 +597,7 @@ export function createTagElement(tag, overrides = {}) {
     defaultWidth = 500;
     defaultHeight = 320;
   } else if (cleanTag === 'ul' || cleanTag === 'ol') {
-    // 📋 List: feature items
-    textContent = overrides.textContent || '⚡ Hızlı Performans • 🎨 Kolay Tasarım • 📦 React Çıktısı';
+    textContent = overrides.textContent || 'Hızlı Performans • Modüler Tasarım • React Çıktısı';
     style = {
       color: '#334155',
       fontSize: '14px',
@@ -612,7 +610,7 @@ export function createTagElement(tag, overrides = {}) {
     defaultWidth = 380;
     defaultHeight = 50;
   } else if (cleanTag === 'li') {
-    textContent = overrides.textContent || '⚡ Yüksek performanslı ve ölçeklenebilir altyapı';
+    textContent = overrides.textContent || 'Yüksek performanslı ve ölçeklenebilir altyapı';
     style = {
       color: '#334155',
       fontSize: '14px',

@@ -235,7 +235,7 @@ export default function LayersPanel({
                   }}
                   onBlur={() => handleCommitRename(node.id)}
                   autoFocus
-                  className="w-full bg-[#0b0d12] border border-blue-500 rounded px-1 text-white text-xs focus:outline-none"
+                  className="w-full bg-[#101013] border border-[#0d99ff] rounded px-1 text-white text-xs focus:outline-none"
                 />
               ) : (
                 <span className="truncate text-xs" title="Çift tıkla yeniden adlandır">
@@ -244,7 +244,7 @@ export default function LayersPanel({
               )}
 
               {node.groupId && (
-                <span className="text-[8px] px-1 rounded bg-purple-900/80 text-purple-200 border border-purple-500/30 flex-shrink-0">
+                <span className="text-[8px] px-1 rounded bg-[#0d99ff]/15 text-[#7dd3fc] border border-[#0d99ff]/30 flex-shrink-0">
                   Grup
                 </span>
               )}
