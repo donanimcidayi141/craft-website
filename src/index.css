@@ -1,0 +1,223 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --studio-bg: #111113;
+    --studio-rail: #141417;
+    --studio-panel: #18181b;
+    --studio-elevated: #202025;
+    --studio-input: #101013;
+    --studio-border: rgba(255, 255, 255, 0.08);
+    --studio-border-strong: rgba(255, 255, 255, 0.16);
+    --studio-accent: #0d99ff;
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: var(--studio-bg);
+    color: #e4e4e7;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Precision Neutral Workstation Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.24);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 153, 255, 0.55);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Precision Range Slider (Figma / DaVinci Resolve style) */
+input[type="range"].studio-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"].studio-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: #e4e4e7;
+  border: 1px solid #0d99ff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+  transition: transform 0.1s ease, background-color 0.1s ease;
+}
+input[type="range"].studio-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+  background: #0d99ff;
+}
+
+/* Studio Matte Floating Surface */
+.studio-glass {
+  background: #18181b;
+  border: 1px solid #2c2c32;
+}
+
+/* Checkerboard background for transparency preview */
+.checkerboard {
+  background-color: #ffffff;
+  background-image: 
+    linear-gradient(45deg, #f0f0f0 25%, transparent 25%), 
+    linear-gradient(-45deg, #f0f0f0 25%, transparent 25%), 
+    linear-gradient(45deg, transparent 75%, #f0f0f0 75%), 
+    linear-gradient(-45deg, transparent 75%, #f0f0f0 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+}
+
+/* Architectural Studio Canvas Dot Grid */
+.canvas-grid {
+  background-color: #090b10;
+  background-image:
+    radial-gradient(circle at 50% 0%, rgba(245, 158, 11, 0.035), transparent 60%),
+    radial-gradient(rgba(255, 255, 255, 0.065) 1px, transparent 1px);
+  background-size: 100% 100%, 24px 24px;
+}
+
+/* 🌟 STUDIO ANIMATION KEYFRAMES & UTILITY CLASSES */
+@keyframes studioFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes studioSlideUp {
+  from { opacity: 0; transform: translateY(32px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes studioSlideDown {
+  from { opacity: 0; transform: translateY(-32px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes studioSlideLeft {
+  from { opacity: 0; transform: translateX(36px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes studioSlideRight {
+  from { opacity: 0; transform: translateX(-36px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes studioZoomIn {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes studioBounceIn {
+  0% { opacity: 0; transform: scale(0.3); }
+  50% { opacity: 0.9; transform: scale(1.05); }
+  70% { transform: scale(0.96); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes studioFloatSlow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes studioPulseGlow {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 2px rgba(59, 130, 246, 0.3)); }
+  50% { opacity: 0.85; filter: drop-shadow(0 0 16px rgba(59, 130, 246, 0.75)); }
+}
+
+.animate-fade-in { animation: studioFadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-slide-up { animation: studioSlideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-slide-down { animation: studioSlideDown 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-slide-left { animation: studioSlideLeft 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-slide-right { animation: studioSlideRight 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-zoom-in { animation: studioZoomIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-bounce-in { animation: studioBounceIn 0.7s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+.animate-float { animation: studioFloatSlow 3.2s ease-in-out infinite; }
+.animate-pulse-glow { animation: studioPulseGlow 2.5s ease-in-out infinite; }
+
+/* Trigger replay class during editor preview */
+.anim-replay {
+  animation-iteration-count: 1 !important;
+}
+
+/* 🌟 LINK / NAVBAR UNDERLINE & HOVER EFFECTS (Configurable via CSS vars) */
+.hover-underline-left,
+.hover-underline-center,
+.hover-underline-right,
+.hover-underline-slide,
+.hover-text-fill-bar {
+  position: relative;
+  overflow: visible !important;
+  transition: color var(--craft-line-duration, 0.28s) ease, transform var(--craft-line-duration, 0.28s) ease;
+}
+
+.hover-underline-left::after,
+.hover-underline-center::after,
+.hover-underline-right::after,
+.hover-underline-slide::after,
+.hover-text-fill-bar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: var(--craft-line-height, 2px);
+  background: var(--craft-line-color, #fbbf24);
+  border-radius: 999px;
+  pointer-events: none;
+  transform: scaleX(0);
+  transition: transform var(--craft-line-duration, 0.28s) cubic-bezier(0.22, 1, 0.36, 1), height var(--craft-line-duration, 0.28s) ease, opacity var(--craft-line-duration, 0.28s) ease;
+}
+
+.hover-underline-left::after { transform-origin: left center; }
+.hover-underline-left:hover::after { transform: scaleX(1); }
+
+.hover-underline-center::after { transform-origin: center center; }
+.hover-underline-center:hover::after { transform: scaleX(1); }
+
+.hover-underline-right::after { transform-origin: right center; }
+.hover-underline-right:hover::after { transform: scaleX(1); }
+
+.hover-underline-slide::after { transform-origin: right center; }
+.hover-underline-slide:hover::after { transform-origin: left center; transform: scaleX(1); }
+
+.hover-text-fill-bar::after {
+  bottom: -1px;
+  opacity: 0.2;
+  transform: scaleX(1);
+}
+.hover-text-fill-bar:hover::after {
+  height: 6px;
+  opacity: 0.45;
+}
+.hover-text-fill-bar:hover {
+  transform: translateY(-2px);
+}

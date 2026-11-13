@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Production & Electron build outputs
+dist/
+out/
+release/
+
+# Environment & local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs & temporary scratch artifacts
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+scratch/
+tmp/
+.cache/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Local project test exports
+*.craft.json
