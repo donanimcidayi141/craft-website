@@ -44,6 +44,17 @@ function createWindow() {
     console.error('Failed to load:', code, desc);
   });
 
+  // Sürükle-bırak edilen dosya/URL'lerin pencereyi file:// ile başka konuma yönlendirmesini engelle
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    const devStartUrl = process.env.ELECTRON_START_URL || 'http://localhost:5173';
+    const isAllowedDev = targetUrl.startsWith(devStartUrl) || targetUrl.startsWith('http://localhost:5173');
+    const normalizedIndexUrl = `file://${indexPath.replace(/\\/g, '/')}`;
+    const isAllowedProd = decodeURI(targetUrl).startsWith(normalizedIndexUrl);
+    if (!isAllowedDev && !isAllowedProd) {
+      event.preventDefault();
+    }
+  });
+
   mainWindow.webContents.on('console-message', (e, level, message, line, sourceId) => {
     console.log(`[Renderer ${level}] ${message} (${sourceId}:${line})`);
   });
@@ -314,7 +325,7 @@ ipcMain.handle('open-project-dialog', async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
-      title: 'Açılacak Proje Klasörünü Seçin (CraftStudio veya Harici Web Sitesi)'
+      title: 'Açılacak Proje Klasörünü Seçin (CraftStudio veya Harici Web Sitesi)',
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -326,7 +337,7 @@ ipcMain.handle('open-project-dialog', async () => {
     return importResult;
   } catch (error) {
     console.error('Project open dialog error:', error);
-    return { success: false, error: error.message };
+    return { success: false, errorCode: 'DOSYA_OKUNAMADI', error: 'Dosya okunamadı.' };
   }
 });
 
@@ -337,7 +348,7 @@ ipcMain.handle('import-project-folder', async (event, folderPath) => {
     return importResult;
   } catch (error) {
     console.error('Import project folder error:', error);
-    return { success: false, error: error.message };
+    return { success: false, errorCode: 'DOSYA_OKUNAMADI', error: 'Dosya okunamadı.' };
   }
 });
 
@@ -545,12 +556,12 @@ ipcMain.handle('save-project-file', async (event, payload = {}) => {
 ipcMain.handle('open-project-file-dialog', async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Web Sitesi veya Proje Dosyası Aç (.html, .jsx, .craft.json)',
+      title: 'Web Sitesi veya Proje Dosyası Aç (.html, .htm, .jsx, .tsx, .craft.json)',
       properties: ['openFile'],
       filters: [
-        { name: 'Web & CraftStudio Dosyaları (*.html, *.jsx, *.tsx, *.craft.json)', extensions: ['html', 'htm', 'jsx', 'tsx', 'json', 'craft'] },
+        { name: 'Web & CraftStudio Dosyaları (*.html, *.htm, *.jsx, *.tsx, *.craft.json)', extensions: ['html', 'htm', 'jsx', 'tsx', 'json', 'craft'] },
         { name: 'HTML / React Web Sayfaları (*.html, *.htm, *.jsx, *.tsx)', extensions: ['html', 'htm', 'jsx', 'tsx'] },
-        { name: 'CraftStudio Projesi (*.craft.json, *.craft, *.json)', extensions: ['json', 'craft'] },
+        { name: 'CraftStudio Projesi (*.craft.json)', extensions: ['json', 'craft'] },
         { name: 'Tüm Dosyalar', extensions: ['*'] },
       ],
     });
@@ -558,16 +569,30 @@ ipcMain.handle('open-project-file-dialog', async () => {
       return { canceled: true };
     }
     const filePath = result.filePaths[0];
-    const content = fs.readFileSync(filePath, 'utf8');
+    const stat = fs.statSync(filePath);
+    if (stat.size > 5 * 1024 * 1024) {
+      return {
+        success: false,
+        errorCode: 'COK_BUYUK',
+        error: 'Dosya çok büyük (en fazla 5 MB).',
+        filePath,
+        fileName: path.basename(filePath),
+        size: stat.size,
+      };
+    }
+    const buf = fs.readFileSync(filePath);
+    const content = buf.toString('utf8').replace(/^\uFEFF/, '');
     return {
       success: true,
       filePath,
       fileName: path.basename(filePath),
+      size: stat.size,
+      bytes: new Uint8Array(buf),
       content,
     };
   } catch (error) {
     console.error('Open project file error:', error);
-    return { success: false, error: error.message };
+    return { success: false, errorCode: 'DOSYA_OKUNAMADI', error: 'Dosya okunamadı.' };
   }
 });
 
@@ -575,18 +600,25 @@ ipcMain.handle('open-project-file-dialog', async () => {
 ipcMain.handle('read-project-file', async (event, filePath) => {
   try {
     if (!filePath || !fs.existsSync(filePath)) {
-      return { success: false, error: `Dosya bulunamadı: ${filePath}` };
+      return { success: false, errorCode: 'DOSYA_OKUNAMADI', error: 'Dosya okunamadı.' };
     }
-    const content = fs.readFileSync(filePath, 'utf8');
+    const stat = fs.statSync(filePath);
+    if (stat.size > 5 * 1024 * 1024) {
+      return { success: false, errorCode: 'COK_BUYUK', error: 'Dosya çok büyük (en fazla 5 MB).' };
+    }
+    const buf = fs.readFileSync(filePath);
+    const content = buf.toString('utf8').replace(/^\uFEFF/, '');
     return {
       success: true,
       filePath,
       fileName: path.basename(filePath),
+      size: stat.size,
+      bytes: new Uint8Array(buf),
       content,
     };
   } catch (error) {
     console.error('Read project file error:', error);
-    return { success: false, error: error.message };
+    return { success: false, errorCode: 'DOSYA_OKUNAMADI', error: 'Dosya okunamadı.' };
   }
 });
 

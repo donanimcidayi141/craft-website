@@ -10,9 +10,11 @@ import TagPickerModal from './components/TagPickerModal';
 import ImportReportModal from './components/ImportReportModal';
 import FloatingAIChatDock from './components/FloatingAIChatDock';
 import PresentationOverlay from './components/PresentationOverlay';
-import { importSiteCodeToProjectSchema } from './utils/codeFileImporter';
+import { runImport } from './utils/importPipeline';
 import { useAiChatSession } from './hooks/useAiChatSession';
 import { createTagElement } from './data/tagRegistry';
+import { CONTENT_PACK_ASSETS } from './data/contentPacks';
+import { TEMPLATE_BLUEPRINTS, buildBespokeTemplateElements } from './data/templateBlueprints';
 import { INITIAL_ELEMENTS, DEFAULT_UNIVERSAL_PROJECT } from './constants';
 import {
   migrateFlatToNestedTree,
@@ -69,6 +71,7 @@ import {
 import AttributesCssInspectorModal from './components/AttributesCssInspectorModal';
 import FunctionEditorModal from './components/FunctionEditorModal';
 import StudioRightDock, { DEFAULT_RIGHT_DOCK_WIDTH } from './components/StudioRightDock';
+import ProtoApp from './proto/ProtoApp';
 
 function buildTabState(id, name, elems = [], canvasOrByViewport = {}) {
   const hasPerViewport = canvasOrByViewport && (canvasOrByViewport.desktop || canvasOrByViewport.tablet || canvasOrByViewport.mobile);
@@ -90,7 +93,7 @@ function buildTabState(id, name, elems = [], canvasOrByViewport = {}) {
   };
 }
 
-export default function App() {
+function CraftStudioApp() {
   const [showWelcomeScreen, setShowWelcomeScreen] = useState(true);
   const [showTutorial, setShowTutorial] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -139,6 +142,7 @@ export default function App() {
   const [previewToast, setPreviewToast] = useState(null);
   const previewToastTimerRef = useRef(null);
   const projectFileInputRef = useRef(null);
+  const projectFolderInputRef = useRef(null);
   const [recentProjects, setRecentProjects] = useState(() => loadRecentProjects());
   const [autosaveDraft, setAutosaveDraft] = useState(() => loadAutosaveDraft());
 
@@ -206,6 +210,7 @@ export default function App() {
   const [aiFocusSignal, setAiFocusSignal] = useState(0);
   const [aiHighlightedIds, setAiHighlightedIds] = useState([]);
   const aiHighlightTimerRef = useRef(null);
+  const [pendingWelcomeAiPrompt, setPendingWelcomeAiPrompt] = useState(null);
 
   // Preview Mode
   const [previewMode, setPreviewMode] = useState(false);
@@ -1447,9 +1452,23 @@ export default function App() {
       document.title = 'CraftStudio - Web Tasarımcı & React Oluşturucu';
       return;
     }
+    if (typeof window !== 'undefined' && window.location.hash && window.location.hash !== '#/editor') {
+      window.location.hash = '#/editor';
+    }
     const prefix = hasUnsavedChanges ? '● ' : '';
     document.title = `${prefix}${projectMeta.name || 'CraftStudio Projesi'} — CraftStudio`;
   }, [showWelcomeScreen, hasUnsavedChanges, projectMeta.name]);
+
+  useEffect(() => {
+    const handleAppHashChange = () => {
+      const h = String(window.location.hash || '').toLowerCase();
+      if (h === '#/ice-aktar' || h === '#ice-aktar' || h === '#/projeler' || h === '#projeler' || h === '#/sablonlar' || h === '#sablonlar' || h === '#/') {
+        setShowWelcomeScreen(true);
+      }
+    };
+    window.addEventListener('hashchange', handleAppHashChange);
+    return () => window.removeEventListener('hashchange', handleAppHashChange);
+  }, []);
 
   // Welcome Screen & New Project actions
   const handleStartNewProject = (type) => {
@@ -1477,6 +1496,28 @@ export default function App() {
       setActiveTabId(newTabId);
       setViewportMode('desktop');
       setProjectMeta({ id: newProjId, name: 'Yeni Boş Proje', filePath: null, createdAt: new Date().toISOString() });
+    } else if (type === 'blank-tablet' || type === 'tablet') {
+      const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1280, backgroundColor: '#ffffff' });
+      const newTab = {
+        ...buildTabState(newTabId, 'Tablet-Tasarim.craft', [], byVp),
+        initializedViewports: { desktop: true, tablet: true, mobile: false },
+      };
+      setTabs([newTab]);
+      setTabHistory(newTabId, { elements: [], canvasByViewport: newTab.canvasByViewport });
+      setActiveTabId(newTabId);
+      setViewportMode('tablet');
+      setProjectMeta({ id: newProjId, name: 'Tablet Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() });
+    } else if (type === 'blank-mobile') {
+      const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1200, backgroundColor: '#ffffff' });
+      const newTab = {
+        ...buildTabState(newTabId, 'Mobil-Tasarim.craft', [], byVp),
+        initializedViewports: { desktop: true, tablet: false, mobile: true },
+      };
+      setTabs([newTab]);
+      setTabHistory(newTabId, { elements: [], canvasByViewport: newTab.canvasByViewport });
+      setActiveTabId(newTabId);
+      setViewportMode('mobile');
+      setProjectMeta({ id: newProjId, name: 'Mobil Boş Proje', filePath: null, createdAt: new Date().toISOString() });
     } else if (type === 'mobile') {
       const adapted = ensureViewportAdapted(DEFAULT_UNIVERSAL_PROJECT, 'mobile', { forceReset: true });
       const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1350, backgroundColor: '#0b0a09' });
@@ -1494,6 +1535,202 @@ export default function App() {
     setShowWelcomeScreen(false);
     setFitVersion((v) => v + 1);
   };
+
+  // Karşılama ekranındaki Tane Tane Site Kurgulayıcı veya Hazır Blok Kütüphanesinden modüler proje kurar
+  const handleStartAssembledProject = useCallback((config = {}) => {
+    const {
+      name = 'Tane Tane Web Projesi',
+      tabName = 'Anasayfa.craft',
+      presetKeys = [],
+      backgroundColor = '#0b0a09',
+      device = 'desktop',
+      brandName = '',
+      heroHeadline = '',
+      heroSubtitle = '',
+      aiPrompt = '',
+      templateSlug = '',
+    } = config;
+
+    const newProjId = `proj-${Date.now()}`;
+    const newTabId = `tab-${Date.now()}`;
+    const targetVp = device === 'mobile' || device === 'tablet' ? device : 'desktop';
+    const cleanBrand = String(brandName || '').trim();
+    const cleanHeadline = String(heroHeadline || '').trim();
+    const cleanSubtitle = String(heroSubtitle || '').trim();
+
+    const matchedBlueprint =
+      (templateSlug && TEMPLATE_BLUEPRINTS[templateSlug]) ||
+      Object.values(TEMPLATE_BLUEPRINTS).find(
+        (bp) => cleanBrand && bp.brandName.toLowerCase() === cleanBrand.toLowerCase()
+      ) ||
+      null;
+
+    let currentY = 0;
+    let assembledElements = [];
+
+    if (matchedBlueprint) {
+      const bespokeTree = buildBespokeTemplateElements(matchedBlueprint);
+      if (Array.isArray(bespokeTree) && bespokeTree.length > 0) {
+        assembledElements = bespokeTree;
+        const lastEl = bespokeTree[bespokeTree.length - 1];
+        currentY = (Number(lastEl.y) || 1998) + (Number(lastEl.height) || 268);
+      }
+    }
+
+    if (assembledElements.length === 0) {
+      (Array.isArray(presetKeys) ? presetKeys : []).forEach((key) => {
+        const pack = CONTENT_PACK_ASSETS.find((item) => item.presetKey === key);
+        if (!pack || !pack.element) return;
+
+        const cloned = clonePresetSubtree(pack.element);
+        const elType = String(cloned.type || '').toLowerCase();
+        const elW = Number(cloned.width) || 1160;
+        const elH = Number(cloned.height) || 320;
+        const placement = pack.placement || (elType === 'nav' ? 'top' : elType === 'footer' ? 'bottom' : 'section');
+
+        // Kullanıcı özel marka adı veya başlık girdiyse ilgili alt düğümlere uygula
+        if (Array.isArray(cloned.children)) {
+          cloned.children = cloned.children.map((child) => {
+            const childName = String(child.name || '').toLowerCase();
+            if (cleanBrand && (elType === 'nav' || elType === 'footer')) {
+              if (
+                childName.includes('marka') ||
+                childName.includes('mağaza adı') ||
+                childName.includes('logo metni')
+              ) {
+                return {
+                  ...child,
+                  textContent: cleanBrand.toUpperCase(),
+                  content: cleanBrand.toUpperCase(),
+                };
+              }
+            }
+            if (cleanHeadline && child.type === 'h1') {
+              return { ...child, textContent: cleanHeadline, content: cleanHeadline };
+            }
+            if (cleanSubtitle && child.type === 'p' && childName.includes('hero')) {
+              return { ...child, textContent: cleanSubtitle, content: cleanSubtitle };
+            }
+            return child;
+          });
+        }
+
+        let nextX = Math.max(0, Math.round((1280 - elW) / 2));
+        let nextY = currentY;
+
+        if (placement === 'top') {
+          nextX = elW >= 1260 ? 0 : Math.max(0, Math.round((1280 - elW) / 2));
+          nextY = Number(pack.element?.y) || 0;
+          currentY = Math.max(currentY, nextY + elH + 32);
+        } else if (placement === 'bottom') {
+          nextX = elW >= 1260 ? 0 : Math.max(0, Math.round((1280 - elW) / 2));
+          nextY = Math.max(currentY + 24, 960);
+          currentY = nextY + elH;
+        } else {
+          nextX = Math.max(0, Math.round((1280 - elW) / 2));
+          nextY = Math.max(96, currentY);
+          currentY = nextY + elH + 36;
+        }
+
+        assembledElements.push({
+          ...cloned,
+          x: nextX,
+          y: nextY,
+          positionMode: cloned.positionMode || (elType === 'nav' ? 'sticky' : 'normal'),
+          zIndex: cloned.zIndex || (elType === 'nav' ? 100 : 2),
+        });
+      });
+    }
+
+    const totalDesktopHeight = Math.max(1350, currentY + 48);
+    const byVp = createDefaultCanvasByViewport({
+      width: 1280,
+      height: totalDesktopHeight,
+      backgroundColor: backgroundColor || '#0b0a09',
+    });
+
+    let finalTree = assembledElements;
+    const initViewports = { desktop: true, tablet: false, mobile: false };
+
+    if (targetVp !== 'desktop' && assembledElements.length > 0) {
+      const adapted = ensureViewportAdapted(assembledElements, targetVp, { forceReset: true });
+      finalTree = adapted.tree;
+      byVp[targetVp] = {
+        ...byVp[targetVp],
+        backgroundColor: backgroundColor || '#0b0a09',
+        height: Math.max(1200, adapted.suggestedHeight || totalDesktopHeight),
+      };
+      initViewports[targetVp] = true;
+    } else if (targetVp !== 'desktop') {
+      byVp[targetVp] = {
+        ...byVp[targetVp],
+        backgroundColor: backgroundColor || '#0b0a09',
+      };
+      initViewports[targetVp] = true;
+    }
+
+    const newTab = {
+      ...buildTabState(newTabId, tabName, finalTree, byVp),
+      initializedViewports: initViewports,
+    };
+
+    setProjectFunctions([]);
+    setPageLinks([]);
+    setPreviewMode(false);
+    setPreviewRuntimeOverrides({});
+    setSelectedIds([]);
+    setEditingGroupId(null);
+    setHasUnsavedChanges(assembledElements.length > 0);
+    setTabs([newTab]);
+    setTabHistory(newTabId, { elements: newTab.elements, canvasByViewport: newTab.canvasByViewport });
+    setActiveTabId(newTabId);
+    setViewportMode(targetVp);
+    setProjectMeta({
+      id: newProjId,
+      name: cleanBrand ? `${cleanBrand} — Web Projesi` : name,
+      filePath: null,
+      createdAt: new Date().toISOString(),
+    });
+    setShowWelcomeScreen(false);
+    setFitVersion((v) => v + 1);
+
+    const cleanPrompt = String(aiPrompt || '').trim();
+    if (cleanPrompt) {
+      setAiDockMinimized(false);
+      setLeftSidebarTab('ai');
+      setPendingWelcomeAiPrompt(cleanPrompt);
+    } else if (assembledElements.length > 0) {
+      showToastMessage(`✓ ${assembledElements.length} modüler katman tuvale yerleştirildi`, 'success');
+    }
+  }, [ setTabHistory, showToastMessage ]);
+
+  // Karşılama ekranındaki Gemini komut kutusundan boş tuval + ilk AI isteğini başlatır
+  const handleStartAiPromptFromWelcome = (promptText, options = null) => {
+    const clean = String(promptText || '').trim();
+    if (!clean) return;
+    if (options && typeof options === 'object') {
+      handleStartAssembledProject({
+        name: options.projectName || 'AI Web Projesi',
+        backgroundColor: options.backgroundColor || '#0b0a09',
+        device: options.device || 'desktop',
+        brandName: options.brandName || '',
+        presetKeys: Array.isArray(options.presetKeys) ? options.presetKeys : [],
+        aiPrompt: clean,
+      });
+      return;
+    }
+    handleStartNewProject('blank');
+    setAiDockMinimized(false);
+    setLeftSidebarTab('ai');
+    setPendingWelcomeAiPrompt(clean);
+  };
+
+  useEffect(() => {
+    if (showWelcomeScreen || !pendingWelcomeAiPrompt) return;
+    const promptToSend = pendingWelcomeAiPrompt;
+    setPendingWelcomeAiPrompt(null);
+    aiChat.handleSendPrompt(promptToSend);
+  }, [showWelcomeScreen, pendingWelcomeAiPrompt, aiChat]);
 
   const handleRenameProject = (nextName) => {
     setProjectMeta((prev) => ({ ...prev, name: nextName }));
@@ -1569,7 +1806,8 @@ export default function App() {
       applyLoadedProjectSchema(importedData);
       showToastMessage('✓ Proje başarıyla yüklendi.', 'success');
     } catch (err) {
-      showToastMessage(`Proje açılamadı: ${err.message}`, 'error');
+      console.error('Open project error:', err);
+      showToastMessage('Proje açılamadı.', 'error');
     }
   };
 
@@ -1579,58 +1817,89 @@ export default function App() {
       if (window.electronAPI?.openProjectFileDialog) {
         const res = await window.electronAPI.openProjectFileDialog();
         if (!res || res.canceled) return;
-        if (!res.success) {
-          showToastMessage(`Dosya açılamadı: ${res.error}`, 'error');
+        const imp = await runImport({ kind: 'electron-file', ...res });
+        if (!imp.ok) {
+          showToastMessage(imp.error?.message || 'Dosya okunamadı.', 'error');
           return;
         }
-        const parsedSchema = importSiteCodeToProjectSchema(res.content, res.fileName, res.filePath);
-        applyLoadedProjectSchema(parsedSchema, { filePath: res.filePath });
-        showToastMessage(`✓ Açıldı: ${res.fileName}`, 'success');
+        applyLoadedProjectSchema(imp.project, { filePath: res.filePath });
+        const warnNote = imp.report.warnings.length > 0 ? ` (${imp.report.warnings.length} uyarı)` : '';
+        showToastMessage(`✓ Açıldı: ${res.fileName}${warnNote}`, imp.report.warnings.length > 0 ? 'info' : 'success');
         return;
       }
       projectFileInputRef.current?.click();
     } catch (err) {
-      showToastMessage(`Dosya açma hatası: ${err.message}`, 'error');
+      console.error('File open error:', err);
+      showToastMessage('Dosya okunamadı.', 'error');
     }
   }, [applyLoadedProjectSchema, showToastMessage]);
 
-  const handleProjectFileInputChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const parsedSchema = importSiteCodeToProjectSchema(ev.target?.result, file.name);
-        applyLoadedProjectSchema(parsedSchema);
-        showToastMessage(`✓ Açıldı: ${file.name}`, 'success');
-      } catch (err) {
-        showToastMessage(`Geçersiz site veya proje dosyası: ${err.message}`, 'error');
-      }
-    };
-    reader.readAsText(file);
+  const handleProjectFileInputChange = async (e) => {
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
+    if (files.length === 0) return;
+    const imp = await runImport(files.length === 1 ? files[0] : files);
+    if (!imp.ok) {
+      showToastMessage(imp.error?.message || 'Dosya okunamadı.', 'error');
+      return;
+    }
+    try {
+      applyLoadedProjectSchema(imp.project);
+      const warnNote = imp.report.warnings.length > 0 ? ` (${imp.report.warnings.length} uyarı)` : '';
+      showToastMessage(`✓ Açıldı: ${files[0].name}${warnNote}`, imp.report.warnings.length > 0 ? 'info' : 'success');
+    } catch (err) {
+      console.error('Apply loaded file error:', err);
+      showToastMessage('Dosya okunamadı.', 'error');
+    }
   };
 
-  // 📂 Open Project Folder (Supports craft.project.json OR external HTML/JSX with Babel & isolated renderer)
+  // 📂 Open Project Folder (Electron IPC veya tarayıcı webkitdirectory seçicisi üzerinden tek runImport hattı)
   const handleOpenProjectFolder = async () => {
     try {
       if (window.electronAPI?.openProjectDialog) {
         const res = await window.electronAPI.openProjectDialog();
-        if (res && !res.canceled) {
-          if (res.error) {
-            showToastMessage(`İçe aktarma hatası: ${res.error}`, 'error');
-            return;
-          }
-          setImportReportData(res);
-          setShowImportReportModal(true);
+        if (!res || res.canceled) return;
+        const imp = await runImport({ kind: 'electron-folder', ...res });
+        if (!imp.ok) {
+          showToastMessage(imp.error?.message || 'Dosya okunamadı.', 'error');
+          return;
         }
+        setImportReportData({
+          ...imp.project,
+          summary: `${imp.report.files.length} dosya · ${imp.report.nodes} bileşen · ${imp.report.pages} sayfa`,
+          warnings: imp.report.warnings,
+          skipped: imp.report.skipped,
+          unsupportedCount: imp.report.warnings.length,
+          unsupportedDetails: imp.report.warnings.map((w) => ({ type: 'Uyarı', detail: w, file: imp.project.name })),
+        });
+        setShowImportReportModal(true);
       } else {
-        showToastMessage('Klasör içe aktarma Electron masaüstünde kullanılabilir; dosya açmak için .craft.json seçin.', 'info');
+        projectFolderInputRef.current?.click();
       }
     } catch (err) {
       console.error('Error opening project folder:', err);
-      showToastMessage(`Proje açılırken hata oluştu: ${err.message}`, 'error');
+      showToastMessage('Dosya okunamadı.', 'error');
     }
+  };
+
+  const handleProjectFolderInputChange = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    const imp = await runImport({ kind: 'files', files, isFolder: true });
+    if (!imp.ok) {
+      showToastMessage(imp.error?.message || 'Dosya okunamadı.', 'error');
+      return;
+    }
+    setImportReportData({
+      ...imp.project,
+      summary: `${imp.report.files.length} dosya · ${imp.report.nodes} bileşen · ${imp.report.pages} sayfa`,
+      warnings: imp.report.warnings,
+      skipped: imp.report.skipped,
+      unsupportedCount: imp.report.warnings.length,
+      unsupportedDetails: imp.report.warnings.map((w) => ({ type: 'Uyarı', detail: w, file: imp.project.name })),
+    });
+    setShowImportReportModal(true);
   };
 
   const handleConfirmImport = () => {
@@ -1659,17 +1928,22 @@ export default function App() {
       if (proj.filePath && window.electronAPI?.readProjectFile) {
         const res = await window.electronAPI.readProjectFile(proj.filePath);
         if (res && res.success) {
-          const parsedSchema = importSiteCodeToProjectSchema(res.content, res.fileName, res.filePath);
-          applyLoadedProjectSchema(parsedSchema, { filePath: res.filePath });
-          return;
+          const imp = await runImport({ kind: 'electron-file', ...res });
+          if (imp.ok) {
+            applyLoadedProjectSchema(imp.project, { filePath: res.filePath });
+            return;
+          }
         }
         fileMissingWarning = true;
       }
       if (proj.folderPath && window.electronAPI?.importProjectFolder) {
         const res = await window.electronAPI.importProjectFolder(proj.folderPath);
         if (res && res.success) {
-          applyLoadedProjectSchema(res);
-          return;
+          const imp = await runImport({ kind: 'electron-folder', ...res });
+          if (imp.ok) {
+            applyLoadedProjectSchema(imp.project);
+            return;
+          }
         }
       }
       if (proj.snapshot) {
@@ -1708,11 +1982,88 @@ export default function App() {
     if (!draft) return;
     try {
       applyLoadedProjectSchema(draft, { markUnsaved: true, skipRecentUpdate: true });
-      showToastMessage(`✓ Otomatik taslak kurtarıldı: ${draft.name || 'Adsız Proje'}`, 'success');
+      showToastMessage(`✓ Otomatik taslak açıldı: ${draft.name || 'Adsız Proje'}`, 'success');
     } catch (err) {
-      showToastMessage(`Taslak kurtarılamadı: ${err.message}`, 'error');
+      showToastMessage(`Taslak açılamadı: ${err.message}`, 'error');
     }
   }, [applyLoadedProjectSchema, showToastMessage]);
+
+  const handleSaveAutosave = useCallback(async (draft) => {
+    const targetDraft = draft || autosaveDraft;
+    if (!targetDraft) return;
+    try {
+      const normalized = parseAndMigrateLoadedProject(targetDraft);
+      let savedSchema = {
+        ...normalized,
+        id: targetDraft.id || normalized.id || `proj-${Date.now()}`,
+        name: targetDraft.name || normalized.name || 'Adsız Çalışma',
+        filePath: targetDraft.filePath || normalized.filePath || undefined,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (savedSchema.filePath && window.electronAPI?.saveProjectFile) {
+        const res = await window.electronAPI.saveProjectFile({
+          filePath: savedSchema.filePath,
+          saveAs: false,
+          defaultFileName: `${(savedSchema.name || 'proje').toLowerCase().replace(/[^a-z0-9-_ğüşıöç]+/gi, '-')}.craft.json`,
+          content: JSON.stringify({ ...savedSchema, filePath: undefined }, null, 2),
+        });
+        if (res && res.success && res.filePath) {
+          savedSchema = { ...savedSchema, filePath: res.filePath };
+        }
+      }
+
+      saveProjectToWebStorage(savedSchema);
+      setRecentProjects(upsertRecentProject(savedSchema));
+      clearAutosaveDraft();
+      setAutosaveDraft(null);
+      setHasUnsavedChanges(false);
+      showToastMessage(`✓ Kaydedildi: ${savedSchema.name}`, 'success');
+    } catch (err) {
+      showToastMessage(`Taslak kaydedilemedi: ${err.message}`, 'error');
+    }
+  }, [autosaveDraft, showToastMessage]);
+
+  const handleSaveRecentProject = useCallback(async (proj) => {
+    if (!proj) return;
+    try {
+      const rawSource = proj.snapshot || (proj.id ? loadProjectFromWebStorage(proj.id) : null) || proj;
+      const schema = parseAndMigrateLoadedProject(rawSource);
+      const updatedSchema = {
+        ...schema,
+        id: proj.id || schema.id,
+        name: proj.name || schema.name,
+        filePath: proj.filePath || schema.filePath || undefined,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (window.electronAPI?.saveProjectFile) {
+        const res = await window.electronAPI.saveProjectFile({
+          filePath: updatedSchema.filePath,
+          saveAs: !updatedSchema.filePath,
+          defaultFileName: `${(updatedSchema.name || 'proje').toLowerCase().replace(/[^a-z0-9-_ğüşıöç]+/gi, '-')}.craft.json`,
+          content: JSON.stringify({ ...updatedSchema, filePath: undefined }, null, 2),
+        });
+        if (!res || res.canceled) return;
+        if (!res.success) {
+          showToastMessage(`Kaydetme hatası: ${res.error}`, 'error');
+          return;
+        }
+        const diskSaved = { ...updatedSchema, filePath: res.filePath };
+        saveProjectToWebStorage(diskSaved);
+        setRecentProjects(upsertRecentProject(diskSaved));
+        showToastMessage(`✓ Kaydedildi: ${res.fileName || diskSaved.name}`, 'success');
+        return;
+      }
+
+      saveProjectToWebStorage(updatedSchema);
+      setRecentProjects(upsertRecentProject(updatedSchema));
+      triggerBrowserJsonDownload(updatedSchema);
+      showToastMessage(`✓ Kaydedildi: ${updatedSchema.name}.craft.json`, 'success');
+    } catch (err) {
+      showToastMessage(`Proje kaydedilemedi: ${err.message}`, 'error');
+    }
+  }, [showToastMessage]);
 
   const handleDismissAutosave = useCallback(() => {
     clearAutosaveDraft();
@@ -1953,12 +2304,22 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#111113] text-zinc-200 select-none overflow-hidden font-sans relative">
-      {/* Hidden browser file picker for opening .html / .jsx / .tsx / .craft.json inside workspace */}
+      {/* Hidden browser file & folder pickers for opening .html / .htm / .jsx / .tsx / .craft.json inside workspace */}
       <input
         type="file"
         ref={projectFileInputRef}
         onChange={handleProjectFileInputChange}
-        accept=".json,.craft,.craft.json,.html,.htm,.jsx,.tsx,.js,.ts"
+        accept=".craft.json,.html,.htm,.jsx,.tsx"
+        multiple
+        className="hidden"
+      />
+      <input
+        type="file"
+        ref={projectFolderInputRef}
+        onChange={handleProjectFolderInputChange}
+        webkitdirectory=""
+        directory=""
+        multiple
         className="hidden"
       />
 
@@ -1981,15 +2342,20 @@ export default function App() {
       {showWelcomeScreen ? (
         <WelcomeScreen
           onNewProject={handleStartNewProject}
+          onStartAssembledProject={handleStartAssembledProject}
           onOpenProject={handleOpenProject}
           onOpenProjectFile={handleOpenProjectFile}
           onOpenProjectFolder={handleOpenProjectFolder}
           onOpenRecentProject={handleOpenRecentProject}
+          onSaveRecentProject={handleSaveRecentProject}
           onDeleteRecentProject={handleDeleteRecentProject}
           recentProjects={recentProjects}
           autosaveDraft={autosaveDraft}
           onRestoreAutosave={handleRestoreAutosave}
+          onSaveAutosave={handleSaveAutosave}
           onDismissAutosave={handleDismissAutosave}
+          aiChat={aiChat}
+          onStartAiPrompt={handleStartAiPromptFromWelcome}
         />
       ) : (
         <>
@@ -2268,4 +2634,15 @@ export default function App() {
       />
     </div>
   );
+}
+
+// Faz 1 izole iframe prototipi için minimal URL giriş noktası (?proto=iframe)
+export default function App() {
+  const isProtoIframe =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('proto') === 'iframe';
+  if (isProtoIframe) {
+    return <ProtoApp />;
+  }
+  return <CraftStudioApp />;
 }

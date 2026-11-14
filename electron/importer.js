@@ -4,6 +4,74 @@ const { BrowserWindow } = require('electron');
 const parser = require('@babel/parser');
 const traverse = require('@babel/traverse').default;
 
+const ELECTRON_LIMITS = {
+  MAX_FILE_BYTES: 5 * 1024 * 1024,
+  MAX_TOTAL_BYTES: 20 * 1024 * 1024,
+  MAX_FILE_COUNT: 200,
+  MAX_FOLDER_DEPTH: 8,
+  EXTRACT_TIMEOUT_MS: 5000,
+};
+
+const DANGEROUS_TAGS = new Set([
+  'script', 'iframe', 'object', 'embed', 'frame', 'frameset', 'applet', 'base',
+]);
+
+function isUnsafeUrl(val) {
+  if (typeof val !== 'string') return false;
+  const compact = val.replace(/[\u0000-\u001f\u007f\s]+/g, '').toLowerCase();
+  return (
+    compact.startsWith('javascript:')
+    || compact.startsWith('vbscript:')
+    || compact.startsWith('data:text/html')
+  );
+}
+
+function stripBomAndReadUtf8(filePath) {
+  const buf = fs.readFileSync(filePath);
+  const view = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf
+    ? buf.subarray(3)
+    : buf;
+  return view.toString('utf8').replace(/^\uFEFF/, '');
+}
+
+function sanitizeNodeTree(nodes = [], stats = null) {
+  const out = [];
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') continue;
+    const tag = String(node.type || 'div').toLowerCase();
+    if (DANGEROUS_TAGS.has(tag)) {
+      if (stats) {
+        if (tag === 'script') stats.removedScripts += 1;
+        else stats.removedEmbeds += 1;
+      }
+      continue;
+    }
+    const cleanAttrs = {};
+    for (const [k, v] of Object.entries(node.attrs || {})) {
+      const lk = k.toLowerCase();
+      if (/^on[a-z]/i.test(k) || lk === 'srcdoc') {
+        if (stats) stats.removedEventAttrs += 1;
+        continue;
+      }
+      if (typeof v === 'string' && isUnsafeUrl(v)) {
+        if (stats) stats.removedJsUrls += 1;
+        continue;
+      }
+      cleanAttrs[k] = v;
+    }
+    const nextNode = { ...node, attrs: cleanAttrs };
+    if (typeof nextNode.imageUrl === 'string' && isUnsafeUrl(nextNode.imageUrl)) {
+      if (stats) stats.removedJsUrls += 1;
+      delete nextNode.imageUrl;
+    }
+    if (Array.isArray(nextNode.children)) {
+      nextNode.children = sanitizeNodeTree(nextNode.children, stats);
+    }
+    out.push(nextNode);
+  }
+  return out;
+}
+
 /**
  * 🌟 CRAFT PROJECT SCHEMA EXPORTER
  * Generates craft.project.json for lossless re-import.
@@ -51,41 +119,82 @@ function createCraftProjectSchema(options = {}) {
 }
 
 /**
- * Helper to scan directory recursively for files matching extensions.
- * Ignores node_modules, .git, dist, build, .next, etc.
+ * Klasörü dosya sayısı (200), klasör derinliği (8) ve boyut sınırlarına (5 MB / 20 MB) göre tarar.
  */
-function scanDirectory(dir, extensions = ['.html', '.jsx', '.tsx', '.js'], maxDepth = 4, currentDepth = 0) {
-  if (currentDepth > maxDepth || !fs.existsSync(dir)) return [];
+function scanDirectoryWithLimits(rootDir) {
   const results = [];
+  const skipped = [];
+  const warnings = [];
+  let totalBytes = 0;
+  let stoppedForLimit = false;
   const ignoreDirs = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.vscode', '.idea']);
 
-  try {
-    const list = fs.readdirSync(dir, { withFileTypes: true });
+  const walk = (dir, currentDepth) => {
+    if (!fs.existsSync(dir)) return;
+    let list;
+    try {
+      list = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      console.warn('Klasör okunamadı:', dir, err.message);
+      return;
+    }
+
     for (const item of list) {
+      const fullPath = path.join(dir, item.name);
+      const relPath = path.relative(rootDir, fullPath).replace(/\\/g, '/');
       if (item.isDirectory()) {
-        if (!ignoreDirs.has(item.name) && !item.name.startsWith('.')) {
-          results.push(...scanDirectory(path.join(dir, item.name), extensions, maxDepth, currentDepth + 1));
+        if (ignoreDirs.has(item.name) || item.name.startsWith('.')) continue;
+        if (currentDepth + 1 > ELECTRON_LIMITS.MAX_FOLDER_DEPTH) {
+          skipped.push({ name: relPath, reason: `Klasör derinliği sınırı aşıldı (en fazla ${ELECTRON_LIMITS.MAX_FOLDER_DEPTH}).` });
+          continue;
         }
+        walk(fullPath, currentDepth + 1);
       } else if (item.isFile()) {
-        const ext = path.extname(item.name).toLowerCase();
-        if (extensions.includes(ext)) {
-          results.push(path.join(dir, item.name));
+        if (results.length >= ELECTRON_LIMITS.MAX_FILE_COUNT) {
+          skipped.push({ name: relPath, reason: `Maksimum dosya sınırı aşıldı (en fazla ${ELECTRON_LIMITS.MAX_FILE_COUNT}).` });
+          if (!stoppedForLimit) {
+            warnings.push(`En fazla ${ELECTRON_LIMITS.MAX_FILE_COUNT} dosya sınırı aşıldığı için fazla dosyalar atlandı.`);
+            stoppedForLimit = true;
+          }
+          continue;
         }
+        let stat;
+        try {
+          stat = fs.statSync(fullPath);
+        } catch {
+          skipped.push({ name: relPath, reason: 'Dosya okunamadı.' });
+          continue;
+        }
+        if (stat.size > ELECTRON_LIMITS.MAX_FILE_BYTES) {
+          skipped.push({ name: relPath, reason: 'Dosya çok büyük (en fazla 5 MB).' });
+          warnings.push(`${item.name}: Dosya çok büyük (en fazla 5 MB) olduğu için atlandı.`);
+          continue;
+        }
+        if (totalBytes + stat.size > ELECTRON_LIMITS.MAX_TOTAL_BYTES) {
+          skipped.push({ name: relPath, reason: 'Toplam 20 MB içe aktarma sınırı aşıldı.' });
+          warnings.push('Toplam 20 MB boyut sınırı aşıldığı için kalan dosyalar atlandı.');
+          continue;
+        }
+        const lowerName = item.name.toLowerCase();
+        const ext = lowerName.endsWith('.craft.json') ? '.craft.json' : path.extname(lowerName);
+        totalBytes += stat.size;
+        results.push({ fullPath, relPath, name: item.name, ext, size: stat.size });
       }
     }
-  } catch (err) {
-    console.warn('Error reading directory:', dir, err.message);
-  }
+  };
 
-  return results;
+  walk(rootDir, 0);
+  return { entries: results, skipped, warnings, totalBytes };
 }
 
 /**
  * 🌟 EXTRACT COMPUTED STYLES & LAYOUT FROM HTML FILE IN ISOLATED HIDDEN WINDOW
- * Uses getComputedStyle and getBoundingClientRect - zero manual Tailwind parsing!
- * Imported code NEVER executes in the studio's main window.
+ * İçe aktarılan koddaki betikler ASLA çalıştırılmaz (javascript: false).
  */
-async function extractStylesFromHtmlFile(htmlFilePath) {
+async function extractStylesFromHtmlFile(htmlFilePath, stats = null) {
+  if (typeof BrowserWindow !== 'function') {
+    throw new Error('BrowserWindow ortamı kullanılabilir değil.');
+  }
   const worker = new BrowserWindow({
     show: false,
     width: 1280,
@@ -94,16 +203,25 @@ async function extractStylesFromHtmlFile(htmlFilePath) {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-    }
+      javascript: false,
+    },
   });
 
   try {
-    await worker.loadFile(htmlFilePath);
-    // Allow layout & CSS rendering
-    await new Promise(resolve => setTimeout(resolve, 250));
+    await Promise.race([
+      worker.loadFile(htmlFilePath),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Zaman aşımı')), ELECTRON_LIMITS.EXTRACT_TIMEOUT_MS)),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 120));
 
-    const extracted = await worker.webContents.executeJavaScript(`
+    const extracted = await Promise.race([
+      worker.webContents.executeJavaScript(`
       (() => {
+        const DANGEROUS = new Set(['script', 'iframe', 'object', 'embed', 'frame', 'frameset', 'applet', 'base']);
+        const statsDelta = { removedScripts: 0, removedEventAttrs: 0, removedJsUrls: 0, removedEmbeds: 0 };
+        statsDelta.removedScripts = document.querySelectorAll('script').length;
+        statsDelta.removedEmbeds = document.querySelectorAll('iframe,object,embed,frame,frameset,applet').length;
+
         function rgbToHex(rgb) {
           if (!rgb || rgb === 'transparent') return 'transparent';
           const match = rgb.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/);
@@ -117,34 +235,44 @@ async function extractStylesFromHtmlFile(htmlFilePath) {
           return '#' + r + g + b;
         }
 
+        function isBadUrl(v) {
+          const c = String(v || '').replace(/[\\u0000-\\u001f\\s]+/g, '').toLowerCase();
+          return c.startsWith('javascript:') || c.startsWith('vbscript:') || c.startsWith('data:text/html');
+        }
+
         let elemCounter = 1;
         const pageLinks = [];
 
         function extractElement(el, parentRect = null) {
           if (el.nodeType !== Node.ELEMENT_NODE) return null;
           const tag = el.tagName.toLowerCase();
-          if (['script', 'style', 'noscript', 'meta', 'link', 'title'].includes(tag)) return null;
+          if (DANGEROUS.has(tag) || ['style', 'noscript', 'meta', 'link', 'title', 'template'].includes(tag)) return null;
 
           const rect = el.getBoundingClientRect();
           if (rect.width === 0 && rect.height === 0 && el.children.length === 0) return null;
 
           const style = window.getComputedStyle(el);
 
-          // Relative coordinates calculation
           const relX = parentRect ? Math.round(rect.left - parentRect.left) : Math.round(rect.left);
           const relY = parentRect ? Math.round(rect.top - parentRect.top) : Math.round(rect.top);
 
           const attrs = {};
           for (const attr of el.attributes) {
-            if (!attr.name.startsWith('on')) {
-              attrs[attr.name] = attr.value;
+            const lk = attr.name.toLowerCase();
+            if (/^on[a-z]/i.test(attr.name) || lk === 'srcdoc') {
+              statsDelta.removedEventAttrs += 1;
+              continue;
             }
+            if ((lk === 'href' || lk === 'src' || lk === 'action' || lk === 'data' || lk === 'formaction') && isBadUrl(attr.value)) {
+              statsDelta.removedJsUrls += 1;
+              continue;
+            }
+            attrs[attr.name] = attr.value;
           }
 
-          // Link detection
-          if (tag === 'a' && el.getAttribute('href')) {
+          if (tag === 'a' && attrs.href) {
             pageLinks.push({
-              href: el.getAttribute('href'),
+              href: attrs.href,
               text: el.innerText?.trim() || 'Bağlantı'
             });
           }
@@ -227,10 +355,20 @@ async function extractStylesFromHtmlFile(htmlFilePath) {
         return {
           title: document.title || 'Sayfa',
           elements: rootElements,
-          links: pageLinks
+          links: pageLinks,
+          statsDelta,
         };
       })()
-    `);
+    `),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('HTML çözümleme zaman aşımı')), ELECTRON_LIMITS.EXTRACT_TIMEOUT_MS)),
+    ]);
+
+    if (extracted?.statsDelta && stats) {
+      stats.removedScripts += extracted.statsDelta.removedScripts || 0;
+      stats.removedEventAttrs += extracted.statsDelta.removedEventAttrs || 0;
+      stats.removedJsUrls += extracted.statsDelta.removedJsUrls || 0;
+      stats.removedEmbeds += extracted.statsDelta.removedEmbeds || 0;
+    }
 
     return extracted;
   } catch (err) {
@@ -238,7 +376,7 @@ async function extractStylesFromHtmlFile(htmlFilePath) {
     return null;
   } finally {
     try {
-      worker.close();
+      if (!worker.isDestroyed()) worker.close();
     } catch (e) {}
   }
 }
@@ -352,19 +490,39 @@ function parseReactJsxFile(code, filePath) {
       }
     },
 
-    // 4. Collect top-level function components
+    // 4. Collect top-level function components and their direct return JSX AST
     FunctionDeclaration(p) {
       const name = p.node.id?.name;
       if (name && /^[A-Z]/.test(name)) {
-        componentDecls.push({ name, node: p.node, file: filePath });
+        let returnJsx = null;
+        p.traverse({
+          ReturnStatement(retPath) {
+            if (!returnJsx && retPath.node.argument && (retPath.node.argument.type === 'JSXElement' || retPath.node.argument.type === 'JSXFragment')) {
+              returnJsx = retPath.node.argument;
+            }
+          },
+        });
+        componentDecls.push({ name, node: p.node, returnJsx, file: filePath });
       }
     },
     VariableDeclarator(p) {
       const name = p.node.id?.name;
       if (name && /^[A-Z]/.test(name) && (p.node.init?.type === 'ArrowFunctionExpression' || p.node.init?.type === 'FunctionExpression')) {
-        componentDecls.push({ name, node: p.node.init, file: filePath });
+        let returnJsx = null;
+        if (p.node.init.body?.type === 'JSXElement' || p.node.init.body?.type === 'JSXFragment') {
+          returnJsx = p.node.init.body;
+        } else {
+          p.get('init').traverse({
+            ReturnStatement(retPath) {
+              if (!returnJsx && retPath.node.argument && (retPath.node.argument.type === 'JSXElement' || retPath.node.argument.type === 'JSXFragment')) {
+                returnJsx = retPath.node.argument;
+              }
+            },
+          });
+        }
+        componentDecls.push({ name, node: p.node.init, returnJsx, file: filePath });
       }
-    }
+    },
   });
 
   return { routes, links, unsupported, componentDecls };
@@ -374,7 +532,7 @@ function parseReactJsxFile(code, filePath) {
  * 🌟 RECURSIVELY CONVERTS A BABEL JSX AST NODE TO CRAFT AST NODE
  * Wraps unsupported expressions into locked "Kod Bileşeni" boxes.
  */
-function convertBabelJsxToCraftNode(jsxNode, codeSnippetFn) {
+function convertBabelJsxToCraftNode(jsxNode, codeSnippetFn, stats = null) {
   if (!jsxNode) return null;
 
   if (jsxNode.type === 'JSXText') {
@@ -419,11 +577,40 @@ function convertBabelJsxToCraftNode(jsxNode, codeSnippetFn) {
     };
   }
 
+  if (jsxNode.type === 'JSXFragment') {
+    const children = [];
+    for (const child of (jsxNode.children || [])) {
+      const childAst = convertBabelJsxToCraftNode(child, codeSnippetFn, stats);
+      if (childAst) children.push(childAst);
+    }
+    return {
+      id: `elem-jsx-frag-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      type: 'div',
+      name: 'Fragment',
+      attrs: {},
+      style: {},
+      x: 0,
+      y: 0,
+      width: 600,
+      height: 120,
+      positionMode: 'normal',
+      zIndex: 1,
+      children,
+    };
+  }
+
   if (jsxNode.type !== 'JSXElement') return null;
 
   const opening = jsxNode.openingElement;
   const tagName = opening.name?.name || 'div';
   const tag = tagName.toLowerCase();
+  if (DANGEROUS_TAGS.has(tag)) {
+    if (stats) {
+      if (tag === 'script') stats.removedScripts += 1;
+      else stats.removedEmbeds += 1;
+    }
+    return null;
+  }
 
   const attrs = {};
   const style = {};
@@ -432,17 +619,30 @@ function convertBabelJsxToCraftNode(jsxNode, codeSnippetFn) {
     for (const attr of opening.attributes) {
       if (attr.type === 'JSXAttribute') {
         const attrName = attr.name?.name;
-        if (!attrName || attrName.startsWith('on')) continue;
+        if (!attrName) continue;
+        if (/^on[a-z]/i.test(attrName) || attrName.toLowerCase() === 'srcdoc') {
+          if (stats) stats.removedEventAttrs += 1;
+          continue;
+        }
 
         if (attrName === 'className') {
           attrs.class = attr.value?.value || '';
         } else if (attrName === 'style' && attr.value?.type === 'JSXExpressionContainer' && attr.value.expression?.type === 'ObjectExpression') {
           for (const prop of attr.value.expression.properties) {
             if (prop.key?.name && prop.value?.value !== undefined) {
-              style[prop.key.name] = prop.value.value;
+              const rawVal = prop.value.value;
+              if (typeof rawVal === 'string' && isUnsafeUrl(rawVal)) {
+                if (stats) stats.removedJsUrls += 1;
+                continue;
+              }
+              style[prop.key.name] = rawVal;
             }
           }
         } else if (attr.value?.type === 'StringLiteral') {
+          if (isUnsafeUrl(attr.value.value)) {
+            if (stats) stats.removedJsUrls += 1;
+            continue;
+          }
           attrs[attrName] = attr.value.value;
         } else if (attr.value === null) {
           attrs[attrName] = true;
@@ -460,7 +660,7 @@ function convertBabelJsxToCraftNode(jsxNode, codeSnippetFn) {
         const t = child.value.trim();
         if (t) directText += (directText ? ' ' : '') + t;
       } else {
-        const childAst = convertBabelJsxToCraftNode(child, codeSnippetFn);
+        const childAst = convertBabelJsxToCraftNode(child, codeSnippetFn, stats);
         if (childAst) children.push(childAst);
       }
     }
@@ -485,23 +685,39 @@ function convertBabelJsxToCraftNode(jsxNode, codeSnippetFn) {
 
 /**
  * 🌟 MAIN IMPORT CONTROLLER:
- * Reads a folder, checks craft.project.json, or parses HTML / React routes & files.
+ * Klasörü okur; craft.project.json / *.craft.json veya HTML/HTM/React dosyalarını ayrıştırır.
  */
 async function importProjectFromFolder(folderPath) {
-  if (!fs.existsSync(folderPath)) {
-    throw new Error(`Klasör bulunamadı: ${folderPath}`);
+  if (!folderPath || !fs.existsSync(folderPath)) {
+    return { success: false, errorCode: 'DOSYA_OKUNAMADI', error: 'Dosya okunamadı.' };
   }
 
-  // 1. STAGE 1: Check for craft.project.json (Lossless Studio Schema)
-  const craftJsonPath = path.join(folderPath, 'craft.project.json');
-  if (fs.existsSync(craftJsonPath)) {
+  const stats = {
+    removedScripts: 0,
+    removedEventAttrs: 0,
+    removedJsUrls: 0,
+    removedEmbeds: 0,
+    missingImages: [],
+    truncatedNodes: 0,
+    hasComplexLayout: false,
+    hasConditionalJsx: false,
+  };
+
+  // 1. AŞAMA: Kök veya alt dizindeki .craft.json proje dosyasını kontrol et
+  const scan = scanDirectoryWithLimits(folderPath);
+  const nativeJsonEntry = scan.entries.find((e) => e.name.toLowerCase() === 'craft.project.json' || e.ext === '.craft.json');
+  if (nativeJsonEntry) {
     try {
-      const content = fs.readFileSync(craftJsonPath, 'utf8');
+      const content = stripBomAndReadUtf8(nativeJsonEntry.fullPath);
       const projectData = JSON.parse(content);
+      const sanitizedTabs = (projectData.tabs || []).map((tab) => ({
+        ...tab,
+        elements: sanitizeNodeTree(tab.elements || [], stats),
+      }));
       return {
         type: 'craft-native',
         success: true,
-        source: 'craft.project.json',
+        source: nativeJsonEntry.name,
         folderPath,
         id: projectData.id || undefined,
         name: projectData.name || path.basename(folderPath),
@@ -511,50 +727,73 @@ async function importProjectFromFolder(folderPath) {
         canvasByViewport: projectData.canvasByViewport || null,
         viewportMode: projectData.viewportMode || 'desktop',
         initializedViewports: projectData.initializedViewports || undefined,
-        tabs: projectData.tabs || [],
-        activeTabId: projectData.activeTabId || (projectData.tabs?.[0]?.id) || 'tab-1',
+        tabs: sanitizedTabs,
+        activeTabId: projectData.activeTabId || (sanitizedTabs?.[0]?.id) || 'tab-1',
         projectFunctions: Array.isArray(projectData.projectFunctions) ? projectData.projectFunctions : [],
         pageLinks: projectData.pageLinks || [],
+        files: scan.entries.map((e) => ({ name: e.name, relativePath: e.relPath, bytes: e.size, kind: 'craft' })),
+        skipped: scan.skipped,
+        warnings: scan.warnings,
+        stats,
         unsupportedCount: 0,
         unsupportedDetails: [],
-        summary: `Proje '${projectData.name}' craft.project.json ile kayıpsız yüklendi (${projectData.tabs?.length || 0} sayfa).`
+        summary: `Proje '${projectData.name}' kayıpsız yüklendi (${sanitizedTabs.length} sayfa).`,
       };
     } catch (err) {
-      console.warn('craft.project.json parse error, falling back to scanner:', err.message);
+      console.warn('Craft JSON ayrıştırma hatası, klasör taramasına geçiliyor:', err.message);
     }
   }
 
-  // 2. STAGE 2: craft.project.json NOT FOUND -> SCAN FILES
-  const htmlFiles = scanDirectory(folderPath, ['.html']);
-  const jsxFiles = scanDirectory(folderPath, ['.jsx', '.tsx', '.js']);
+  // 2. AŞAMA: Desteklenen web dosyalarını filtrele (.html, .htm, .jsx, .tsx)
+  const htmlFiles = [];
+  const jsxFiles = [];
+  const skipped = [...scan.skipped];
+  const warnings = [...scan.warnings];
+  const processedFiles = [];
+
+  for (const entry of scan.entries) {
+    if (entry.ext === '.html' || entry.ext === '.htm') {
+      htmlFiles.push(entry);
+      processedFiles.push({ name: entry.name, relativePath: entry.relPath, bytes: entry.size, kind: 'code' });
+    } else if (entry.ext === '.jsx' || entry.ext === '.tsx' || entry.ext === '.js') {
+      jsxFiles.push(entry);
+      processedFiles.push({ name: entry.name, relativePath: entry.relPath, bytes: entry.size, kind: 'code' });
+    } else if (entry.ext === '.css') {
+      processedFiles.push({ name: entry.name, relativePath: entry.relPath, bytes: entry.size, kind: 'css' });
+    } else if (['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico'].includes(entry.ext)) {
+      processedFiles.push({ name: entry.name, relativePath: entry.relPath, bytes: entry.size, kind: 'asset' });
+    } else {
+      skipped.push({ name: entry.relPath, reason: `Desteklenmeyen biçim: ${entry.ext || 'uzantısız'}` });
+    }
+  }
 
   const allUnsupported = [];
   const allPageLinks = [];
   const generatedTabs = [];
 
-  // Case A: HTML files present -> Extract computed styles in isolated hidden window
+  // Durum A: HTML / HTM dosyaları (gizli pencerede javascript: false ile stil çıkar)
   if (htmlFiles.length > 0) {
-    for (let i = 0; i < htmlFiles.length; i++) {
-      const htmlFile = htmlFiles[i];
-      const relName = path.relative(folderPath, htmlFile);
-      const tabName = path.basename(htmlFile, path.extname(htmlFile));
-      const routePath = tabName === 'index' ? '/' : `/${tabName}`;
+    htmlFiles.sort((a, b) => (/^index\.html?$/i.test(a.name) ? 0 : 1) - (/^index\.html?$/i.test(b.name) ? 0 : 1));
+    for (let i = 0; i < htmlFiles.length; i += 1) {
+      const entry = htmlFiles[i];
+      const tabName = path.basename(entry.name, path.extname(entry.name));
+      const routePath = i === 0 && /^index$/i.test(tabName) ? '/' : `/${tabName}`;
 
-      const extracted = await extractStylesFromHtmlFile(htmlFile);
+      const extracted = await extractStylesFromHtmlFile(entry.fullPath, stats);
       if (extracted && extracted.elements && extracted.elements.length > 0) {
         generatedTabs.push({
           id: `tab-html-${i + 1}`,
-          name: `${tabName}.craft`,
+          name: i === 0 && /^index$/i.test(tabName) ? 'Anasayfa.craft' : `${tabName}.craft`,
           route: routePath,
-          elements: extracted.elements
+          elements: sanitizeNodeTree(extracted.elements, stats),
         });
 
         if (extracted.links) {
-          extracted.links.forEach(l => {
+          extracted.links.forEach((l) => {
             allPageLinks.push({
               fromTab: `tab-html-${i + 1}`,
               targetRoute: l.href,
-              label: l.text
+              label: l.text,
             });
           });
         }
@@ -562,86 +801,85 @@ async function importProjectFromFolder(folderPath) {
     }
   }
 
-  // Case B: React / JSX files present -> Babel parser for routes, links, unsupported features
+  // Durum B: React / JSX / TSX dosyaları
   if (jsxFiles.length > 0) {
-    for (const jsxFile of jsxFiles) {
+    for (const entry of jsxFiles) {
       try {
-        const code = fs.readFileSync(jsxFile, 'utf8');
-        const parsed = parseReactJsxFile(code, jsxFile);
+        const code = stripBomAndReadUtf8(entry.fullPath);
+        const parsed = parseReactJsxFile(code, entry.fullPath);
 
-        if (parsed.unsupported) {
-          allUnsupported.push(...parsed.unsupported);
-        }
+        if (parsed.unsupported) allUnsupported.push(...parsed.unsupported);
+        if (parsed.links) allPageLinks.push(...parsed.links);
 
-        if (parsed.links) {
-          allPageLinks.push(...parsed.links);
-        }
-
-        // If routes found, generate tabs for each route
         if (parsed.routes && parsed.routes.length > 0) {
-          for (let rIdx = 0; rIdx < parsed.routes.length; rIdx++) {
+          for (let rIdx = 0; rIdx < parsed.routes.length; rIdx += 1) {
             const route = parsed.routes[rIdx];
             const tabId = `tab-route-${generatedTabs.length + 1}`;
             const tabName = route.componentName || `Sayfa-${rIdx + 1}`;
-
-            // Find matching component declaration
-            const comp = parsed.componentDecls.find(c => c.name === route.componentName);
+            const comp = parsed.componentDecls.find((c) => c.name === route.componentName);
             let rootElements = [];
-
-            if (comp) {
-              // Extract return JSX
-              let returnJsx = null;
-              traverse(comp.node, {
-                ReturnStatement(retPath) {
-                  if (retPath.node.argument && (retPath.node.argument.type === 'JSXElement' || retPath.node.argument.type === 'JSXFragment')) {
-                    returnJsx = retPath.node.argument;
-                  }
-                }
-              }, comp.node);
-
-              if (returnJsx) {
-                const converted = convertBabelJsxToCraftNode(returnJsx);
-                if (converted) rootElements = [converted];
-              }
+            if (comp?.returnJsx) {
+              const converted = convertBabelJsxToCraftNode(comp.returnJsx, null, stats);
+              if (converted) rootElements = sanitizeNodeTree([converted], stats);
             }
-
             generatedTabs.push({
               id: tabId,
               name: `${tabName}.craft`,
               route: route.path,
-              elements: rootElements
+              elements: rootElements,
             });
+          }
+        } else if (parsed.componentDecls && parsed.componentDecls.length > 0) {
+          // Route tanımı yoksa doğrudan dışa aktarılan ilk bileşeni sayfa olarak oluştur
+          const primaryComp = parsed.componentDecls.find((c) => c.returnJsx);
+          if (primaryComp?.returnJsx) {
+            const converted = convertBabelJsxToCraftNode(primaryComp.returnJsx, null, stats);
+            if (converted) {
+              generatedTabs.push({
+                id: `tab-jsx-${generatedTabs.length + 1}`,
+                name: `${primaryComp.name}.craft`,
+                route: generatedTabs.length === 0 ? '/' : `/${primaryComp.name.toLowerCase()}`,
+                elements: sanitizeNodeTree([converted], stats),
+              });
+            }
           }
         }
       } catch (err) {
-        console.warn('Error parsing JSX file:', jsxFile, err.message);
+        console.warn('JSX ayrıştırma uyarısı:', entry.relPath, err.message);
       }
     }
   }
 
-  // If no tabs could be generated, create an empty default tab
   if (generatedTabs.length === 0) {
-    generatedTabs.push({
-      id: 'tab-imported-empty',
-      name: 'Icerik.craft',
-      route: '/',
-      elements: []
-    });
+    return {
+      type: 'external-scanned',
+      success: false,
+      errorCode: processedFiles.length > 0 ? 'ICERIK_YOK' : 'BICIM_DESTEKLENMIYOR',
+      error: processedFiles.length > 0 ? 'İçe aktarılacak görünür içerik bulunamadı.' : 'Bu dosya biçimi desteklenmiyor.',
+      files: processedFiles,
+      skipped,
+      warnings,
+      stats,
+    };
   }
 
   return {
     type: 'external-scanned',
     success: true,
-    source: 'Babel AST & Sandboxed Layout Engine',
+    source: 'Babel AST & Yalıtılmış HTML Çözümleyici',
     folderPath,
     name: path.basename(folderPath),
     canvasSettings: { width: 1280, height: 1350, backgroundColor: '#0f172a' },
     tabs: generatedTabs,
     activeTabId: generatedTabs[0]?.id || 'tab-1',
     pageLinks: allPageLinks,
+    files: processedFiles,
+    skipped,
+    warnings,
+    stats,
     unsupportedCount: allUnsupported.length,
     unsupportedDetails: allUnsupported,
-    summary: `Harici proje ayrıştırıldı: ${generatedTabs.length} sayfa sekmesi oluşturuldu, ${allPageLinks.length} bağlantı bulundu. ${allUnsupported.length} adet desteklenmeyen dinamik kod (Hook/.map) güvenle 'Kod Bileşeni' olarak kilitlendi.`
+    summary: `Harici proje ayrıştırıldı: ${generatedTabs.length} sayfa sekmesi oluşturuldu, ${allPageLinks.length} bağlantı bulundu.`,
   };
 }
 
@@ -649,5 +887,7 @@ module.exports = {
   createCraftProjectSchema,
   importProjectFromFolder,
   extractStylesFromHtmlFile,
-  parseReactJsxFile
+  parseReactJsxFile,
+  scanDirectoryWithLimits,
+  sanitizeNodeTree,
 };

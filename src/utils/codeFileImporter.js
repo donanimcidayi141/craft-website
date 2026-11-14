@@ -1,8 +1,24 @@
 import { parseAndMigrateLoadedProject, buildSerializableProjectSchema } from './projectStorage.js';
 import { ensureViewportAdapted, createDefaultCanvasByViewport } from './responsiveUtils.js';
+import {
+  DANGEROUS_TAGS,
+  isUnsafeUrl,
+  sanitizeElementAttrs,
+  sanitizeCssStyleObj,
+  sanitizeCraftProjectSchema,
+  parseStaticJsxScope,
+  extractJsxBlocksFromSource,
+  parseJsxToAbstractTree,
+  validateMarkupSyntaxHealth,
+} from './jsxImportHelper.js';
 
-const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'meta', 'link', 'head', 'title', 'br', 'hr']);
-const VOID_TAGS = new Set(['img', 'input', 'br', 'hr', 'source', 'meta', 'link']);
+export { validateMarkupSyntaxHealth, sanitizeCraftProjectSchema };
+
+const SKIP_TAGS = new Set([
+  'script', 'style', 'noscript', 'meta', 'link', 'head', 'title', 'br', 'hr',
+  'template', 'iframe', 'object', 'embed', 'frame', 'frameset', 'applet', 'base',
+]);
+const VOID_TAGS = new Set(['img', 'input', 'br', 'hr', 'source', 'meta', 'link', 'wbr']);
 const TEXT_LEAF_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'a', 'button', 'label', 'li', 'blockquote', 'strong', 'em']);
 const SECTION_TAGS = new Set(['nav', 'header', 'section', 'main', 'footer', 'article', 'aside', 'form']);
 
@@ -105,9 +121,12 @@ function extractTailwindHints(className = '') {
   return hints;
 }
 
-function parseStyleBlockRules(htmlDocOrStr) {
+function parseStyleBlockRules(htmlDocOrStr, extraCssText = '', stats = null) {
   const ruleMap = { tags: {}, classes: {}, ids: {} };
   const cssBlocks = [];
+  if (extraCssText && typeof extraCssText === 'string') {
+    cssBlocks.push(extraCssText);
+  }
   if (typeof htmlDocOrStr === 'string') {
     const matches = htmlDocOrStr.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi);
     for (const m of matches) cssBlocks.push(m[1] || '');
@@ -115,12 +134,16 @@ function parseStyleBlockRules(htmlDocOrStr) {
     htmlDocOrStr.querySelectorAll('style').forEach((s) => cssBlocks.push(s.textContent || ''));
   }
 
-  const combined = cssBlocks.join('\n').replace(/\/\*[\s\S]*?\*\//g, '').replace(/@media[\s\S]*?\}\s*\}/g, '');
+  const combinedRaw = cssBlocks.join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
+  if (stats && /display\s*:\s*(?:flex|inline-flex|grid|inline-grid)|grid-template-columns/i.test(combinedRaw)) {
+    stats.hasComplexLayout = true;
+  }
+  const combined = combinedRaw.replace(/@media[\s\S]*?\}\s*\}/g, '');
   const ruleRegex = /([^{}@]+)\{([^{}]+)\}/g;
   let match;
   while ((match = ruleRegex.exec(combined)) !== null) {
     const selectors = match[1].split(',').map((s) => s.trim()).filter(Boolean);
-    const props = parseInlineCss(match[2]);
+    const props = sanitizeCssStyleObj(parseInlineCss(match[2]), stats);
     selectors.forEach((sel) => {
       if (/^#[a-zA-Z0-9_-]+$/.test(sel)) {
         const key = sel.slice(1);
@@ -137,8 +160,12 @@ function parseStyleBlockRules(htmlDocOrStr) {
   return ruleMap;
 }
 
-/** Lightweight fallback HTML/JSX tree parser for non-DOM environments (Node tests). */
-function parseMarkupFallback(markup) {
+const RAW_SKIP_CONTAINER_TAGS = new Set([
+  'script', 'style', 'noscript', 'template', 'iframe', 'object', 'embed', 'frame', 'frameset', 'applet',
+]);
+
+/** Node veya DOMParser olmayan ortamlar için dayanıklı işaretleme ayrıştırıcısı. */
+function parseMarkupFallback(markup, stats = null, budget = null) {
   const cleaned = String(markup || '')
     .replace(/<!DOCTYPE[^>]*>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
@@ -146,20 +173,75 @@ function parseMarkupFallback(markup) {
 
   const root = { tag: 'body', attrs: {}, children: [], textParts: [] };
   const stack = [root];
-  const tokenRe = /<(\/?)([a-zA-Z][a-zA-Z0-9.:_-]*)((?:\s+[^>]*?)?)(\/?)>|([^<]+)/g;
-  let m;
+  let pos = 0;
+  const len = cleaned.length;
 
-  while ((m = tokenRe.exec(cleaned)) !== null) {
-    if (m[5]) {
-      const txt = m[5].replace(/\s+/g, ' ').trim();
+  while (pos < len) {
+    if (budget && budget.abstractCount >= budget.maxAbstract) {
+      if (stats) stats.truncatedNodes += 1;
+      break;
+    }
+
+    const lt = cleaned.indexOf('<', pos);
+    if (lt === -1) {
+      const tailTxt = cleaned.slice(pos).replace(/\s+/g, ' ').trim();
+      if (tailTxt) stack[stack.length - 1].textParts.push(tailTxt);
+      break;
+    }
+
+    if (lt > pos) {
+      const txt = cleaned.slice(pos, lt).replace(/\s+/g, ' ').trim();
       if (txt) stack[stack.length - 1].textParts.push(txt);
+    }
+
+    const isClose = cleaned[lt + 1] === '/';
+    let p = isClose ? lt + 2 : lt + 1;
+    const tagStart = p;
+    while (p < len && /[a-zA-Z0-9.:_-]/.test(cleaned[p])) p += 1;
+    const rawTag = cleaned.slice(tagStart, p);
+
+    // Geçerli etiket adı başlamıyorsa düz karakter olarak atla
+    if (!rawTag || !/^[a-zA-Z]/.test(rawTag)) {
+      pos = lt + 1;
       continue;
     }
 
-    const isClose = m[1] === '/';
-    const tag = (m[2] || 'div').toLowerCase();
-    const rawAttrStr = m[3] || '';
-    const selfClosing = m[4] === '/' || VOID_TAGS.has(tag);
+    const tag = rawTag.toLowerCase();
+    // Tırnaklara duyarlı ve kapanmamış `<` kesilmelerini izleyen öznitelik tarayıcısı
+    const attrStart = p;
+    let quote = null;
+    let interruptedByLt = false;
+    let selfClosing = false;
+    let closeBracketPos = -1;
+
+    while (p < len) {
+      const ch = cleaned[p];
+      if (quote) {
+        if (ch === quote && cleaned[p - 1] !== '\\') quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '<') {
+        // Açılış başlığı `>` görmeden yeni `<` başladıysa başlığı burada kes
+        interruptedByLt = true;
+        closeBracketPos = p;
+        break;
+      } else if (ch === '>') {
+        selfClosing = cleaned[p - 1] === '/' || VOID_TAGS.has(tag);
+        closeBracketPos = p + 1;
+        break;
+      }
+      p += 1;
+    }
+
+    if (closeBracketPos === -1) {
+      pos = len;
+      break;
+    }
+
+    const rawAttrSlice = interruptedByLt
+      ? cleaned.slice(attrStart, p)
+      : cleaned.slice(attrStart, selfClosing && cleaned[p - 1] === '/' ? p - 1 : p);
+    pos = closeBracketPos;
 
     if (isClose) {
       for (let i = stack.length - 1; i > 0; i -= 1) {
@@ -171,22 +253,42 @@ function parseMarkupFallback(markup) {
       continue;
     }
 
-    const attrs = {};
-    const attrRe = /([a-zA-Z_:][a-zA-Z0-9_.:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\{([\s\S]*?)\}\}|\{([^}]*)\}))?/g;
-    let am;
-    while ((am = attrRe.exec(rawAttrStr)) !== null) {
-      const key = am[1];
-      if (!key) continue;
-      if (am[2] !== undefined) attrs[key] = am[2];
-      else if (am[3] !== undefined) attrs[key] = am[3];
-      else if (am[4] !== undefined) attrs[key] = `{${am[4]}}`;
-      else if (am[5] !== undefined) attrs[key] = am[5].trim().replace(/^["']|["']$/g, '');
-      else attrs[key] = true;
+    // Tehlikeli / ham metin kapsayıcılarının (özellikle <script>/<style>/<iframe>) gövdesini tamamen atla
+    if (RAW_SKIP_CONTAINER_TAGS.has(tag) || DANGEROUS_TAGS.has(tag)) {
+      if (stats) {
+        if (tag === 'script') stats.removedScripts += 1;
+        else if (DANGEROUS_TAGS.has(tag)) stats.removedEmbeds += 1;
+      }
+      if (!selfClosing && !interruptedByLt) {
+        const endRe = new RegExp(`</${tag}\\s*>`, 'i');
+        const em = endRe.exec(cleaned.slice(pos));
+        if (em) pos += em.index + em[0].length;
+      }
+      continue;
     }
 
+    if (SKIP_TAGS.has(tag)) continue;
+
+    const rawAttrs = {};
+    const attrRe = /([a-zA-Z_:][a-zA-Z0-9_.:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\{([\s\S]*?)\}\}|\{([^}]*)\}))?/g;
+    let am;
+    while ((am = attrRe.exec(rawAttrSlice)) !== null) {
+      const key = am[1];
+      if (!key) continue;
+      if (am[2] !== undefined) rawAttrs[key] = am[2];
+      else if (am[3] !== undefined) rawAttrs[key] = am[3];
+      else if (am[4] !== undefined) rawAttrs[key] = `{${am[4]}}`;
+      else if (am[5] !== undefined) rawAttrs[key] = am[5].trim().replace(/^["']|["']$/g, '');
+      else rawAttrs[key] = true;
+    }
+
+    const attrs = sanitizeElementAttrs(rawAttrs, stats);
+    if (attrs.id === 'craft-toast') continue;
+
+    if (budget) budget.abstractCount += 1;
     const node = { tag, attrs, children: [], textParts: [] };
     stack[stack.length - 1].children.push(node);
-    if (!selfClosing) stack.push(node);
+    if (!selfClosing && !interruptedByLt) stack.push(node);
   }
   return root;
 }
@@ -209,14 +311,11 @@ function normalizeJsxAttrStyle(rawStyleVal) {
 }
 
 function extractReactJsxMarkup(rawJsx = '') {
-  const withoutComments = String(rawJsx || '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
-  const match = withoutComments.match(/return\s*\(\s*([\s\S]*?)\s*\)\s*;?/);
-  let jsxBody = match ? match[1] : withoutComments;
-  jsxBody = jsxBody.replace(/<>/g, '<div>').replace(/<\/>/g, '</div>');
-  return jsxBody;
+  const blocks = extractJsxBlocksFromSource(rawJsx);
+  return blocks.length > 0 ? blocks[0] : '';
 }
 
-function domNodeToAbstract(el) {
+function domNodeToAbstract(el, stats = null, budget = null) {
   if (!el) return null;
   if (el.nodeType === 3) {
     const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -224,28 +323,48 @@ function domNodeToAbstract(el) {
   }
   if (el.nodeType !== 1) return null;
   const tag = (el.tagName || 'div').toLowerCase();
+  if (DANGEROUS_TAGS.has(tag)) {
+    if (stats) {
+      if (tag === 'script') stats.removedScripts += 1;
+      else stats.removedEmbeds += 1;
+    }
+    return null;
+  }
   if (SKIP_TAGS.has(tag)) return null;
+  if (budget) {
+    if (budget.abstractCount >= budget.maxAbstract) {
+      if (stats) stats.truncatedNodes += 1;
+      return null;
+    }
+    budget.abstractCount += 1;
+  }
 
-  const attrs = {};
+  const rawAttrs = {};
   if (el.attributes) {
     for (let i = 0; i < el.attributes.length; i += 1) {
       const a = el.attributes[i];
-      attrs[a.name] = a.value;
+      rawAttrs[a.name] = a.value;
     }
   }
-  if (attrs.id === 'craft-toast') return null;
+  if (rawAttrs.id === 'craft-toast') return null;
+  const attrs = sanitizeElementAttrs(rawAttrs, stats);
 
   const children = [];
   const textParts = [];
-  el.childNodes.forEach((ch) => {
+  for (let idx = 0; idx < el.childNodes.length; idx += 1) {
+    if (budget && budget.abstractCount >= budget.maxAbstract) {
+      if (stats) stats.truncatedNodes += 1;
+      break;
+    }
+    const ch = el.childNodes[idx];
     if (ch.nodeType === 3) {
       const txt = (ch.textContent || '').replace(/\s+/g, ' ').trim();
       if (txt) textParts.push(txt);
     } else if (ch.nodeType === 1) {
-      const sub = domNodeToAbstract(ch);
+      const sub = domNodeToAbstract(ch, stats, budget);
       if (sub) children.push(sub);
     }
-  });
+  }
   return { tag, attrs, children, textParts };
 }
 
@@ -262,10 +381,49 @@ function findCraftPageRoots(absNode) {
   return found;
 }
 
-function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY = 0, depth = 0, isHorizontalChild = false, inheritedColor = null) {
+function collectInlineSpanText(absNode) {
+  if (!absNode) return '';
+  const chunks = [];
+  if (Array.isArray(absNode.textParts) && absNode.textParts.length > 0) {
+    chunks.push(absNode.textParts.join(' '));
+  }
+  (absNode.children || []).forEach((ch) => {
+    const subTxt = collectInlineSpanText(ch);
+    if (subTxt) chunks.push(subTxt);
+  });
+  return chunks.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function resolveRelativeAssetUrl(rawSrc, assetDataUrlMap = null, baseDirPath = '') {
+  if (!rawSrc || typeof rawSrc !== 'string') return { url: rawSrc, missing: false };
+  const trimmed = rawSrc.trim();
+  if (!trimmed || isUnsafeUrl(trimmed)) return { url: '', missing: false };
+  if (/^(?:https?:|data:|blob:|mailto:|tel:|#|\/\/)/i.test(trimmed)) {
+    return { url: trimmed, missing: false };
+  }
+  if (assetDataUrlMap && assetDataUrlMap instanceof Map && assetDataUrlMap.size > 0) {
+    const cleanRel = trimmed.replace(/^\.\//, '').replace(/^\/+/, '');
+    const joined = baseDirPath ? `${baseDirPath.replace(/\/+$/, '')}/${cleanRel}` : cleanRel;
+    const baseName = cleanRel.split('/').pop();
+    const hit = assetDataUrlMap.get(joined.toLowerCase())
+      || assetDataUrlMap.get(cleanRel.toLowerCase())
+      || (baseName ? assetDataUrlMap.get(baseName.toLowerCase()) : null);
+    if (hit) return { url: hit, missing: false };
+  }
+  return { url: trimmed, missing: true };
+}
+
+function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY = 0, depth = 0, isHorizontalChild = false, inheritedColor = null, ctx = null) {
   if (!absNode || absNode.__text) return null;
-  const tag = SKIP_TAGS.has(absNode.tag) ? 'div' : absNode.tag;
-  const rawAttrs = { ...(absNode.attrs || {}) };
+  if (DANGEROUS_TAGS.has(absNode.tag) || SKIP_TAGS.has(absNode.tag)) return null;
+  if (ctx && ctx.count >= ctx.maxNodes) {
+    if (ctx.stats) ctx.stats.truncatedNodes += 1;
+    return null;
+  }
+  if (ctx) ctx.count += 1;
+
+  const tag = absNode.tag || 'div';
+  const rawAttrs = sanitizeElementAttrs(absNode.attrs || {}, ctx?.stats || null);
 
   const idAttr = rawAttrs.id ? String(rawAttrs.id) : '';
   const classAttr = String(rawAttrs.class || rawAttrs.className || '');
@@ -280,9 +438,12 @@ function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY 
 
   const twHints = extractTailwindHints(classAttr);
   const inlineCss = rawAttrs.style ? normalizeJsxAttrStyle(rawAttrs.style) : {};
-  const styleObj = { ...mergedStyle, ...twHints, ...inlineCss };
+  const styleObj = sanitizeCssStyleObj({ ...mergedStyle, ...twHints, ...inlineCss }, ctx?.stats || null);
   const hintedHorizontal = Boolean(styleObj._horizontal || styleObj.display === 'flex' || styleObj.display === 'grid')
     && styleObj.flexDirection !== 'column';
+  if (ctx?.stats && (hintedHorizontal || styleObj.display === 'flex' || styleObj.display === 'grid' || styleObj.gridTemplateColumns)) {
+    ctx.stats.hasComplexLayout = true;
+  }
   delete styleObj._horizontal;
 
   const nextInheritedColor = styleObj.color || inheritedColor || null;
@@ -347,7 +508,12 @@ function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY 
     const colCount = Math.min(4, Math.max(1, validAbsChildren.length));
     const cellW = Math.max(110, Math.floor((innerAvailW - (colCount - 1) * 20) / colCount));
 
-    validAbsChildren.forEach((childAbs, cIdx) => {
+    for (let cIdx = 0; cIdx < validAbsChildren.length; cIdx += 1) {
+      if (ctx && ctx.count >= ctx.maxNodes) {
+        if (ctx.stats) ctx.stats.truncatedNodes += (validAbsChildren.length - cIdx);
+        break;
+      }
+      const childAbs = validAbsChildren[cIdx];
       const childAst = convertAbstractNodeToAst(
         childAbs,
         ruleMap,
@@ -355,9 +521,10 @@ function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY 
         childCursorY,
         depth + 1,
         horizontalContainer,
-        nextInheritedColor
+        nextInheritedColor,
+        ctx
       );
-      if (!childAst) return;
+      if (!childAst) continue;
 
       const childHasExplicitX = parseCssPx(normalizeJsxAttrStyle(childAbs.attrs?.style || '').left, width) !== null;
       const childHasExplicitY = parseCssPx(normalizeJsxAttrStyle(childAbs.attrs?.style || '').top, 860) !== null;
@@ -383,7 +550,7 @@ function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY 
         }
       }
       astChildren.push(childAst);
-    });
+    }
   }
 
   let height = explicitH;
@@ -417,9 +584,31 @@ function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY 
     delete cleanedAttrs.className;
   }
 
+  // Göreli görsel bağlantısını klasör varlıklarıyla (data: URI) eşleştir veya eksik uyarısı kaydet
+  let resolvedImgUrl;
+  if (tag === 'img') {
+    const rawImgSrc = cleanedAttrs.src;
+    if (rawImgSrc) {
+      const resolved = resolveRelativeAssetUrl(rawImgSrc, ctx?.assetDataUrlMap, ctx?.baseDirPath);
+      if (resolved.url) {
+        cleanedAttrs.src = resolved.url;
+        resolvedImgUrl = resolved.url;
+      } else {
+        delete cleanedAttrs.src;
+      }
+      if (resolved.missing && ctx?.stats) {
+        ctx.stats.missingImages.push(rawImgSrc);
+      }
+    }
+  }
+
+  // Satır içi <span> veya karışık çocuklu (<p>...<a>...</a>...</p>) metin kaybını önle
+  const collapsedSpanText = (astChildren.length === 0 && validAbsChildren.length > 0 && validAbsChildren.every((c) => c.tag === 'span'))
+    ? collectInlineSpanText(absNode)
+    : '';
   const textValue = astChildren.length === 0
-    ? (directText || (normalizedType === 'a' || normalizedType === 'button' ? 'Buton' : ''))
-    : (directText && validAbsChildren.every((c) => c.tag === 'span') ? directText : '');
+    ? (collapsedSpanText || directText || (normalizedType === 'a' || normalizedType === 'button' ? 'Buton' : ''))
+    : (directText || '');
 
   const cleanedStyle = { ...styleObj };
   delete cleanedStyle.position;
@@ -446,7 +635,7 @@ function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY 
     fontSize: parseCssPx(styleObj.fontSize, 16) || undefined,
     fontWeight: styleObj.fontWeight || undefined,
     borderRadius: parseCssPx(styleObj.borderRadius, 16) || undefined,
-    imageUrl: tag === 'img' ? (rawAttrs.src || undefined) : undefined,
+    imageUrl: tag === 'img' ? resolvedImgUrl : undefined,
     textContent: textValue || undefined,
     content: textValue || undefined,
     x,
@@ -460,22 +649,38 @@ function convertAbstractNodeToAst(absNode, ruleMap, parentWidth = 1280, cursorY 
   };
 }
 
-function buildTabFromHtmlBody(bodyNode, ruleMap, tabName = 'Anasayfa.craft', route = '/', bodyBg = '#0b0a09') {
+function buildTabFromHtmlBody(bodyNode, ruleMap, tabName = 'Anasayfa.craft', route = '/', bodyBg = '#0b0a09', ctx = null) {
   const rawNodes = [];
   let cursorY = 0;
   const bodyCss = parseInlineCss(bodyNode?.attrs?.style || '');
   const bodyTextColor = bodyCss.color || ruleMap.tags?.body?.color || null;
 
-  (bodyNode.children || []).forEach((childAbs) => {
-    if (!childAbs || childAbs.__text) return;
+  const topChildren = [...(bodyNode?.children || [])];
+  // <body> altında doğrudan metin düğümü varsa sessizce yutmak yerine <p> olarak ekle
+  if (Array.isArray(bodyNode?.textParts) && bodyNode.textParts.length > 0) {
+    topChildren.unshift({ tag: 'p', attrs: {}, children: [], textParts: bodyNode.textParts });
+  }
+
+  for (let i = 0; i < topChildren.length; i += 1) {
+    if (ctx && ctx.count >= ctx.maxNodes) {
+      if (ctx.stats) ctx.stats.truncatedNodes += (topChildren.length - i);
+      break;
+    }
+    const childAbs = topChildren[i];
+    if (!childAbs || childAbs.__text) continue;
     const cls = String(childAbs.attrs?.class || childAbs.attrs?.className || '');
     const stageChild = cls.split(/\s+/).includes('craft-stage')
       ? (childAbs.children || [])
       : [childAbs];
 
-    stageChild.forEach((item) => {
-      const converted = convertAbstractNodeToAst(item, ruleMap, 1280, cursorY, 0, false, bodyTextColor);
-      if (!converted) return;
+    for (let j = 0; j < stageChild.length; j += 1) {
+      if (ctx && ctx.count >= ctx.maxNodes) {
+        if (ctx.stats) ctx.stats.truncatedNodes += (stageChild.length - j);
+        break;
+      }
+      const item = stageChild[j];
+      const converted = convertAbstractNodeToAst(item, ruleMap, 1280, cursorY, 0, false, bodyTextColor, ctx);
+      if (!converted) continue;
       const inline = normalizeJsxAttrStyle(item.attrs?.style || '');
       const hasExplicitY = parseCssPx(inline.top, 860) !== null;
       if (!hasExplicitY) {
@@ -485,8 +690,8 @@ function buildTabFromHtmlBody(bodyNode, ruleMap, tabName = 'Anasayfa.craft', rou
         cursorY = Math.max(cursorY, converted.y + converted.height + 24);
       }
       rawNodes.push(converted);
-    });
-  });
+    }
+  }
 
   const stageH = Math.max(1350, rawNodes.reduce((m, n) => Math.max(m, (n.y || 0) + (n.height || 0) + 80), 0));
   const tabletAdapted = ensureViewportAdapted(rawNodes, 'tablet', { forceReset: true, desktopWidth: 1280 });
@@ -506,45 +711,85 @@ function buildTabFromHtmlBody(bodyNode, ruleMap, tabName = 'Anasayfa.craft', rou
 }
 
 /**
- * Imports any `.craft.json`, `.json`, `.html`, `.htm`, `.jsx`, `.tsx` website file
- * directly into an editable multi-page CraftStudio project schema.
+ * Herhangi bir .craft.json, .json, .html, .htm, .jsx, .tsx web sitesi dosyasını
+ * temizlenmiş çok sayfalı CraftStudio proje şemasına dönüştürür.
  */
-export function importSiteCodeToProjectSchema(rawContent, fileName = 'site.html', filePath = null) {
+export function importSiteCodeToProjectSchema(rawContent, fileName = 'site.html', filePath = null, options = {}) {
   const ext = String(fileName || '').toLowerCase().split('.').pop();
-  const contentStr = String(rawContent || '').trim();
+  const contentStr = String(rawContent || '').replace(/^\uFEFF/, '').trim();
+  const stats = options.stats || {
+    removedScripts: 0,
+    removedEventAttrs: 0,
+    removedJsUrls: 0,
+    removedEmbeds: 0,
+    missingImages: [],
+    truncatedNodes: 0,
+    hasComplexLayout: false,
+    hasConditionalJsx: false,
+  };
+  const maxNodesPerTab = Number.isFinite(options.maxNodesPerTab) ? options.maxNodesPerTab : 600;
+  const baseDirPath = options.baseDirPath || '';
+  const assetDataUrlMap = options.assetDataUrlMap || null;
+  const extraCssText = options.extraCssText || '';
 
   if (!contentStr) {
     throw new Error('Seçilen dosya boş görünüyor.');
   }
 
-  // 1. Native CraftStudio JSON / .craft format
+  // 1. Doğal CraftStudio JSON / .craft biçimi
   if (ext === 'json' || ext === 'craft' || (!/<[a-zA-Z]/.test(contentStr) && contentStr.startsWith('{'))) {
-    return parseAndMigrateLoadedProject(contentStr);
+    const schema = parseAndMigrateLoadedProject(contentStr);
+    return sanitizeCraftProjectSchema(schema, stats);
   }
 
-  // 2. React JSX / TSX single file
-  let htmlSource = contentStr;
-  if (ext === 'jsx' || ext === 'tsx' || ext === 'js' || ext === 'ts') {
-    htmlSource = `<html><body>${extractReactJsxMarkup(contentStr)}</body></html>`;
-  }
-
-  // 3. HTML / HTM (via browser DOMParser when present, or resilient fallback parser)
+  const budget = { abstractCount: 0, maxAbstract: maxNodesPerTab * 4 };
   let bodyAbs = null;
   let titleText = '';
-  let ruleMap = { tags: {}, classes: {}, ids: {} };
+  let ruleMap = parseStyleBlockRules('', extraCssText, stats);
 
-  if (typeof DOMParser !== 'undefined') {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(htmlSource, 'text/html');
-    titleText = (doc.querySelector('title')?.textContent || '').trim();
-    ruleMap = parseStyleBlockRules(doc);
-    bodyAbs = domNodeToAbstract(doc.body);
+  // 2. React JSX / TSX dosyası (dengeli JSX ayrıştırıcısı ile eval olmadan)
+  if (ext === 'jsx' || ext === 'tsx' || ext === 'js' || ext === 'ts') {
+    const scope = parseStaticJsxScope(contentStr);
+    const jsxBlocks = extractJsxBlocksFromSource(contentStr);
+    const mainJsx = jsxBlocks.length > 0 ? jsxBlocks[jsxBlocks.length - 1] : '';
+    if (jsxBlocks.length > 0 && /&&|\?/.test(mainJsx)) {
+      stats.hasConditionalJsx = true;
+    }
+    bodyAbs = mainJsx
+      ? parseJsxToAbstractTree(mainJsx, scope, stats)
+      : { tag: 'body', attrs: {}, children: [], textParts: [] };
   } else {
-    const titleMatch = htmlSource.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
-    titleText = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : '';
-    ruleMap = parseStyleBlockRules(htmlSource);
-    const bodyMatch = htmlSource.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
-    bodyAbs = parseMarkupFallback(bodyMatch ? bodyMatch[1] : htmlSource);
+    // 3. HTML / HTM (tarayıcıda DOMParser, Node'da fallback ayrıştırıcı)
+    if (typeof DOMParser !== 'undefined') {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(contentStr, 'text/html');
+      titleText = (doc.querySelector('title')?.textContent || '').trim();
+      // <head> içindeki gömülü script / embed öğelerini istatistiğe kaydet (body ayrıca taranacak)
+      if (doc.head) {
+        stats.removedScripts += doc.head.querySelectorAll('script').length;
+        stats.removedEmbeds += doc.head.querySelectorAll('iframe, object, embed, frame, frameset, applet').length;
+      }
+      ruleMap = parseStyleBlockRules(doc, extraCssText, stats);
+      bodyAbs = domNodeToAbstract(doc.body, stats, budget);
+    } else {
+      const titleMatch = contentStr.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+      titleText = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : '';
+      ruleMap = parseStyleBlockRules(contentStr, extraCssText, stats);
+      // <head> içinde kalan betik etiketlerini ayrıca say
+      const headMatch = contentStr.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i);
+      if (headMatch) {
+        const headScripts = headMatch[1].match(/<script\b/gi);
+        if (headScripts) stats.removedScripts += headScripts.length;
+      }
+      const bodyMatch = contentStr.match(/<body\b([^>]*)>([\s\S]*?)<\/body>/i);
+      bodyAbs = parseMarkupFallback(bodyMatch ? bodyMatch[2] : contentStr, stats, budget);
+      if (bodyMatch && bodyMatch[1]) {
+        const bodyHeaderAbs = parseMarkupFallback(`<div ${bodyMatch[1]}></div>`, stats, null);
+        if (bodyHeaderAbs?.children?.[0]?.attrs) {
+          bodyAbs.attrs = bodyHeaderAbs.children[0].attrs;
+        }
+      }
+    }
   }
 
   const bodyBg =
@@ -552,19 +797,28 @@ export function importSiteCodeToProjectSchema(rawContent, fileName = 'site.html'
     ruleMap.tags?.body?.backgroundColor ||
     '#0b0a09';
 
+  const ctx = {
+    maxNodes: maxNodesPerTab,
+    count: 0,
+    stats,
+    assetDataUrlMap,
+    baseDirPath,
+  };
+
   const craftPages = findCraftPageRoots(bodyAbs);
   const tabs = craftPages.length > 0
     ? craftPages.map((pg, idx) => {
+        ctx.count = 0;
         const route = pg.attrs?.['data-route'] || (idx === 0 ? '/' : `/sayfa-${idx + 1}`);
         const cleanRoute = route === '/' ? 'Anasayfa' : route.replace(/^\/+/, '');
         const pgBg = parseInlineCss(pg.attrs?.style || '').backgroundColor || bodyBg;
-        return buildTabFromHtmlBody(pg, ruleMap, `${cleanRoute}.craft`, route, pgBg);
+        return buildTabFromHtmlBody(pg, ruleMap, `${cleanRoute}.craft`, route, pgBg, ctx);
       })
-    : [buildTabFromHtmlBody(bodyAbs || { tag: 'body', attrs: {}, children: [], textParts: [] }, ruleMap, 'Anasayfa.craft', '/', bodyBg)];
+    : [buildTabFromHtmlBody(bodyAbs || { tag: 'body', attrs: {}, children: [], textParts: [] }, ruleMap, options.tabName || 'Anasayfa.craft', options.route || '/', bodyBg, ctx)];
 
   const cleanFileName = String(fileName || 'Site').replace(/\.(html?|jsx|tsx|js|ts|craft\.json|json)$/i, '');
 
-  return buildSerializableProjectSchema({
+  const schema = buildSerializableProjectSchema({
     id: `proj-${Date.now()}`,
     name: titleText || cleanFileName || 'İçe Aktarılan Site',
     filePath: filePath || null,
@@ -574,4 +828,6 @@ export function importSiteCodeToProjectSchema(rawContent, fileName = 'site.html'
     projectFunctions: [],
     pageLinks: [],
   });
+
+  return sanitizeCraftProjectSchema(schema, stats);
 }

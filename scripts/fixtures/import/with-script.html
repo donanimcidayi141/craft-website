@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Güvenlik Test Sayfası</title>
+  <script>
+    window.__xssExecuted = true;
+    console.warn('Bu betik asla çalıştırılmamalıdır');
+  </script>
+</head>
+<body onload="window.__onloadExecuted = true" style="background-color: #111827; color: #f8fafc;">
+  <section id="guvenlik-alani">
+    <h1 onclick="alert('baslik-xss')">Güvenlik Temizliği Testi</h1>
+    <p>Zararlı öznitelikler ve gömülü çerçeveler temizlenmelidir.</p>
+    <a href="javascript:alert('link-xss')" onclick="alert('tiklama')">Tehlikeli Bağlantı</a>
+    <a href="https://example.com/guvenli">Güvenli Bağlantı</a>
+    <button onmouseover="alert('hover')" onclick="fetch('https://evil.invalid')">İşlem Düğmesi</button>
+    <img src="javascript:alert('img-xss')" onerror="alert('onerror')" alt="Test Görseli" />
+    <iframe src="https://example.com/embed" title="Harici Çerçeve"></iframe>
+    <object data="https://example.com/obj.swf"></object>
+    <embed src="https://example.com/emb.swf" />
+    <form action="/gonder" method="post" onsubmit="alert('form')">
+      <input type="text" name="eposta" placeholder="E-posta adresiniz" />
+      <button type="submit">Formu Gönder</button>
+    </form>
+  </section>
+  <script type="text/javascript">
+    document.body.setAttribute('data-script-ran', '1');
+  </script>
+</body>
+</html>

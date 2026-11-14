@@ -17,7 +17,7 @@ export const DEFAULT_AI_WELCOME_MSG = {
   text: "Selam knk, ne yapalım? Tüm siteyi tarif edebilir ya da tuvalden bir yer seçip 'bu olmamış' diyebilirsin.",
 };
 
-const INITIAL_MODELS = [
+export const INITIAL_MODELS = [
   { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash' },
   { id: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash Lite' },
   { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },

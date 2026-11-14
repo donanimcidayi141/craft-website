@@ -1,0 +1,944 @@
+{
+  "mode": "legacy",
+  "timestamp": "2026-11-14T11:47:18.806Z",
+  "rows": [
+    {
+      "id": "basic.html",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 1086,
+      "expectations": {
+        "wordCount": 25,
+        "trChars": "öüşığçİ",
+        "expectedImages": 1
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 5,
+        "nodeCount": 7,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": true,
+        "securityViolations": [],
+        "textCoveragePct": 68,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 115,
+        "nodeCount": 7,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": true,
+        "securityViolations": [],
+        "textCoveragePct": 68,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "landing-flex.html",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 4100,
+      "expectations": {
+        "wordCount": 59,
+        "trChars": "ışİüğöÖç",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 4,
+        "nodeCount": 28,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 117,
+        "nodeCount": 28,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "inline-styles.html",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 1618,
+      "expectations": {
+        "wordCount": 29,
+        "trChars": "şÇüçöı",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 1,
+        "nodeCount": 13,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 114,
+        "nodeCount": 13,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "with-script.html",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 1392,
+      "expectations": {
+        "wordCount": 16,
+        "trChars": "üğıöçİş",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 1,
+        "nodeCount": 14,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [
+          "on-oznitelik:onclick",
+          "javascript-url:href",
+          "on-oznitelik:onmouseover",
+          "javascript-url:src",
+          "on-oznitelik:onerror",
+          "javascript-url:imageUrl",
+          "yasak-etiket:<iframe>",
+          "yasak-etiket:<object>",
+          "yasak-etiket:<embed>",
+          "on-oznitelik:onsubmit",
+          "ham-json:javascript:"
+        ],
+        "textCoveragePct": 100,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 113,
+        "nodeCount": 13,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [
+          "on-oznitelik:onclick",
+          "javascript-url:href",
+          "on-oznitelik:onmouseover",
+          "javascript-url:src",
+          "on-oznitelik:onerror",
+          "javascript-url:imageUrl",
+          "yasak-etiket:<iframe>",
+          "yasak-etiket:<object>",
+          "yasak-etiket:<embed>",
+          "on-oznitelik:onsubmit",
+          "ham-json:javascript:"
+        ],
+        "textCoveragePct": 100,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "component.jsx",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 1525,
+      "expectations": {
+        "wordCount": 29,
+        "trChars": "şçğıİüöÜ",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 1,
+        "nodeCount": 6,
+        "pageCount": 1,
+        "turkishIntact": false,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 24,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 44,
+        "nodeCount": 7,
+        "pageCount": 1,
+        "turkishIntact": false,
+        "imagesPreserved": null,
+        "securityViolations": [
+          "on-oznitelik:onclick"
+        ],
+        "textCoveragePct": 24,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "component.tsx",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 1358,
+      "expectations": {
+        "wordCount": 30,
+        "trChars": "ıüşğç",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 1,
+        "nodeCount": 6,
+        "pageCount": 1,
+        "turkishIntact": false,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 53,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 110,
+        "nodeCount": 6,
+        "pageCount": 1,
+        "turkishIntact": false,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 53,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "project.craft.json",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 58916,
+      "expectations": {
+        "wordCount": 105,
+        "trChars": "ıöİşçğüÖ",
+        "expectedImages": 4
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 1,
+        "nodeCount": 61,
+        "pageCount": 2,
+        "turkishIntact": true,
+        "imagesPreserved": true,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 115,
+        "nodeCount": 61,
+        "pageCount": 2,
+        "turkishIntact": true,
+        "imagesPreserved": true,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "folder-site",
+      "kind": "folder",
+      "expectOk": true,
+      "bytes": null,
+      "expectations": {
+        "wordCount": 29,
+        "trChars": "ıüçşÇöğ",
+        "expectedImages": 2
+      },
+      "node": {
+        "ok": false,
+        "errorText": "BrowserWindow is not a constructor",
+        "durationMs": 80,
+        "nodeCount": 0,
+        "pageCount": 0,
+        "turkishIntact": null,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 0,
+        "warnings": []
+      },
+      "browser": {
+        "ok": false,
+        "shownError": "Klasör içe aktarma Electron masaüstünde kullanılabilir; dosya açmak için .craft.json seçin.",
+        "durationMs": 357,
+        "nodeCount": 0,
+        "pageCount": 0,
+        "turkishIntact": null,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 0,
+        "crashed": false
+      }
+    },
+    {
+      "id": "invalid.html",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 231,
+      "expectations": {
+        "wordCount": 17,
+        "trChars": "ışçö",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 0,
+        "nodeCount": 6,
+        "pageCount": 1,
+        "turkishIntact": false,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 12,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 111,
+        "nodeCount": 6,
+        "pageCount": 1,
+        "turkishIntact": false,
+        "imagesPreserved": null,
+        "securityViolations": [
+          "ham-json:<script"
+        ],
+        "textCoveragePct": 47,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "empty.html",
+      "kind": "file",
+      "expectOk": false,
+      "bytes": 0,
+      "expectations": {
+        "wordCount": 0,
+        "trChars": "",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": false,
+        "errorText": "Seçilen dosya boş görünüyor.",
+        "durationMs": 0,
+        "nodeCount": 0,
+        "pageCount": 0,
+        "turkishIntact": null,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 0,
+        "warnings": []
+      },
+      "browser": {
+        "ok": false,
+        "shownError": "Dosya içe aktarılamadı (empty.html): Seçilen dosya boş görünüyor.",
+        "durationMs": 10,
+        "nodeCount": 0,
+        "pageCount": 0,
+        "turkishIntact": null,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 0,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "bom-turkce.html",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 414,
+      "expectations": {
+        "wordCount": 14,
+        "trChars": "üçğıöşÇĞİÖŞÜ",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 0,
+        "nodeCount": 3,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "warnings": []
+      },
+      "browser": {
+        "ok": true,
+        "shownError": null,
+        "durationMs": 110,
+        "nodeCount": 3,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "crashed": false,
+        "pageErrors": []
+      }
+    },
+    {
+      "id": "big.html",
+      "kind": "file",
+      "expectOk": true,
+      "bytes": 3145607,
+      "expectations": {
+        "wordCount": 12,
+        "trChars": "Üüşığöç",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": true,
+        "errorText": null,
+        "durationMs": 1896,
+        "nodeCount": 55837,
+        "pageCount": 1,
+        "turkishIntact": true,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 100,
+        "warnings": []
+      },
+      "browser": {
+        "ok": false,
+        "shownError": "DONMA/ZAMAN_ASIMI: CDP komut zaman aşımı (Runtime.evaluate)",
+        "durationMs": 16828,
+        "nodeCount": 0,
+        "pageCount": 0,
+        "turkishIntact": null,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 0,
+        "crashed": true
+      }
+    },
+    {
+      "id": "huge.html",
+      "kind": "file",
+      "expectOk": false,
+      "bytes": 12582905,
+      "expectations": {
+        "wordCount": 12,
+        "trChars": "Üüşığöç",
+        "expectedImages": 0
+      },
+      "node": {
+        "ok": false,
+        "errorText": "ZAMAN_ASIMI (>7056ms donma)",
+        "durationMs": 7056,
+        "nodeCount": 0,
+        "pageCount": 0,
+        "turkishIntact": null,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 0,
+        "warnings": []
+      },
+      "browser": {
+        "ok": false,
+        "shownError": "DONMA/ZAMAN_ASIMI: CDP komut zaman aşımı (Runtime.evaluate)",
+        "durationMs": 15129,
+        "nodeCount": 0,
+        "pageCount": 0,
+        "turkishIntact": null,
+        "imagesPreserved": null,
+        "securityViolations": [],
+        "textCoveragePct": 0,
+        "crashed": true
+      }
+    }
+  ],
+  "layoutFidelity": [
+    {
+      "fixture": "basic.html",
+      "origBlockCount": 5,
+      "importedBlockCount": 7,
+      "meanAbsDx": 10,
+      "meanAbsDy": 87,
+      "meanAbsDw": 560,
+      "meanAbsDh": 141,
+      "unmatchedMajorBlocks": 1,
+      "blockDiffs": [
+        {
+          "tag": "header",
+          "text": "Atölye Güneş — El Yapımı Koleksiyon Zana",
+          "matched": false,
+          "orig": {
+            "x": 40,
+            "y": 61,
+            "w": 1200,
+            "h": 76
+          },
+          "imported": null
+        },
+        {
+          "tag": "h1",
+          "text": "Atölye Güneş — El Yapımı Koleksiyon",
+          "matched": true,
+          "orig": {
+            "x": 40,
+            "y": 61,
+            "w": 1200,
+            "h": 37
+          },
+          "imported": {
+            "x": 36,
+            "y": 16,
+            "w": 400,
+            "h": 198
+          },
+          "dx": -4,
+          "dy": -45,
+          "dw": -800,
+          "dh": 161
+        },
+        {
+          "tag": "img",
+          "text": "Atölye Amblemi",
+          "matched": true,
+          "orig": {
+            "x": 40,
+            "y": 154,
+            "w": 240,
+            "h": 120
+          },
+          "imported": {
+            "x": 24,
+            "y": 282,
+            "w": 560,
+            "h": 240
+          },
+          "dx": -16,
+          "dy": 128,
+          "dw": 320,
+          "dh": 120
+        }
+      ],
+      "screenshots": {
+        "orig": "docs/import-artifacts/d-orig-basic-html.png",
+        "editor": "docs/import-artifacts/d-editor-basic-html-legacy.png",
+        "compare": "docs/import-artifacts/d-compare-basic-html-legacy.png"
+      }
+    },
+    {
+      "fixture": "landing-flex.html",
+      "origBlockCount": 18,
+      "importedBlockCount": 28,
+      "meanAbsDx": 138,
+      "meanAbsDy": 162,
+      "meanAbsDw": 301,
+      "meanAbsDh": 30,
+      "unmatchedMajorBlocks": 7,
+      "blockDiffs": [
+        {
+          "tag": "nav",
+          "text": "Kuzey Mimarlık Projeler Yaklaşım İletişi",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 0,
+            "w": 1280,
+            "h": 80
+          },
+          "imported": null
+        },
+        {
+          "tag": "button",
+          "text": "Teklif Al",
+          "matched": true,
+          "orig": {
+            "x": 1134,
+            "y": 20,
+            "w": 98,
+            "h": 39
+          },
+          "imported": {
+            "x": 608,
+            "y": 100,
+            "w": 110,
+            "h": 38
+          },
+          "dx": -526,
+          "dy": 80,
+          "dw": 12,
+          "dh": -1
+        },
+        {
+          "tag": "section",
+          "text": "Sürdürülebilir Mekânlar Tasarlıyoruz Doğ",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 80,
+            "w": 1280,
+            "h": 388
+          },
+          "imported": null
+        },
+        {
+          "tag": "h1",
+          "text": "Sürdürülebilir Mekânlar Tasarlıyoruz",
+          "matched": true,
+          "orig": {
+            "x": 48,
+            "y": 161,
+            "w": 724,
+            "h": 120
+          },
+          "imported": {
+            "x": 48,
+            "y": 262,
+            "w": 352,
+            "h": 207
+          },
+          "dx": 0,
+          "dy": 101,
+          "dw": -372,
+          "dh": 87
+        },
+        {
+          "tag": "button",
+          "text": "Portföyü İncele",
+          "matched": true,
+          "orig": {
+            "x": 48,
+            "y": 348,
+            "w": 144,
+            "h": 39
+          },
+          "imported": {
+            "x": 48,
+            "y": 593,
+            "w": 180,
+            "h": 44
+          },
+          "dx": 0,
+          "dy": 245,
+          "dw": 36,
+          "dh": 5
+        },
+        {
+          "tag": "section",
+          "text": "Hizmet Alanlarımız Konut Tasarımı İklim ",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 468,
+            "w": 1280,
+            "h": 298
+          },
+          "imported": null
+        },
+        {
+          "tag": "h2",
+          "text": "Hizmet Alanlarımız",
+          "matched": true,
+          "orig": {
+            "x": 48,
+            "y": 524,
+            "w": 1184,
+            "h": 33
+          },
+          "imported": {
+            "x": 24,
+            "y": 745,
+            "w": 400,
+            "h": 59
+          },
+          "dx": -24,
+          "dy": 221,
+          "dw": -784,
+          "dh": 26
+        },
+        {
+          "tag": "article",
+          "text": "Konut Tasarımı İklim verilerine uyumlu, ",
+          "matched": false,
+          "orig": {
+            "x": 48,
+            "y": 581,
+            "w": 379,
+            "h": 129
+          },
+          "imported": null
+        },
+        {
+          "tag": "article",
+          "text": "İç Mimarlık Akustik konfor ve doğal doku",
+          "matched": false,
+          "orig": {
+            "x": 451,
+            "y": 581,
+            "w": 379,
+            "h": 129
+          },
+          "imported": null
+        },
+        {
+          "tag": "article",
+          "text": "Kentsel Dönüşüm Yaya dostu kamusal alanl",
+          "matched": false,
+          "orig": {
+            "x": 853,
+            "y": 581,
+            "w": 379,
+            "h": 129
+          },
+          "imported": null
+        },
+        {
+          "tag": "footer",
+          "text": "© 2026 Kuzey Mimarlık Stüdyosu İstanbul ",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 766,
+            "w": 1280,
+            "h": 78
+          },
+          "imported": null
+        }
+      ],
+      "screenshots": {
+        "orig": "docs/import-artifacts/d-orig-landing-flex-html.png",
+        "editor": "docs/import-artifacts/d-editor-landing-flex-html-legacy.png",
+        "compare": "docs/import-artifacts/d-compare-landing-flex-html-legacy.png"
+      }
+    },
+    {
+      "fixture": "inline-styles.html",
+      "origBlockCount": 9,
+      "importedBlockCount": 13,
+      "meanAbsDx": 12,
+      "meanAbsDy": 106,
+      "meanAbsDw": 28,
+      "meanAbsDh": 12,
+      "unmatchedMajorBlocks": 2,
+      "blockDiffs": [
+        {
+          "tag": "header",
+          "text": "Anadolu Kahve Kavurma",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 0,
+            "w": 1280,
+            "h": 62
+          },
+          "imported": null
+        },
+        {
+          "tag": "section",
+          "text": "Taze Kavrulmuş Çekirdekler Her sabah küç",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 62,
+            "w": 1280,
+            "h": 324
+          },
+          "imported": null
+        },
+        {
+          "tag": "h1",
+          "text": "Taze Kavrulmuş Çekirdekler",
+          "matched": true,
+          "orig": {
+            "x": 36,
+            "y": 102,
+            "w": 1208,
+            "h": 42
+          },
+          "imported": {
+            "x": 24,
+            "y": 124,
+            "w": 1232,
+            "h": 65
+          },
+          "dx": -12,
+          "dy": 22,
+          "dw": 24,
+          "dh": 23
+        },
+        {
+          "tag": "button",
+          "text": "Sipariş Oluştur",
+          "matched": true,
+          "orig": {
+            "x": 36,
+            "y": 303,
+            "w": 148,
+            "h": 43
+          },
+          "imported": {
+            "x": 24,
+            "y": 493,
+            "w": 180,
+            "h": 44
+          },
+          "dx": -12,
+          "dy": 190,
+          "dw": 32,
+          "dh": 1
+        }
+      ],
+      "screenshots": {
+        "orig": "docs/import-artifacts/d-orig-inline-styles-html.png",
+        "editor": "docs/import-artifacts/d-editor-inline-styles-html-legacy.png",
+        "compare": "docs/import-artifacts/d-compare-inline-styles-html-legacy.png"
+      }
+    },
+    {
+      "fixture": "folder-site/index.html",
+      "origBlockCount": 6,
+      "importedBlockCount": 9,
+      "meanAbsDx": 8,
+      "meanAbsDy": 122,
+      "meanAbsDw": 159,
+      "meanAbsDh": 76,
+      "unmatchedMajorBlocks": 2,
+      "blockDiffs": [
+        {
+          "tag": "nav",
+          "text": "Ana Sayfa Hakkımızda",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 0,
+            "w": 1280,
+            "h": 84
+          },
+          "imported": null
+        },
+        {
+          "tag": "img",
+          "text": "Marka Logosu",
+          "matched": true,
+          "orig": {
+            "x": 36,
+            "y": 18,
+            "w": 48,
+            "h": 48
+          },
+          "imported": {
+            "x": 36,
+            "y": 16,
+            "w": 400,
+            "h": 240
+          },
+          "dx": 0,
+          "dy": -2,
+          "dw": 352,
+          "dh": 192
+        },
+        {
+          "tag": "section",
+          "text": "Çok Sayfalı Statik Site Harici CSS ve ye",
+          "matched": false,
+          "orig": {
+            "x": 0,
+            "y": 84,
+            "w": 1280,
+            "h": 275
+          },
+          "imported": null
+        },
+        {
+          "tag": "h1",
+          "text": "Çok Sayfalı Statik Site",
+          "matched": true,
+          "orig": {
+            "x": 36,
+            "y": 161,
+            "w": 1208,
+            "h": 43
+          },
+          "imported": {
+            "x": 24,
+            "y": 324,
+            "w": 1232,
+            "h": 74
+          },
+          "dx": -12,
+          "dy": 163,
+          "dw": 24,
+          "dh": 31
+        },
+        {
+          "tag": "button",
+          "text": "Başla",
+          "matched": true,
+          "orig": {
+            "x": 36,
+            "y": 264,
+            "w": 80,
+            "h": 39
+          },
+          "imported": {
+            "x": 24,
+            "y": 466,
+            "w": 180,
+            "h": 44
+          },
+          "dx": -12,
+          "dy": 202,
+          "dw": 100,
+          "dh": 5
+        }
+      ],
+      "screenshots": {
+        "orig": "docs/import-artifacts/d-orig-folder-site-index-html.png",
+        "editor": "docs/import-artifacts/d-editor-folder-site-index-html-legacy.png",
+        "compare": "docs/import-artifacts/d-compare-folder-site-index-html-legacy.png"
+      }
+    }
+  ]
+}

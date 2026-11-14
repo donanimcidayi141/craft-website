@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kuzey Mimarlık — Açılış Sayfası</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+    }
+    .navbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 48px;
+      background-color: #111827;
+      border-bottom: 1px solid #1f2937;
+    }
+    .nav-links {
+      display: flex;
+      gap: 24px;
+      align-items: center;
+    }
+    .nav-link {
+      color: #cbd5e1;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 40px;
+      padding: 64px 48px;
+      background-color: #1e293b;
+    }
+    .hero-copy {
+      flex: 1;
+    }
+    .hero-title {
+      font-size: 44px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: #ffffff;
+    }
+    .hero-desc {
+      font-size: 18px;
+      color: #cbd5e1;
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+    .hero-cta {
+      display: inline-block;
+      padding: 12px 24px;
+      background-color: #38bdf8;
+      color: #0f172a;
+      border-radius: 8px;
+      font-weight: 700;
+      border: none;
+    }
+    .hero-visual {
+      width: 420px;
+      height: 260px;
+      background-color: #334155;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #e2e8f0;
+      font-weight: 600;
+    }
+    .cards-section {
+      padding: 56px 48px;
+    }
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-top: 24px;
+    }
+    .feature-card {
+      background-color: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 24px;
+    }
+    .feature-card h3 {
+      font-size: 20px;
+      margin-bottom: 10px;
+      color: #f8fafc;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: #94a3b8;
+      line-height: 1.5;
+    }
+    .site-footer {
+      padding: 28px 48px;
+      background-color: #020617;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <strong class="brand">Kuzey Mimarlık</strong>
+    <div class="nav-links">
+      <a class="nav-link" href="#projeler">Projeler</a>
+      <a class="nav-link" href="#yaklasim">Yaklaşım</a>
+      <a class="nav-link" href="#iletisim">İletişim</a>
+      <button class="hero-cta" type="button">Teklif Al</button>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="hero-copy">
+      <h1 class="hero-title">Sürdürülebilir Mekânlar Tasarlıyoruz</h1>
+      <p class="hero-desc">Doğal ışık, yalın geometri ve yerel malzemelerle zamansız yapılar üretiyoruz.</p>
+      <button class="hero-cta" type="button">Portföyü İncele</button>
+    </div>
+    <div class="hero-visual">Mimari Maket Önizleme</div>
+  </section>
+
+  <section class="cards-section">
+    <h2>Hizmet Alanlarımız</h2>
+    <div class="cards-grid">
+      <article class="feature-card">
+        <h3>Konut Tasarımı</h3>
+        <p>İklim verilerine uyumlu, enerji verimli müstakil ve toplu konut çözümleri.</p>
+      </article>
+      <article class="feature-card">
+        <h3>İç Mimarlık</h3>
+        <p>Akustik konfor ve doğal dokularla dengelenmiş çalışma ve yaşam alanları.</p>
+      </article>
+      <article class="feature-card">
+        <h3>Kentsel Dönüşüm</h3>
+        <p>Yaya dostu kamusal alanlar ve mahalle ölçeğinde yenileme projeleri.</p>
+      </article>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    <span>© 2026 Kuzey Mimarlık Stüdyosu</span>
+    <span>İstanbul · İzmir</span>
+  </footer>
+</body>
+</html>

@@ -515,15 +515,24 @@ function CanvasNode({
               color: effectiveNode.style?.color || effectiveNode.textColor || '#1f2937',
               fontSize: effectiveNode.style?.fontSize || `${effectiveNode.fontSize || 16}px`,
               fontWeight: effectiveNode.style?.fontWeight || effectiveNode.fontWeight || '400',
-              textAlign: effectiveNode.style?.textAlign || effectiveNode.textAlign || 'left',
+              textAlign:
+                effectiveNode.style?.textAlign ||
+                effectiveNode.textAlign ||
+                (effectiveNode.style?.justifyContent === 'center' ? 'center' : 'left'),
               fontFamily: effectiveNode.style?.fontFamily || undefined,
               lineHeight: effectiveNode.style?.lineHeight || '1.4',
               letterSpacing: effectiveNode.style?.letterSpacing || undefined,
               textDecoration: effectiveNode.style?.textDecoration || undefined,
               textTransform: effectiveNode.style?.textTransform || undefined,
               textShadow: effectiveNode.style?.textShadow || undefined,
+              whiteSpace: effectiveNode.style?.whiteSpace || undefined,
               width: '100%',
-              padding: effectiveNode.style?.padding ?? (tagType === 'text' ? '2px 4px' : '4px'),
+              padding:
+                effectiveNode.style?.padding !== undefined
+                  ? 0
+                  : tagType === 'text'
+                    ? '2px 4px'
+                    : '4px',
             }}
             className="pointer-events-none"
           >
@@ -565,6 +574,11 @@ function CanvasNode({
                 color: effectiveNode.style?.color || '#1a1816',
                 fontSize: effectiveNode.style?.fontSize || '14px',
                 fontWeight: effectiveNode.style?.fontWeight || '400',
+                fontFamily: effectiveNode.style?.fontFamily || undefined,
+                textAlign:
+                  effectiveNode.style?.textAlign ||
+                  effectiveNode.textAlign ||
+                  (effectiveNode.style?.justifyContent === 'center' ? 'center' : 'left'),
                 textShadow: effectiveNode.style?.textShadow || undefined,
                 width: '100%',
               }}

@@ -1,0 +1,32 @@
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background-color: #141417;
+  color: #f4f4f5;
+}
+
+.site-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 36px;
+  background-color: #1c1c21;
+}
+
+.site-hero {
+  padding: 56px 36px;
+  background-color: #1f2430;
+}
+
+.brand-logo {
+  width: 48px;
+  height: 48px;
+}
+
+.cta-btn {
+  background-color: #38bdf8;
+  color: #09090b;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-weight: 700;
+}
