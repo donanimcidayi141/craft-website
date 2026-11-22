@@ -176,10 +176,15 @@ async function main() {
 
   const consoleErrors = [];
   const uncaughtExceptions = [];
+  const dialogEvents = [];
+  let nextDialogAccept = true;
 
-  cdp.on('Page.javascriptDialogOpening', async () => {
+  cdp.on('Page.javascriptDialogOpening', async (params) => {
+    dialogEvents.push({ type: params.type, message: params.message });
+    const accept = nextDialogAccept;
+    nextDialogAccept = true;
     try {
-      await cdp.send('Page.handleJavaScriptDialog', { accept: true });
+      await cdp.send('Page.handleJavaScriptDialog', { accept });
     } catch {}
   });
 
@@ -792,12 +797,49 @@ async function main() {
     );
     console.log('  ✓ Kaydet ve yeniden aç sonrası Tablet override korundu, Masaüstü değişmedi');
 
-    // 10. Sekme kapat, Ctrl+Z ile geri gelmediğini doğrula, yeniden sekme açıp Tablete geçişte doğru adapte olduğunu doğrula
+    // 10. Sekme kapatma onayı (dolu sekmede onay ister, iptalde kapanmaz, onayda kapanır; boş sekme onaysız kapanır) + yeniden açılan sekmenin Tablete adaptasyonu
     await cdp.evaluate(`document.querySelector('button[title^="Masaüstü Tasarımı"]')?.click()`);
     assert.ok(
       await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '1280px'`),
       'Sekme kapatma testi öncesi masaüstüne dönülemedi.'
     );
+
+    // 10a. Boş bir sekme aç (Sayfa-3.craft) ve onaysız kapandığını doğrula
+    await cdp.evaluate(`document.querySelector('button[title="Yeni Sayfa Sekmesi Ekle"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('div[title^="Sayfa-3.craft"]'))`),
+      'Boş test sekmesi (Sayfa-3.craft) açılamadı.'
+    );
+    const dialogCountBeforeEmptyClose = dialogEvents.length;
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-3.craft"] button')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `!document.querySelector('div[title^="Sayfa-3.craft"]')`),
+      'Boş sekme (Sayfa-3.craft) kapatılamadı.'
+    );
+    assert.equal(
+      dialogEvents.length,
+      dialogCountBeforeEmptyClose,
+      'Boş sekme kapatılırken onay diyaloğu açılmamalıydı.'
+    );
+
+    // 10b. Eleman içeren Sayfa-2.craft sekmesini kapatırken onay istemeli; İptal (accept=false) seçilince kapanmamalı
+    const dialogCountBeforeCancel = dialogEvents.length;
+    nextDialogAccept = false;
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-2.craft"] button')?.click()`);
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(dialogEvents.length, dialogCountBeforeCancel + 1, 'Dolu sekme kapatılırken confirm diyaloğu açılmadı.');
+    assert.equal(
+      dialogEvents[dialogEvents.length - 1].message,
+      'Bu sayfa silinecek, emin misin?',
+      'Sekme kapatma onay mesajı beklenen metinle eşleşmedi.'
+    );
+    assert.ok(
+      await cdp.evaluate(`Boolean(document.querySelector('div[title^="Sayfa-2.craft"]'))`),
+      'Onay reddedildiği halde dolu sekme kapandı!'
+    );
+
+    // 10c. Şimdi onayı kabul et (accept=true) -> Sayfa-2.craft kapanmalı
+    nextDialogAccept = true;
     const closedTabClicked = await cdp.evaluate(`
       (() => {
         const tabDiv = document.querySelector('div[title^="Sayfa-2.craft"]');
@@ -810,8 +852,9 @@ async function main() {
     assert.ok(closedTabClicked, 'Sayfa-2.craft sekme kapatma butonu bulunamadı.');
     assert.ok(
       await waitFor(cdp, `!document.querySelector('div[title^="Sayfa-2.craft"]')`),
-      'Sayfa-2.craft sekmesi kapatılamadı.'
+      'Sayfa-2.craft sekmesi onay sonrası kapatılamadı.'
     );
+    console.log('  ✓ Sekme kapatma onayı (boş sekme onaysız, dolu sekmede onay/iptal kontrolü) doğrulandı');
 
     // Ctrl+Z sekme kapatmayı geri almamalı (history sekme bazlı AST geçmişidir)
     await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);

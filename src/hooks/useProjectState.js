@@ -276,9 +276,18 @@ export function useProjectState() {
   }, [tabs.length, setTabHistory]);
 
   const handleCloseTab = useCallback((tabId) => {
-    if (tabs.length <= 1) return;
+    if (tabs.length <= 1) return false;
+    const targetTab = tabs.find((t) => t.id === tabId);
+    if (!targetTab) return false;
+    if (Array.isArray(targetTab.elements) && targetTab.elements.length > 0) {
+      if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+        if (!window.confirm('Bu sayfa silinecek, emin misin?')) {
+          return false;
+        }
+      }
+    }
     const remaining = tabs.filter((t) => t.id !== tabId);
-    if (remaining.length === tabs.length) return;
+    if (remaining.length === tabs.length) return false;
     delete latestTabSnapshotRef.current[tabId];
     for (const key of Array.from(autoAdaptedPairsRef.current)) {
       if (key.startsWith(`${tabId}:`)) {
@@ -296,6 +305,7 @@ export function useProjectState() {
       setActiveTabId(remaining[0].id);
     }
     setHasUnsavedChanges(true);
+    return true;
   }, [tabs, activeTabId]);
 
   const handleRenameTab = useCallback((tabId, nextName) => {
