@@ -11,6 +11,8 @@ import {
 import {
   buildSerializableProjectSchema,
   parseAndMigrateLoadedProject,
+  createDefaultProjectBackend,
+  normalizeProjectBackend,
   detectInitializedViewports,
   loadRecentProjects,
   upsertRecentProject,
@@ -88,6 +90,7 @@ export function useProjectIO({ state, actions }) {
     viewportMode,
     projectFunctions,
     pageLinks,
+    projectBackend,
     hasUnsavedChanges,
     showWelcomeScreen,
     importReportData,
@@ -119,10 +122,11 @@ export function useProjectIO({ state, actions }) {
       viewportMode,
       projectFunctions,
       pageLinks,
+      backend: projectBackend,
       createdAt: projectMeta.createdAt,
       ...overrides,
     });
-  }, [projectMeta, tabs, activeTabId, viewportMode, projectFunctions, pageLinks]);
+  }, [projectMeta, tabs, activeTabId, viewportMode, projectFunctions, pageLinks, projectBackend]);
 
   const flushAutosaveDraft = useCallback(() => {
     const schema = buildCurrentProjectSchema();
@@ -163,6 +167,7 @@ export function useProjectIO({ state, actions }) {
         viewportMode: schema.viewportMode || 'desktop',
         projectFunctions: Array.isArray(schema.projectFunctions) ? schema.projectFunctions : [],
         pageLinks: Array.isArray(schema.pageLinks) ? schema.pageLinks : [],
+        backend: normalizeProjectBackend(schema.backend),
         projectMeta: {
           id: schema.id,
           name: finalName,
@@ -256,6 +261,7 @@ export function useProjectIO({ state, actions }) {
         hasUnsavedChanges: false,
         projectFunctions: [],
         pageLinks: [],
+        backend: createDefaultProjectBackend(),
       },
       layout: { showWelcomeScreen: false, ...layoutOverrides },
       selectionOrder: 'afterPreview',
@@ -415,6 +421,7 @@ export function useProjectIO({ state, actions }) {
         hasUnsavedChanges: assembledElements.length > 0,
         projectFunctions: [],
         pageLinks: [],
+        backend: createDefaultProjectBackend(),
       },
       layout: {
         showWelcomeScreen: false,
@@ -628,6 +635,7 @@ export function useProjectIO({ state, actions }) {
         activeTabId: importReportData.activeTabId,
         projectFunctions: importReportData.projectFunctions || [],
         pageLinks: importReportData.pageLinks || [],
+        backend: importReportData.backend,
       });
     } catch (err) {
       showToastMessage(`İçe aktarma hatası: ${err.message}`, 'error');
@@ -677,6 +685,7 @@ export function useProjectIO({ state, actions }) {
           name: proj.name,
           elements: proj.elements,
           canvasByViewport: proj.canvasByViewport || { width: proj.width || 1280, height: proj.height || 1350, backgroundColor: '#0f172a' },
+          backend: proj.backend,
         });
         return;
       }

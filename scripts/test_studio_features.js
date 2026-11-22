@@ -56,6 +56,8 @@ import {
   buildSerializableProjectSchema,
   parseAndMigrateLoadedProject,
   normalizeProjectTab,
+  createDefaultProjectBackend,
+  normalizeProjectBackend,
   detectInitializedViewports,
   slugifyTabRoute,
   loadRecentProjects,
@@ -68,6 +70,30 @@ import {
   loadAutosaveDraft,
   clearAutosaveDraft,
 } from '../src/utils/projectStorage.js';
+import {
+  STUDIO_MODES,
+  DEFAULT_STUDIO_MODE,
+  STUDIO_MODE_LIST,
+  isValidStudioMode,
+  getStudioModeConfig,
+  isToolSupportedInMode,
+} from '../src/data/studioModesRegistry.js';
+import {
+  createInitialWorkspaceLayout,
+  updateActiveModeLeftDrawerTab,
+  updateActiveModeRightDock,
+  computeEffectiveActivePanels,
+  applyWorkspacePanelToggle,
+  applyStudioModeTransition,
+  applyWorkspaceLayoutReset,
+} from '../src/hooks/useWorkspaceLayout.js';
+import {
+  applyProjectBackendUpdate,
+  resolveResetProjectBackend,
+} from '../src/hooks/useProjectState.js';
+import {
+  dispatchStudioShortcut,
+} from '../src/hooks/useShortcuts.js';
 import { DEFAULT_UNIVERSAL_PROJECT, PRESET_ASSETS } from '../src/constants.js';
 import { CONTENT_PACK_ASSETS } from '../src/data/contentPacks.js';
 import {
@@ -3005,6 +3031,398 @@ test('sampleColorAtClientPoint safely returns null without DOM and samples backg
     else delete globalThis.window;
     if (prevGetStyleDesc) Object.defineProperty(globalThis, 'getComputedStyle', prevGetStyleDesc);
     else delete globalThis.getComputedStyle;
+  }
+});
+
+// -----------------------------------------------------------------------------
+// 18. STUDIO MODES REGISTRY & BACKEND SCHEMA DEFAULTS
+// -----------------------------------------------------------------------------
+console.log('\n🎛️ [18] Studio Modes Registry & Backend Schema Defaults');
+
+test('STUDIO_MODES defines design & backend modes with complete panel, tool, menu & layout schemas', () => {
+  assert.equal(DEFAULT_STUDIO_MODE, 'design');
+  assert.equal(STUDIO_MODE_LIST.length, 2);
+  assert.equal(isValidStudioMode('design'), true);
+  assert.equal(isValidStudioMode('backend'), true);
+  assert.equal(isValidStudioMode('unknown'), false);
+  assert.equal(getStudioModeConfig('invalid').id, 'design');
+
+  const design = getStudioModeConfig('design');
+  assert.equal(design.topBarConfig.showViewportSwitcher, true);
+  assert.equal(design.topBarConfig.showPageTabsBar, true);
+  assert.equal(design.centerView.supportsFloatingAiDock, true);
+  assert.equal(design.menuPanels.length, 5);
+  assert.equal(isToolSupportedInMode('design', 'select'), true);
+  assert.equal(isToolSupportedInMode('design', 'rectangle'), true);
+  assert.equal(isToolSupportedInMode('design', 'eyedropper'), true);
+
+  const backend = getStudioModeConfig('backend');
+  assert.equal(backend.topBarConfig.showViewportSwitcher, false);
+  assert.equal(backend.topBarConfig.showPageTabsBar, false);
+  assert.equal(backend.centerView.supportsFloatingAiDock, true);
+  assert.equal(isToolSupportedInMode('backend', 'select'), true);
+  assert.equal(isToolSupportedInMode('backend', 'hand'), true);
+  assert.equal(isToolSupportedInMode('backend', 'rectangle'), false);
+  assert.equal(isToolSupportedInMode('backend', 'eyedropper'), false);
+});
+
+test('projectStorage normalizes backend section with backward-compatible empty defaults and never persists activeMode', () => {
+  assert.deepEqual(createDefaultProjectBackend(), {
+    version: 1,
+    flows: [],
+    dataModels: [],
+    triggers: [],
+  });
+  assert.deepEqual(normalizeProjectBackend(null), {
+    version: 1,
+    flows: [],
+    dataModels: [],
+    triggers: [],
+  });
+
+  // Legacy project without backend field
+  const migratedLegacy = parseAndMigrateLoadedProject({
+    id: 'proj-old',
+    name: 'Eski Proje',
+    elements: [],
+  });
+  assert.deepEqual(migratedLegacy.backend, {
+    version: 1,
+    flows: [],
+    dataModels: [],
+    triggers: [],
+  });
+  assert.equal('activeMode' in migratedLegacy, false);
+
+  // Project with explicit backend section & projectFunctions preserved separately
+  const customBackend = {
+    version: 1,
+    flows: [{ id: 'flow-1', name: 'Sipariş Gönder' }],
+    dataModels: [{ id: 'model-1', name: 'Müşteriler' }],
+    triggers: [{ id: 'trig-1', event: 'onClick', targetElementId: 'btn-1', flowId: 'flow-1' }],
+  };
+  const saved = buildSerializableProjectSchema({
+    id: 'proj-new',
+    name: 'Yeni Proje',
+    projectFunctions: [{ id: 'fn-1', name: 'hesapla' }],
+    backend: customBackend,
+  });
+  const roundTripped = parseAndMigrateLoadedProject(JSON.stringify(saved));
+  assert.deepEqual(roundTripped.backend, customBackend);
+  assert.equal(roundTripped.projectFunctions.length, 1);
+  assert.equal('activeMode' in roundTripped, false);
+});
+
+test('useWorkspaceLayout isolates layoutsByMode per mode, drives menuPanels from registry, and resets to design', () => {
+  let state = createInitialWorkspaceLayout();
+  assert.equal(state.activeMode, 'design');
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, null);
+  assert.equal(state.layoutsByMode.backend.leftDrawer.activeTab, 'flows');
+
+  // Verify registry-driven effectiveActivePanels & togglePanel in design mode match exact legacy keys
+  assert.deepEqual(computeEffectiveActivePanels(state), {
+    properties: true,
+    assets: false,
+    layers: false,
+    aiAgent: true,
+    attributesAndCss: false,
+  });
+
+  state = applyWorkspacePanelToggle(state, 'layers');
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.equal(computeEffectiveActivePanels(state).layers, true);
+
+  state = updateActiveModeRightDock(state, { isOpen: false, propertiesTab: 'css', width: 410 });
+  assert.equal(state.layoutsByMode.design.rightDock.isOpen, false);
+  assert.equal(state.layoutsByMode.design.rightDock.propertiesTab, 'css');
+  assert.equal(state.layoutsByMode.design.rightDock.width, 410);
+  // Backend layout remains untouched while editing design layout
+  assert.equal(state.layoutsByMode.backend.leftDrawer.activeTab, 'flows');
+  assert.equal(state.layoutsByMode.backend.rightDock.isOpen, true);
+  assert.equal(state.layoutsByMode.backend.rightDock.propertiesTab, 'stepConfig');
+
+  // Simulate open design modals, transient popover, activeTool='rectangle', editingGroupId='grp-1', selectedIds=['el-1']
+  state = {
+    ...state,
+    activeTool: 'rectangle',
+    openPopover: 'shapes',
+    modals: {
+      ...state.modals,
+      addTag: true,
+      attributesInspector: true,
+      functionEditor: { isOpen: true, fnObj: { id: 'fn-1' }, bindTargetElementId: 'el-1' },
+    },
+  };
+  let editingGroupId = 'grp-1';
+  const selectedIds = ['el-1'];
+  let activeTool = 'rectangle';
+  let popoversClosed = false;
+
+  // Invalid mode transition should be rejected
+  const invalidRes = applyStudioModeTransition(state, 'nonexistent');
+  assert.equal(invalidRes.changed, false);
+  assert.equal(invalidRes.layout.activeMode, 'design');
+
+  // Switch to backend mode
+  const toBackend = applyStudioModeTransition(state, 'backend', {
+    setEditingGroupId: (val) => { editingGroupId = val; },
+    setActiveTool: (tool) => { activeTool = tool; },
+    onClosePopovers: () => { popoversClosed = true; },
+  });
+  assert.equal(toBackend.changed, true);
+  state = toBackend.layout;
+  assert.equal(state.activeMode, 'backend');
+  assert.equal(editingGroupId, null);
+  assert.deepEqual(selectedIds, ['el-1']); // selectedIds preserved
+  assert.equal(activeTool, 'select');
+  assert.equal(state.activeTool, 'select');
+  assert.equal(state.openPopover, null);
+  assert.equal(popoversClosed, true);
+  assert.equal(state.modals.addTag, false);
+  assert.equal(state.modals.attributesInspector, false);
+  assert.equal(state.modals.functionEditor.isOpen, false);
+
+  // Modify backend layout & verify registry-driven backend menuPanels
+  assert.deepEqual(computeEffectiveActivePanels(state), {
+    backendInspector: true,
+    flows: true,
+    dataModels: false,
+    aiAgent: true,
+  });
+  state = applyWorkspacePanelToggle(state, 'dataModels');
+  assert.equal(state.layoutsByMode.backend.leftDrawer.activeTab, 'dataModels');
+  assert.equal(computeEffectiveActivePanels(state).dataModels, true);
+  // Design layout slice still remembers 'layers' & rightDock width 410
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.equal(state.layoutsByMode.design.rightDock.isOpen, false);
+  assert.equal(state.layoutsByMode.design.rightDock.width, 410);
+
+  // Switch back to design mode -> remembers design layout slice
+  state = applyStudioModeTransition(state, 'design').layout;
+  assert.equal(state.activeMode, 'design');
+  assert.equal(state.leftDrawer.activeTab, 'layers');
+  assert.equal(state.rightDock.isOpen, false);
+  assert.equal(state.rightDock.propertiesTab, 'css');
+  assert.equal(state.rightDock.width, 410);
+
+  // Switch to backend and call reset() -> returns activeMode to 'design' while preserving custom dock widths
+  state = applyStudioModeTransition(state, 'backend').layout;
+  assert.equal(state.activeMode, 'backend');
+  state = applyWorkspaceLayoutReset(state, { showWelcomeScreen: false });
+  assert.equal(state.activeMode, 'design');
+  assert.equal(state.showWelcomeScreen, false);
+  assert.equal(state.leftDrawer.activeTab, null);
+  assert.equal(state.rightDock.isOpen, true);
+  assert.equal(state.rightDock.propertiesTab, 'layout');
+  assert.equal(state.rightDock.width, 410);
+});
+
+test('useProjectState & useProjectIO backend primitives update, persist across save/open/autosave/recents, default on legacy files, and clear on new project', () => {
+  const memStore = (() => {
+    const map = new Map();
+    return {
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => map.set(k, String(v)),
+      removeItem: (k) => map.delete(k),
+    };
+  })();
+
+  // 1. Update primitive merges partial or updater function and normalizes
+  let backendState = createDefaultProjectBackend();
+  backendState = applyProjectBackendUpdate(backendState, {
+    flows: [{ id: 'flow-checkout', name: 'Ödeme Akışı', steps: ['validate', 'charge'] }],
+  });
+  backendState = applyProjectBackendUpdate(backendState, (prev) => ({
+    ...prev,
+    dataModels: [{ id: 'tbl-orders', name: 'Siparişler', fields: ['id', 'total'] }],
+    triggers: [{ id: 'trig-pay', event: 'onClick', targetId: 'btn-pay', flowId: 'flow-checkout' }],
+  }));
+  assert.equal(backendState.flows.length, 1);
+  assert.equal(backendState.dataModels.length, 1);
+  assert.equal(backendState.triggers.length, 1);
+
+  // 2. Save to web storage, autosave draft, and recent projects -> reopen and verify exact match
+  const savedSchema = buildSerializableProjectSchema({
+    id: 'proj-backend-full',
+    name: 'Backend Test Projesi',
+    backend: backendState,
+  });
+  saveProjectToWebStorage(savedSchema, memStore);
+  saveAutosaveDraft(savedSchema, memStore);
+  upsertRecentProject(savedSchema, memStore);
+
+  const reopenedFromStorage = parseAndMigrateLoadedProject(loadProjectFromWebStorage('proj-backend-full', memStore));
+  assert.deepEqual(reopenedFromStorage.backend, backendState);
+
+  const reopenedFromAutosave = parseAndMigrateLoadedProject(loadAutosaveDraft(memStore));
+  assert.deepEqual(reopenedFromAutosave.backend, backendState);
+
+  const recentList = loadRecentProjects(memStore);
+  assert.equal(recentList.length, 1);
+  assert.deepEqual(recentList[0].snapshot.backend, backendState);
+
+  // 3. Legacy file without backend field opens with clean empty default
+  const legacyLoaded = parseAndMigrateLoadedProject({
+    id: 'proj-legacy-no-backend',
+    name: 'Eski Dosya',
+    tabs: [{ id: 'tab-1', name: 'Anasayfa.craft', elements: [] }],
+  });
+  assert.deepEqual(legacyLoaded.backend, createDefaultProjectBackend());
+  assert.deepEqual(resolveResetProjectBackend({ backend: legacyLoaded.backend }), createDefaultProjectBackend());
+
+  // 4. Starting a new project resets backend state so old backend data never leaks
+  const afterNewProjectReset = resolveResetProjectBackend({
+    tabs: [{ id: 'tab-new', name: 'Yeni-Tasarim.craft', elements: [] }],
+    projectFunctions: [],
+    pageLinks: [],
+  });
+  assert.deepEqual(afterNewProjectReset, createDefaultProjectBackend());
+});
+
+test('useShortcuts mode profile table executes universal keys in both modes and restricts design shortcuts to design mode only', () => {
+  const sampleTree = [{ id: 'el-1', type: 'rectangle', x: 100, y: 200, width: 120, height: 80 }];
+  const makeContext = (activeMode, overrides = {}) => {
+    const calls = [];
+    const state = {
+      activeMode,
+      showWelcomeScreen: false,
+      previewMode: false,
+      activeTool: 'select',
+      selectedIds: ['el-1'],
+      elements: sampleTree,
+      rawElements: sampleTree,
+      viewportMode: 'desktop',
+      showExportModal: false,
+      showTutorial: false,
+      showAddTagModal: false,
+      showImportReportModal: false,
+      showAttributesInspectorModal: false,
+      functionEditorState: { isOpen: false },
+      ...overrides,
+    };
+    const actions = {
+      setAiDockMinimized: (v) => calls.push(['setAiDockMinimized', v]),
+      setAiFocusSignal: () => calls.push(['setAiFocusSignal']),
+      handleSaveProject: (saveAs) => calls.push(['handleSaveProject', saveAs]),
+      handleOpenProjectFolder: () => calls.push(['handleOpenProjectFolder']),
+      handleOpenProjectFile: () => calls.push(['handleOpenProjectFile']),
+      setShowExportModal: (v) => calls.push(['setShowExportModal', v]),
+      handleSelectAll: () => calls.push(['handleSelectAll']),
+      handleCopyElementStyle: () => calls.push(['handleCopyElementStyle']),
+      handleCopy: () => calls.push(['handleCopy']),
+      handleCut: () => calls.push(['handleCut']),
+      handlePasteElementStyle: () => calls.push(['handlePasteElementStyle']),
+      handlePaste: () => calls.push(['handlePaste']),
+      handleDuplicateSelected: () => calls.push(['handleDuplicateSelected']),
+      handleToggleLockSelected: () => calls.push(['handleToggleLockSelected']),
+      handleStartNewProject: (tpl) => calls.push(['handleStartNewProject', tpl]),
+      handleAddTab: () => calls.push(['handleAddTab']),
+      handleUngroupSelected: () => calls.push(['handleUngroupSelected']),
+      handleGroupSelected: () => calls.push(['handleGroupSelected']),
+      handleUndo: () => calls.push(['handleUndo']),
+      handleRedo: () => calls.push(['handleRedo']),
+      handleDeleteSelected: () => calls.push(['handleDeleteSelected']),
+      updateElementsWithHistory: () => calls.push(['updateElementsWithHistory']),
+      handleTogglePreviewMode: (v) => calls.push(['handleTogglePreviewMode', v]),
+      setActiveTool: (t) => calls.push(['setActiveTool', t]),
+      handleSelectParent: () => calls.push(['handleSelectParent']),
+      handleSelectChild: () => calls.push(['handleSelectChild']),
+      setZoom: () => calls.push(['setZoom']),
+      handleResetZoom: () => calls.push(['handleResetZoom']),
+      handleZOrderSelected: (dir) => calls.push(['handleZOrderSelected', dir]),
+      setShowLayoutGrid: () => calls.push(['setShowLayoutGrid']),
+      setShowRulers: () => calls.push(['setShowRulers']),
+    };
+    return { state, actions, calls };
+  };
+
+  // Profile Table: { label, event, stateOverrides, expectedDesign, expectedBackend, expectedBackendCalls }
+  const profileTable = [
+    // Universal shortcuts (design + backend)
+    { label: 'Ctrl+K', event: { key: 'k', ctrlKey: true }, expectedDesign: 'ai_dock_focus', expectedBackend: 'ai_dock_focus', expectedBackendCalls: 2 },
+    { label: 'Ctrl+S', event: { key: 's', ctrlKey: true }, expectedDesign: 'save', expectedBackend: 'save', expectedBackendCalls: 1 },
+    { label: 'Ctrl+Shift+S', event: { key: 's', ctrlKey: true, shiftKey: true }, expectedDesign: 'save_as', expectedBackend: 'save_as', expectedBackendCalls: 1 },
+    { label: 'Ctrl+O', event: { key: 'o', ctrlKey: true }, expectedDesign: 'open_file', expectedBackend: 'open_file', expectedBackendCalls: 1 },
+    { label: 'Ctrl+Shift+O', event: { key: 'o', ctrlKey: true, shiftKey: true }, expectedDesign: 'open_folder', expectedBackend: 'open_folder', expectedBackendCalls: 1 },
+    { label: 'Ctrl+E', event: { key: 'e', ctrlKey: true }, expectedDesign: 'export_modal', expectedBackend: 'export_modal', expectedBackendCalls: 1 },
+    { label: 'Escape (previewMode)', event: { key: 'Escape' }, stateOverrides: { previewMode: true }, expectedDesign: 'escape_preview', expectedBackend: 'escape_preview', expectedBackendCalls: 1 },
+    { label: 'Escape (hand -> select)', event: { key: 'Escape' }, stateOverrides: { activeTool: 'hand' }, expectedDesign: 'escape_tool', expectedBackend: 'escape_tool', expectedBackendCalls: 1 },
+    { label: 'Escape (select -> parent only in design)', event: { key: 'Escape' }, expectedDesign: 'escape_parent', expectedBackend: 'escape_noop', expectedBackendCalls: 0 },
+
+    // Design-only shortcuts (must return null & invoke 0 callbacks in backend mode)
+    { label: 'Ctrl+A', event: { key: 'a', ctrlKey: true }, expectedDesign: 'select_all', expectedBackend: null },
+    { label: 'Ctrl+C', event: { key: 'c', ctrlKey: true }, expectedDesign: 'copy', expectedBackend: null },
+    { label: 'Ctrl+Shift+C', event: { key: 'c', ctrlKey: true, shiftKey: true }, expectedDesign: 'copy_style', expectedBackend: null },
+    { label: 'Ctrl+X', event: { key: 'x', ctrlKey: true }, expectedDesign: 'cut', expectedBackend: null },
+    { label: 'Ctrl+V', event: { key: 'v', ctrlKey: true }, expectedDesign: 'paste', expectedBackend: null },
+    { label: 'Ctrl+Shift+V', event: { key: 'v', ctrlKey: true, shiftKey: true }, expectedDesign: 'paste_style', expectedBackend: null },
+    { label: 'Ctrl+D', event: { key: 'd', ctrlKey: true }, expectedDesign: 'duplicate', expectedBackend: null },
+    { label: 'Ctrl+Shift+L', event: { key: 'l', ctrlKey: true, shiftKey: true }, expectedDesign: 'toggle_lock', expectedBackend: null },
+    { label: 'Ctrl+Shift+N', event: { key: 'n', ctrlKey: true, shiftKey: true }, expectedDesign: 'new_blank_project', expectedBackend: null },
+    { label: 'Ctrl+N', event: { key: 'n', ctrlKey: true }, expectedDesign: 'add_tab', expectedBackend: null },
+    { label: 'Ctrl+G', event: { key: 'g', ctrlKey: true }, expectedDesign: 'group', expectedBackend: null },
+    { label: 'Ctrl+Shift+G', event: { key: 'g', ctrlKey: true, shiftKey: true }, expectedDesign: 'ungroup', expectedBackend: null },
+    { label: 'Ctrl+Z', event: { key: 'z', ctrlKey: true }, expectedDesign: 'undo', expectedBackend: null },
+    { label: 'Ctrl+Shift+Z', event: { key: 'z', ctrlKey: true, shiftKey: true }, expectedDesign: 'redo', expectedBackend: null },
+    { label: 'Ctrl+Y', event: { key: 'y', ctrlKey: true }, expectedDesign: 'redo', expectedBackend: null },
+    { label: 'Delete', event: { key: 'Delete' }, expectedDesign: 'delete', expectedBackend: null },
+    { label: 'Backspace', event: { key: 'Backspace' }, expectedDesign: 'delete', expectedBackend: null },
+    { label: 'ArrowUp', event: { key: 'ArrowUp' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'ArrowDown', event: { key: 'ArrowDown' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'ArrowLeft', event: { key: 'ArrowLeft' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'ArrowRight', event: { key: 'ArrowRight' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'Shift+ArrowRight', event: { key: 'ArrowRight', shiftKey: true }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'Enter', event: { key: 'Enter' }, expectedDesign: 'select_child', expectedBackend: null },
+    { label: 'Ctrl+=', event: { key: '=', ctrlKey: true }, expectedDesign: 'zoom_in', expectedBackend: null },
+    { label: 'Ctrl++', event: { key: '+', ctrlKey: true }, expectedDesign: 'zoom_in', expectedBackend: null },
+    { label: 'Ctrl+-', event: { key: '-', ctrlKey: true }, expectedDesign: 'zoom_out', expectedBackend: null },
+    { label: 'Ctrl+0', event: { key: '0', ctrlKey: true }, expectedDesign: 'zoom_reset', expectedBackend: null },
+    { label: ']', event: { key: ']', code: 'BracketRight' }, expectedDesign: 'z_order_forward', expectedBackend: null },
+    { label: 'Ctrl+]', event: { key: ']', code: 'BracketRight', ctrlKey: true }, expectedDesign: 'z_order_front', expectedBackend: null },
+    { label: '[', event: { key: '[', code: 'BracketLeft' }, expectedDesign: 'z_order_backward', expectedBackend: null },
+    { label: 'Ctrl+[', event: { key: '[', code: 'BracketLeft', ctrlKey: true }, expectedDesign: 'z_order_back', expectedBackend: null },
+    { label: 'Shift+G', event: { key: 'G', shiftKey: true }, expectedDesign: 'toggle_grid', expectedBackend: null },
+    { label: 'Shift+R', event: { key: 'R', shiftKey: true }, expectedDesign: 'toggle_rulers', expectedBackend: null },
+    { label: 'V', event: { key: 'v' }, expectedDesign: 'tool:select', expectedBackend: null },
+    { label: 'H', event: { key: 'h' }, expectedDesign: 'tool:hand', expectedBackend: null },
+    { label: 'Z', event: { key: 'z' }, expectedDesign: 'tool:zoom', expectedBackend: null },
+    { label: 'R', event: { key: 'r' }, expectedDesign: 'tool:rectangle', expectedBackend: null },
+    { label: 'O', event: { key: 'o' }, expectedDesign: 'tool:circle', expectedBackend: null },
+    { label: 'L', event: { key: 'l' }, expectedDesign: 'tool:line', expectedBackend: null },
+    { label: 'F', event: { key: 'f' }, expectedDesign: 'tool:frame', expectedBackend: null },
+    { label: 'T', event: { key: 't' }, expectedDesign: 'tool:text', expectedBackend: null },
+    { label: 'I', event: { key: 'i' }, expectedDesign: 'tool:eyedropper', expectedBackend: null },
+  ];
+
+  for (const row of profileTable) {
+    const designCtx = makeContext('design', row.stateOverrides);
+    const designResult = dispatchStudioShortcut(
+      { ...row.event, preventDefault: () => {} },
+      { activeMode: 'design', state: designCtx.state, actions: designCtx.actions, activeElement: null }
+    );
+    assert.equal(
+      designResult,
+      row.expectedDesign,
+      `[design] ${row.label} expected "${row.expectedDesign}", got "${designResult}"`
+    );
+    assert.ok(designCtx.calls.length >= 1, `[design] ${row.label} should invoke at least 1 action callback`);
+
+    const backendCtx = makeContext('backend', row.stateOverrides);
+    const backendResult = dispatchStudioShortcut(
+      { ...row.event, preventDefault: () => {} },
+      { activeMode: 'backend', state: backendCtx.state, actions: backendCtx.actions, activeElement: null }
+    );
+    assert.equal(
+      backendResult,
+      row.expectedBackend,
+      `[backend] ${row.label} expected "${row.expectedBackend}", got "${backendResult}"`
+    );
+    const expectedCalls = row.expectedBackendCalls ?? 0;
+    assert.equal(
+      backendCtx.calls.length,
+      expectedCalls,
+      `[backend] ${row.label} expected ${expectedCalls} action calls, got ${backendCtx.calls.length}: ${JSON.stringify(backendCtx.calls)}`
+    );
   }
 });
 

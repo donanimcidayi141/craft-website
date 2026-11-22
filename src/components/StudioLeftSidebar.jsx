@@ -9,13 +9,20 @@ import {
   Circle, Minus, Frame, Pipette, Paintbrush, TextCursorInput, CheckSquare,
   ListCollapse, Video, SeparatorHorizontal, Grid3x3, Ruler, Maximize2,
   SlidersHorizontal, CopyPlus, ArrowUpToLine, ArrowDownToLine,
-  AlignCenterHorizontal, AlignCenterVertical
+  AlignCenterHorizontal, AlignCenterVertical, Workflow, Database, Zap
 } from 'lucide-react';
 import { canHaveChildren, isExplicitContainer } from '../utils/treeUtils.js';
 import { PRESET_ASSETS } from '../constants.js';
 import { elementToHtml, styleObjectToCss } from '../utils/codeSync.js';
+import { getStudioModeConfig } from '../data/studioModesRegistry.js';
 import PresetThumbnail from './PresetThumbnail.jsx';
 import LeftAiChatPanel from './LeftAiChatPanel.jsx';
+
+const BACKEND_PANEL_ICON_MAP = {
+  Workflow,
+  Database,
+  Zap,
+};
 
 const DEFAULT_LEFT_WIDTH = 248;
 const MIN_LEFT_WIDTH = 220;
@@ -95,7 +102,12 @@ export default function StudioLeftSidebar({
   // Shared Gemini AI session controller
   aiChat,
   viewportMode = 'desktop',
+  activeMode = 'design',
+  modeConfig = null,
+  projectBackend = null,
 }) {
+  const resolvedModeConfig = modeConfig || getStudioModeConfig(activeMode);
+  const isBackendMode = activeMode === 'backend';
   const [collapsedMap, setCollapsedMap] = useState({});
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState('');
@@ -228,6 +240,9 @@ export default function StudioLeftSidebar({
   const hasSelection = Array.isArray(selectedIds) && selectedIds.length > 0;
   const [openAddGroup, setOpenAddGroup] = useState(null);
   const railRef = useRef(null);
+  useEffect(() => {
+    setOpenAddGroup(null);
+  }, [activeMode]);
   useEffect(() => {
     if (!openAddGroup) return undefined;
     const onDown = (e) => {
@@ -517,6 +532,138 @@ export default function StudioLeftSidebar({
     { id: 'elements', title: 'HTML Etiketleri', icon: TagIcon },
     { id: 'code', title: 'Canlı Kod (JSX & CSS)', icon: Code2 },
   ];
+
+  if (isBackendMode) {
+    const backendLeftPanels = resolvedModeConfig.leftPanels || [];
+    const activeBackendPanel = backendLeftPanels.find((p) => p.id === activeTab) || null;
+    const backendItems = activeBackendPanel && Array.isArray(projectBackend?.[activeBackendPanel.id])
+      ? projectBackend[activeBackendPanel.id]
+      : [];
+
+    return (
+      <aside
+        data-left-sidebar-mode="backend"
+        className="flex h-full bg-[#18181b] border-r border-[#2c2c32] select-none z-30 relative"
+      >
+        <div
+          ref={railRef}
+          className="w-[52px] bg-gradient-to-b from-[#16161a] to-[#111114] border-r border-[#27272d] flex flex-col items-center py-2 z-20 shrink-0"
+        >
+          <div className="w-full px-1.5 flex flex-col items-center gap-2.5">
+            <div
+              role="toolbar"
+              aria-label="Backend gezinme araçları"
+              className="w-full flex flex-col items-center gap-0.5 rounded-xl border border-[#2a2a33] bg-[#0f0f13] p-1 shadow-inner"
+            >
+              {[
+                { id: 'select', name: 'Seçim', icon: MousePointer, shortcut: 'V' },
+                { id: 'hand', name: 'El / Kaydır', icon: Hand, shortcut: 'H' },
+              ].map((t) => {
+                const Icon = t.icon;
+                const isActive = activeTool === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    aria-label={t.name}
+                    aria-pressed={isActive}
+                    data-tool-id={t.id}
+                    onClick={() => setActiveTool(t.id)}
+                    className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all duration-150 ${
+                      isActive
+                        ? 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-[0_4px_14px_rgba(16,185,129,0.35)]'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+                    }`}
+                  >
+                    <Icon size={15} strokeWidth={isActive ? 2.3 : 1.9} />
+                    <RailTip label={t.name} hint={t.shortcut} />
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="w-full flex flex-col items-center gap-1 pt-1 border-t border-[#24242b]">
+              <span className="text-[8px] font-bold tracking-[0.14em] text-zinc-600">PANELLER</span>
+              {backendLeftPanels.map((panel) => {
+                const PIcon = BACKEND_PANEL_ICON_MAP[panel.icon] || Workflow;
+                const isPanelOpen = activeTab === panel.id;
+                return (
+                  <button
+                    key={panel.id}
+                    type="button"
+                    data-left-panel-id={panel.id}
+                    aria-label={panel.title}
+                    aria-pressed={isPanelOpen}
+                    onClick={() => setActiveTab(isPanelOpen ? null : panel.id)}
+                    className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                      isPanelOpen
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+                    }`}
+                  >
+                    <PIcon size={14} strokeWidth={1.9} />
+                    <RailTip label={panel.title} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {activeTab && (
+          <div
+            style={{ width: `${activeTab === 'ai' ? Math.max(drawerWidth, 296) : drawerWidth}px` }}
+            className="relative bg-[#18181b] flex flex-col h-full text-xs text-zinc-300 min-w-0"
+          >
+            {activeTab === 'ai' ? (
+              <LeftAiChatPanel
+                aiChat={aiChat}
+                onClosePanel={() => setActiveTab(null)}
+              />
+            ) : activeBackendPanel ? (
+              <div className="flex flex-col h-full min-h-0" data-backend-left-drawer={activeBackendPanel.id}>
+                <div className="px-3 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">
+                      {activeBackendPanel.title}
+                    </span>
+                    <span className="text-[10px] font-mono tabular-nums text-emerald-300 bg-[#101013] border border-emerald-500/30 px-1.5 py-0.2 rounded">
+                      {backendItems.length}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab(null)}
+                    title="Sol paneli gizle"
+                    className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
+                  >
+                    <ChevronsLeft size={13} />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                  {backendItems.length === 0 ? (
+                    <div className="p-5 text-center text-zinc-500 text-[11px] leading-relaxed">
+                      Henüz kayıtlı öğe yok. Görsel akış tuvali eklendiğinde buradan yönetilecek.
+                    </div>
+                  ) : (
+                    backendItems.map((item, idx) => (
+                      <div
+                        key={item.id || idx}
+                        className="p-2.5 rounded-lg bg-[#121216] border border-[#27272f] text-zinc-200 text-[11px] font-medium"
+                      >
+                        {item.name || item.id || `Kayıt #${idx + 1}`}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </aside>
+    );
+  }
 
   return (
     <aside className="flex h-full bg-[#18181b] border-r border-[#2c2c32] select-none z-30 relative">

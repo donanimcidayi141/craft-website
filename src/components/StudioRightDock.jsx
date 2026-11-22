@@ -10,7 +10,21 @@ import {
   PanelRightClose,
   PanelRightOpen,
   ChevronsRight,
+  Database,
+  Play,
 } from 'lucide-react';
+import { getStudioModeConfig } from '../data/studioModesRegistry';
+
+const RIGHT_TAB_ICON_MAP = {
+  LayoutGrid,
+  Sliders,
+  Box,
+  Tag: TagIcon,
+  Sparkles,
+  Code2,
+  Database,
+  Play,
+};
 
 const MIN_DOCK_WIDTH = 296;
 const MAX_DOCK_WIDTH = 540;
@@ -32,7 +46,13 @@ export default function StudioRightDock({
   onOpenFloatingInspector,
   isFloatingInspectorOpen = false,
   propertiesContent,
+  activeMode = 'design',
+  modeConfig = null,
 }) {
+  const resolvedModeConfig = modeConfig || getStudioModeConfig(activeMode);
+  const isBackendMode = activeMode === 'backend';
+  const showFloatingInspectorButton = resolvedModeConfig.supportsFloatingAttributesInspector !== false;
+  const headerTitle = resolvedModeConfig.rightDockHeaderTitle || 'Özellikler & Tasarım';
   const [isResizing, setIsResizing] = useState(false);
   const resizeStateRef = useRef(null);
 
@@ -61,62 +81,20 @@ export default function StudioRightDock({
     };
   }, [isResizing, onChangeDockWidth]);
 
-  const railItems = [
-    {
-      id: 'prop-block',
-      label: 'Bileşen Özelleştirici',
-      icon: LayoutGrid,
-      isActive: isOpen && activeModule === 'properties' && propertiesTab === 'block',
-      accent: 'text-[#38bdf8] bg-[#23232b] border-[#383844]',
-      indicator: 'bg-emerald-400',
-      onClick: () => onSelectDockTarget('properties', 'block'),
-    },
-    {
-      id: 'prop-style',
-      label: 'Stil ve Görünüm',
-      icon: Sliders,
-      isActive: isOpen && activeModule === 'properties' && propertiesTab === 'style',
-      accent: 'text-white bg-[#23232b] border-[#383844]',
-      indicator: 'bg-[#0d99ff]',
-      onClick: () => onSelectDockTarget('properties', 'style'),
-    },
-    {
-      id: 'prop-layout',
-      label: 'Düzen ve Konum',
-      icon: Box,
-      isActive: isOpen && activeModule === 'properties' && propertiesTab === 'layout',
-      accent: 'text-white bg-[#23232b] border-[#383844]',
-      indicator: 'bg-[#0d99ff]',
-      onClick: () => onSelectDockTarget('properties', 'layout'),
-    },
-    {
-      id: 'prop-props',
-      label: 'HTML Nitelikleri & Eylem',
-      icon: TagIcon,
-      isActive: isOpen && activeModule === 'properties' && propertiesTab === 'props',
-      accent: 'text-[#7dd3fc] bg-[#1a222b] border-[#2c435a]',
-      indicator: 'bg-[#0d99ff]',
-      onClick: () => onSelectDockTarget('properties', 'props'),
-    },
-    {
-      id: 'prop-css',
-      label: 'CSS Kuralları',
-      icon: Sparkles,
-      isActive: isOpen && activeModule === 'properties' && propertiesTab === 'css',
-      accent: 'text-white bg-[#23232b] border-[#383844]',
-      indicator: 'bg-[#0d99ff]',
-      onClick: () => onSelectDockTarget('properties', 'css'),
-    },
-    {
-      id: 'prop-code',
-      label: 'Canlı HTML & CSS Kodu',
-      icon: Code2,
-      isActive: isOpen && activeModule === 'properties' && propertiesTab === 'code',
-      accent: 'text-white bg-[#23232b] border-[#383844]',
-      indicator: 'bg-[#0d99ff]',
-      onClick: () => onSelectDockTarget('properties', 'code'),
-    },
-  ];
+  const railItems = (resolvedModeConfig.rightTabs || []).map((tab) => ({
+    id: tab.railId || `prop-${tab.id}`,
+    tabId: tab.id,
+    label: tab.label,
+    icon: RIGHT_TAB_ICON_MAP[tab.icon] || Sliders,
+    isActive: isOpen && activeModule === 'properties' && propertiesTab === tab.id,
+    accent: tab.id === 'block' || isBackendMode
+      ? 'text-[#38bdf8] bg-[#23232b] border-[#383844]'
+      : tab.id === 'props'
+      ? 'text-[#7dd3fc] bg-[#1a222b] border-[#2c435a]'
+      : 'text-white bg-[#23232b] border-[#383844]',
+    indicator: tab.indicator || 'bg-[#0d99ff]',
+    onClick: () => onSelectDockTarget('properties', tab.id),
+  }));
 
   return (
     <div className="flex h-full shrink-0 z-20 select-none relative">
@@ -149,23 +127,25 @@ export default function StudioRightDock({
           {/* Studio Panel Header Bar */}
           <div className="flex items-center justify-between px-3 py-1.5 bg-[#141417] border-b border-[#27272d] shrink-0 gap-1.5">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-200 min-w-0">
-              <Sliders size={12} className="text-[#38bdf8] shrink-0" />
-              <span className="truncate">Özellikler &amp; Tasarım</span>
+              <Sliders size={12} className={isBackendMode ? 'text-emerald-400 shrink-0' : 'text-[#38bdf8] shrink-0'} />
+              <span className="truncate">{headerTitle}</span>
             </div>
 
             <div className="flex items-center gap-0.5 shrink-0">
-              <button
-                type="button"
-                onClick={onOpenFloatingInspector}
-                title="Yüzen CSS & Nitelik Penceresini Aç/Kapat"
-                className={`p-1.5 rounded transition-colors ${
-                  isFloatingInspectorOpen
-                    ? 'bg-[#0d99ff]/18 text-[#7dd3fc] border border-[#0d99ff]/40'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.06]'
-                }`}
-              >
-                <ExternalLink size={12} />
-              </button>
+              {showFloatingInspectorButton && (
+                <button
+                  type="button"
+                  onClick={onOpenFloatingInspector}
+                  title="Yüzen CSS & Nitelik Penceresini Aç/Kapat"
+                  className={`p-1.5 rounded transition-colors ${
+                    isFloatingInspectorOpen
+                      ? 'bg-[#0d99ff]/18 text-[#7dd3fc] border border-[#0d99ff]/40'
+                      : 'text-zinc-400 hover:text-white hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <ExternalLink size={12} />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onToggleCollapse}
@@ -179,7 +159,32 @@ export default function StudioRightDock({
 
           {/* Active Module Body */}
           <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
-            {propertiesContent}
+            {isBackendMode ? (
+              <div className="flex-1 p-4 text-xs text-zinc-400 space-y-3 overflow-y-auto" data-backend-right-dock={propertiesTab}>
+                <div className="flex items-center gap-1.5 border-b border-[#27272d] pb-2">
+                  {(resolvedModeConfig.rightTabs || []).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      data-backend-right-tab={tab.id}
+                      onClick={() => onSelectDockTarget('properties', tab.id)}
+                      className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
+                        propertiesTab === tab.id
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="p-3 rounded-lg bg-[#121216] border border-[#26262f] text-[11px] text-zinc-400 leading-relaxed">
+                  Seçili sekme: <strong className="text-zinc-200">{(resolvedModeConfig.rightTabs || []).find((t) => t.id === propertiesTab)?.label || propertiesTab}</strong>. Akış adımı seçildiğinde ayarlar burada görünecek.
+                </div>
+              </div>
+            ) : (
+              propertiesContent
+            )}
           </div>
         </div>
       )}
@@ -193,6 +198,7 @@ export default function StudioRightDock({
               <button
                 key={item.id}
                 type="button"
+                data-right-rail-tab={item.tabId}
                 onClick={item.onClick}
                 title={item.label}
                 className={`relative w-full h-8 rounded flex items-center justify-center transition-colors border ${
@@ -209,23 +215,27 @@ export default function StudioRightDock({
             );
           })}
 
-          <div className="w-4 h-px bg-[#2c2c32] my-1" />
+          {showFloatingInspectorButton && (
+            <>
+              <div className="w-4 h-px bg-[#2c2c32] my-1" />
 
-          <button
-            type="button"
-            onClick={onOpenFloatingInspector}
-            title="Yüzen CSS & Nitelik Penceresi"
-            className={`relative w-full h-8 rounded flex items-center justify-center transition-colors border ${
-              isFloatingInspectorOpen
-                ? 'bg-[#1a222b] border-[#2c435a] text-[#7dd3fc]'
-                : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]'
-            }`}
-          >
-            {isFloatingInspectorOpen && (
-              <span className="absolute -right-1 top-1.5 bottom-1.5 w-0.5 rounded-l bg-[#0d99ff]" />
-            )}
-            <ExternalLink size={14} strokeWidth={1.75} />
-          </button>
+              <button
+                type="button"
+                onClick={onOpenFloatingInspector}
+                title="Yüzen CSS & Nitelik Penceresi"
+                className={`relative w-full h-8 rounded flex items-center justify-center transition-colors border ${
+                  isFloatingInspectorOpen
+                    ? 'bg-[#1a222b] border-[#2c435a] text-[#7dd3fc]'
+                    : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]'
+                }`}
+              >
+                {isFloatingInspectorOpen && (
+                  <span className="absolute -right-1 top-1.5 bottom-1.5 w-0.5 rounded-l bg-[#0d99ff]" />
+                )}
+                <ExternalLink size={14} strokeWidth={1.75} />
+              </button>
+            </>
+          )}
         </div>
 
         <button

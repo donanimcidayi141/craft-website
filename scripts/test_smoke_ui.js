@@ -208,16 +208,32 @@ async function main() {
   try {
     console.log('\n🧪 CraftStudio UI Smoke Test (Headless Chromium CDP)');
 
+    // 0. Normal üretim (npm run build) yüklemesinde (?test=1 olmadan) window.__craftStudioTestHook tanımlı olmamalı
     await cdp.navigate(preview.url);
+    await waitFor(cdp, `Boolean(document.querySelector('#welcome-create'))`);
+    const prodHookType = await cdp.evaluate(`typeof window.__craftStudioTestHook`);
+    assert.equal(
+      prodHookType,
+      'undefined',
+      `Normal üretim yüklemesinde (?test=1 olmadan) window.__craftStudioTestHook tanımlı olmamalı (bulunan: ${prodHookType}).`
+    );
+
+    const testAppUrl = `${preview.url}/?test=1`;
     await cdp.evaluate('localStorage.clear();');
-    await cdp.navigate(preview.url);
+    await cdp.navigate(testAppUrl);
 
     const welcomeLoaded = await waitFor(
       cdp,
       `Boolean(document.querySelector('#welcome-create'))`
     );
     assert.ok(welcomeLoaded, 'Karşılama ekranı yüklenemedi.');
-    console.log('  ✓ Karşılama ekranı yüklendi');
+    const testFlagHookType = await cdp.evaluate(`typeof window.__craftStudioTestHook`);
+    assert.equal(
+      testFlagHookType,
+      'object',
+      `?test=1 bayrağı ile yüklendiğinde window.__craftStudioTestHook tanımlı olmalı (bulunan: ${testFlagHookType}).`
+    );
+    console.log('  ✓ Karşılama ekranı yüklendi (?test=1 olmadan test kancası yok, ?test=1 ile aktif)');
 
     const enteredStudio = await cdp.evaluate(`
       (() => {
@@ -1035,7 +1051,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 2000));
 
     // Sayfayı yeniden yükle -> karşılama ekranında "Kaydedilmemiş Taslak" görünmeli
-    await cdp.navigate(preview.url);
+    await cdp.navigate(testAppUrl);
     assert.ok(
       await waitFor(
         cdp,
@@ -1260,7 +1276,479 @@ async function main() {
     );
     console.log('  ✓ .craft.json dosyası tarayıcı file-input (setFileInputFiles) yoluyla içe aktarıldı');
 
-    // 14. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
+    // 15. Backend verisini programatik doldur -> otomatik taslağın taşıdığını, sayfa yenileyip "Geri Yükle" ile geldiğini ve Son Projeler'den açınca korunduğunu doğrula
+    const expectedBackendPayload = {
+      version: 1,
+      flows: [{ id: 'flow-smoke-1', name: 'İletişim Formu Gönder' }],
+      dataModels: [{ id: 'model-smoke-1', name: 'Mesajlar' }],
+      triggers: [{ id: 'trig-smoke-1', event: 'onClick', targetElementId: 'btn-submit', flowId: 'flow-smoke-1' }],
+    };
+    const hookCalled = await cdp.evaluate(`
+      (() => {
+        if (!window.__craftStudioTestHook?.updateProjectBackend) return false;
+        window.__craftStudioTestHook.updateProjectBackend(${JSON.stringify(expectedBackendPayload)});
+        return true;
+      })()
+    `);
+    assert.ok(hookCalled, 'window.__craftStudioTestHook.updateProjectBackend bulunamadı.');
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('● Kaydedilmedi')`),
+      'Backend verisi değiştiğinde hasUnsavedChanges (● Kaydedilmedi) aktif olmadı.'
+    );
+    const appliedBackend = await cdp.evaluate(`window.__craftStudioTestHook?.getProjectBackend?.()`);
+    assert.deepEqual(
+      appliedBackend,
+      expectedBackendPayload,
+      'Test kancası üzerinden backend verisi güncellenemedi.'
+    );
+
+    // 1500ms otomatik taslak debounce'u için 2 saniye bekle ve localStorage taslağında backend verisini doğrula
+    await new Promise((r) => setTimeout(r, 2000));
+    const draftBackendInStorage = await cdp.evaluate(`
+      (() => {
+        const raw = localStorage.getItem('craftstudio.autosaveDraft.v1');
+        return raw ? JSON.parse(raw).backend : null;
+      })()
+    `);
+    assert.deepEqual(
+      draftBackendInStorage,
+      expectedBackendPayload,
+      'Otomatik taslak (autosaveDraft) backend verisini localStorage içine taşımadı!'
+    );
+
+    // Sayfayı yenile -> karşılama ekranında "Kaydedilmemiş Taslak"tan geri yükle -> backend verisinin geri geldiğini doğrula
+    await cdp.navigate(testAppUrl);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('.welcome-project-row--draft'))`),
+      'Backend taslak testi sırasında sayfa yenilenince Kaydedilmemiş Taslak satırı görünmedi.'
+    );
+    await cdp.evaluate(`document.querySelector('.welcome-project-row--draft .welcome-project-row__main')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Backend taslağı geri yüklenirken atölye tuvali açılmadı.'
+    );
+    const restoredDraftBackend = await cdp.evaluate(`window.__craftStudioTestHook?.getProjectBackend?.()`);
+    assert.deepEqual(
+      restoredDraftBackend,
+      expectedBackendPayload,
+      'Otomatik taslaktan Geri Yükle sonrası backend verisi korunmadı!'
+    );
+
+    // Projeyi kaydet (Ctrl+S), Karşılama ekranına dön ve Son Projeler'den tekrar aç -> backend verisi korunmalı
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('✓ Kaydedildi')`),
+      'Backend verili proje Ctrl+S ile kaydedilemedi.'
+    );
+    await cdp.evaluate(`
+      (() => {
+        const homeBtn = Array.from(document.querySelectorAll('button')).find(
+          (b) => b.textContent && b.textContent.trim() === 'Projeler'
+        );
+        homeBtn?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft)').length > 0`
+      ),
+      'Karşılama ekranında Son Projeler listesi görünmedi.'
+    );
+    await cdp.evaluate(`
+      document.querySelector('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft) .welcome-project-row__main')?.click()
+    `);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Son Projeler listesinden proje tekrar açılamadı.'
+    );
+    const reopenedRecentBackend = await cdp.evaluate(`window.__craftStudioTestHook?.getProjectBackend?.()`);
+    assert.deepEqual(
+      reopenedRecentBackend,
+      expectedBackendPayload,
+      'Son Projeler listesinden açılan projede backend verisi korunmadı!'
+    );
+    console.log('  ✓ Backend verisinin otomatik taslak, Geri Yükle ve Son Projeler kaydet/aç akışında korunduğu doğrulandı');
+
+    // 15b. Adım 3a: Tasarım | Backend mod anahtarı, yer tutucu ekran, her modun kendi panel durumunu hatırlaması,
+    // previewMode otomatik kapanışı, tuval zoom/pan/seçim korunumu ve kaydet/aç sonrası 'design' modunda açılış
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('button[data-studio-mode="design"][aria-selected="true"]'))`
+      ),
+      'Proje açıldığında varsayılan olarak Tasarım (design) modunda başlamadı.'
+    );
+
+    // 1) Önce Sun (previewMode) açıkken Backend moduna geçişte previewMode'un otomatik kapandığını doğrula, sonra Tasarım'a dön
+    await cdp.evaluate(`
+      (() => {
+        const sunBtn = Array.from(document.querySelectorAll('button')).find(
+          (b) => b.textContent && b.textContent.trim() === 'Sun'
+        );
+        sunBtn?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('Düzenlemeye Dön')`),
+      'Mod geçişi öncesi Önizleme (Sun) modu açılamadı.'
+    );
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('button[data-studio-mode="backend"][aria-selected="true"]')) && !document.body.innerText.includes('Düzenlemeye Dön')`
+      ),
+      'Sun (previewMode) açıkken Backend moduna geçildiğinde previewMode otomatik kapanmadı.'
+    );
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="design"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Önizleme kapanış testi sonrası Tasarım moduna dönülemedi.'
+    );
+    await new Promise((r) => setTimeout(r, 120));
+
+    // 2) Tasarım modunda: sol çekmeceyi Katmanlar (layers) ve sağ dock sekmesini Stil (style) yap, bir eleman seç ve zoom'u bir kademe artır
+    const isLayersAlreadyOpen = await cdp.evaluate(
+      `Boolean(document.querySelector('input[placeholder="Katmanlarda ara..."]'))`
+    );
+    if (!isLayersAlreadyOpen) {
+      await clickWindowMenuItem(cdp, 'Katmanlar (Layers)');
+      assert.ok(
+        await waitFor(cdp, `Boolean(document.querySelector('input[placeholder="Katmanlarda ara..."]'))`),
+        'Mod testi öncesi Tasarım modunda Katmanlar çekmecesi açılamadı.'
+      );
+    }
+    await cdp.evaluate(`
+      (() => {
+        const styleRailBtn = document.querySelector('button[data-right-rail-tab="style"]');
+        styleRailBtn?.click();
+        const zoomInBtn = document.querySelector('button[title="Yakınlaştır"]');
+        zoomInBtn?.click();
+      })()
+    `);
+    await new Promise((r) => setTimeout(r, 150));
+    const modeTestElId = await cdp.evaluate(
+      `document.querySelector('#artboard-canvas [data-element-id]')?.getAttribute('data-element-id') || null`
+    );
+    assert.ok(modeTestElId, 'Mod testi için tuvalde seçilecek eleman bulunamadı.');
+    const modeTestPt = await findVisiblePointForElement(cdp, modeTestElId);
+    assert.ok(modeTestPt, 'Mod testi için eleman görünür noktası bulunamadı.');
+    await dragOnScreen(cdp, modeTestPt.cx, modeTestPt.cy, 0, 0);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('1 seçili')`),
+      'Mod testi öncesi Tasarım modunda eleman seçilemedi.'
+    );
+
+    const designSnapshotBeforeSwitch = await cdp.evaluate(`
+      (() => {
+        const artboard = document.getElementById('artboard-canvas');
+        const projectInput = document.querySelector('input[title="Proje adını düzenle"]');
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        const redoBtn = document.querySelector('button[title="İleri Al (Ctrl+Y)"]');
+        return {
+          transform: artboard?.parentElement?.style?.transform || '',
+          projectName: projectInput?.value || '',
+          isSavedBadge: document.body.innerText.includes('✓ Kaydedildi'),
+          undoDisabled: Boolean(undoBtn?.disabled),
+          redoDisabled: Boolean(redoBtn?.disabled),
+          leftLayersOpen: Boolean(document.querySelector('input[placeholder="Katmanlarda ara..."]')),
+        };
+      })()
+    `);
+    assert.ok(designSnapshotBeforeSwitch.transform.includes('scale('), 'Tasarım tuvali transform (zoom/pan) okunamadı.');
+    assert.ok(designSnapshotBeforeSwitch.leftLayersOpen, 'Tasarım modunda Katmanlar paneli açık değil.');
+
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('button[data-studio-mode="backend"][aria-selected="true"]')) && Boolean(document.querySelector('[data-backend-workspace]'))`
+      ),
+      'Backend moduna geçilemedi veya Backend çalışma alanı yer tutucusu render edilmedi.'
+    );
+
+    const backendViewCheck = await cdp.evaluate(`
+      (() => {
+        const ws = document.querySelector('[data-backend-workspace]');
+        const flowsCount = document.querySelector('[data-backend-count="flows"]')?.textContent?.trim();
+        const modelsCount = document.querySelector('[data-backend-count="dataModels"]')?.textContent?.trim();
+        const triggersCount = document.querySelector('[data-backend-count="triggers"]')?.textContent?.trim();
+        const projectInput = document.querySelector('input[title="Proje adını düzenle"]');
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        const redoBtn = document.querySelector('button[title="İleri Al (Ctrl+Y)"]');
+        return {
+          previewClosed: !document.body.innerText.includes('Düzenlemeye Dön'),
+          hasHeading: Boolean(ws && ws.textContent.includes('Backend çalışma alanı, yakında')),
+          flowsCount,
+          modelsCount,
+          triggersCount,
+          canvasUnmounted: !document.getElementById('artboard-canvas'),
+          pageTabsHidden: !document.querySelector('button[title="Yeni Sayfa Sekmesi (Ctrl+N)"]'),
+          aiDockVisible: Boolean(document.querySelector('[data-ai-dock="true"]') || document.querySelector('button[title*="Gemini Sohbet Kutusunu Aç"]')),
+          leftDrawer: document.querySelector('[data-backend-left-drawer]')?.getAttribute('data-backend-left-drawer') || null,
+          rightDockTab: document.querySelector('[data-backend-right-dock]')?.getAttribute('data-backend-right-dock') || null,
+          projectName: projectInput?.value || '',
+          isSavedBadge: document.body.innerText.includes('✓ Kaydedildi'),
+          undoDisabled: Boolean(undoBtn?.disabled),
+          redoDisabled: Boolean(redoBtn?.disabled),
+        };
+      })()
+    `);
+    assert.equal(backendViewCheck.previewClosed, true, 'Backend moduna geçerken açık olan previewMode kapatılmadı.');
+    assert.equal(backendViewCheck.hasHeading, true, '"Backend çalışma alanı, yakında" başlığı görünmedi.');
+    assert.equal(backendViewCheck.flowsCount, '1', 'Backend yer tutucusunda İş Akışları sayısı 1 değil.');
+    assert.equal(backendViewCheck.modelsCount, '1', 'Backend yer tutucusunda Veri Modelleri sayısı 1 değil.');
+    assert.equal(backendViewCheck.triggersCount, '1', 'Backend yer tutucusunda Tetikleyiciler sayısı 1 değil.');
+    assert.equal(backendViewCheck.canvasUnmounted, true, 'Backend modunda tasarım tuvali unmount olmadı.');
+    assert.equal(backendViewCheck.pageTabsHidden, true, 'Backend modunda sayfa sekmeleri gizlenmedi.');
+    assert.equal(backendViewCheck.aiDockVisible, true, 'Backend modunda yüzen AI sohbet kutusu görünür değil.');
+    assert.equal(backendViewCheck.leftDrawer, 'flows', 'Backend modunda varsayılan sol çekmece "flows" olarak açılmadı.');
+    assert.equal(backendViewCheck.rightDockTab, 'stepConfig', 'Backend modunda varsayılan sağ dock sekmesi "stepConfig" olarak açılmadı.');
+    assert.equal(backendViewCheck.projectName, designSnapshotBeforeSwitch.projectName, 'Mod değişiminde proje adı değişti.');
+    assert.equal(backendViewCheck.isSavedBadge, designSnapshotBeforeSwitch.isSavedBadge, 'Mod değişiminde kaydedilme rozeti değişti.');
+    assert.equal(backendViewCheck.undoDisabled, designSnapshotBeforeSwitch.undoDisabled, 'Mod değişiminde Geri Al durumu değişti.');
+    assert.equal(backendViewCheck.redoDisabled, designSnapshotBeforeSwitch.redoDisabled, 'Mod değişiminde İleri Al durumu değişti.');
+
+    // Pencere menüsünün Backend modunda registry'deki menuPanels öğelerini listelediğini doğrula
+    await cdp.evaluate(`
+      (() => {
+        const menuBtn = Array.from(document.querySelectorAll('button')).find(
+          (b) => b.textContent && b.textContent.trim() === 'Pencere'
+        );
+        menuBtn?.click();
+      })()
+    `);
+    const backendWindowMenuIds = await cdp.evaluate(`
+      Array.from(document.querySelectorAll('[data-window-menu-panel]')).map((el) => el.getAttribute('data-window-menu-panel'))
+    `);
+    assert.deepEqual(
+      backendWindowMenuIds,
+      ['backendInspector', 'flows', 'dataModels', 'aiAgent'],
+      `Backend modunda Pencere menüsü öğeleri beklenenle eşleşmedi: ${JSON.stringify(backendWindowMenuIds)}`
+    );
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+
+    // Backend modunda sol çekmeceyi "dataModels" ve sağ dock sekmesini "dataBinding" olarak değiştir
+    await cdp.evaluate(`
+      (() => {
+        document.querySelector('button[data-left-panel-id="dataModels"]')?.click();
+        document.querySelector('button[data-backend-right-tab="dataBinding"]')?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelector('[data-backend-left-drawer]')?.getAttribute('data-backend-left-drawer') === 'dataModels' && document.querySelector('[data-backend-right-dock]')?.getAttribute('data-backend-right-dock') === 'dataBinding'`
+      ),
+      'Backend modunda sol çekmece (dataModels) veya sağ dock sekmesi (dataBinding) değiştirilemedi.'
+    );
+
+    // Tasarım moduna geri dön -> zoom/pan (transform), seçim ("1 seçili") ve Tasarım modunun kendi sol/sağ panelleri korunmalı
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="design"]')?.click()`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.getElementById('artboard-canvas')) && Boolean(document.querySelector('button[data-studio-mode="design"][aria-selected="true"]'))`
+      ),
+      'Tasarım moduna geri dönüldüğünde tuval remount olmadı.'
+    );
+    await new Promise((r) => setTimeout(r, 120));
+    const designSnapshotAfterReturn = await cdp.evaluate(`
+      (() => ({
+        transform: document.getElementById('artboard-canvas')?.parentElement?.style?.transform || '',
+        hasSelection: document.body.innerText.includes('1 seçili'),
+        leftLayersOpen: Boolean(document.querySelector('input[placeholder="Katmanlarda ara..."]')),
+      }))()
+    `);
+    assert.equal(
+      designSnapshotAfterReturn.transform,
+      designSnapshotBeforeSwitch.transform,
+      `Tasarım moduna dönüldüğünde zoom/panOffset bozuldu (beklenen: ${designSnapshotBeforeSwitch.transform}, bulunan: ${designSnapshotAfterReturn.transform}).`
+    );
+    assert.equal(designSnapshotAfterReturn.hasSelection, true, 'Tasarım moduna dönüldüğünde seçili eleman korunmadı.');
+    assert.equal(designSnapshotAfterReturn.leftLayersOpen, true, 'Tasarım modu kendi sol panel durumunu (Katmanlar) hatırlamadı.');
+
+    // Tekrar Backend moduna geç -> Backend modunun kendi sol (dataModels) ve sağ (dataBinding) panel durumunu hatırladığını doğrula
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelector('[data-backend-left-drawer]')?.getAttribute('data-backend-left-drawer') === 'dataModels' && document.querySelector('[data-backend-right-dock]')?.getAttribute('data-backend-right-dock') === 'dataBinding'`
+      ),
+      'Backend moduna tekrar geçildiğinde Backend modu kendi sol/sağ panel durumunu hatırlamadı.'
+    );
+
+    // Backend modundayken projeyi kaydet (Ctrl+S), Projeler'e dön ve Son Projeler'den tekrar aç -> proje 'design' modunda açılmalı
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    await cdp.evaluate(`
+      (() => {
+        const homeBtn = Array.from(document.querySelectorAll('button')).find(
+          (b) => b.textContent && b.textContent.trim() === 'Projeler'
+        );
+        homeBtn?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft)').length > 0`
+      ),
+      'Mod testi sonrası Karşılama ekranında Son Projeler listesi görünmedi.'
+    );
+    await cdp.evaluate(`
+      document.querySelector('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft) .welcome-project-row__main')?.click()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.getElementById('artboard-canvas')) && Boolean(document.querySelector('button[data-studio-mode="design"][aria-selected="true"]'))`
+      ),
+      'Backend modunda kaydedilen proje tekrar açıldığında varsayılan Tasarım (design) modunda açılmadı!'
+    );
+    console.log('  ✓ Adım 3a: Mod anahtarı, Backend yer tutucu ekranı, mod bazlı panel hafızası, zoom/pan korunumu ve design modunda açılış doğrulandı');
+
+    // 15c. Adım 3b: Kısayolların moda göre ayrılması (Backend modunda tasarım kısayolları ve Ctrl+Z/Y devre dışı, Ctrl+S aktif; Tasarım'a dönünce seçim ve kısayollar aktif)
+    const shortcutModeElId = await cdp.evaluate(
+      `document.querySelector('#artboard-canvas [data-element-id]')?.getAttribute('data-element-id') || null`
+    );
+    assert.ok(shortcutModeElId, 'Adım 3b kısayol testi için tuvalde eleman bulunamadı.');
+    const shortcutModePt = await findVisiblePointForElement(cdp, shortcutModeElId);
+    assert.ok(shortcutModePt, 'Adım 3b kısayol testi için elemanın tıklanabilir noktası bulunamadı.');
+    await dragOnScreen(cdp, shortcutModePt.cx, shortcutModePt.cy, 0, 0);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('1 seçili')`),
+      'Adım 3b testi öncesi Tasarım modunda eleman seçilemedi.'
+    );
+
+    // Geri al geçmişinde en az 1 adım olması ve "● Kaydedilmedi" rozetinin aktif olması için Tasarım modunda ArrowRight ile 1px kaydır
+    await sendSingleKey(cdp, 'ArrowRight', 'ArrowRight', 39);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.body.innerText.includes('● Kaydedilmedi') && !document.querySelector('button[title="Geri Al (Ctrl+Z)"]')?.disabled`
+      ),
+      'Adım 3b testi öncesi Tasarım modunda ok tuşuyla geri al geçmişi oluşturulamadı.'
+    );
+
+    const beforeBackendShortcutState = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${shortcutModeElId}"]');
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        return {
+          totalElements: document.querySelectorAll('#artboard-canvas [data-element-id]').length,
+          left: el?.style?.left || '',
+          top: el?.style?.top || '',
+          undoDisabled: Boolean(undoBtn?.disabled),
+          isSelectTool: Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')),
+        };
+      })()
+    `);
+    assert.equal(beforeBackendShortcutState.undoDisabled, false, 'Backend geçişi öncesi Geri Al butonu aktif olmalı.');
+    assert.equal(beforeBackendShortcutState.isSelectTool, true, 'Backend geçişi öncesi aktif araç select olmalı.');
+
+    // Backend moduna geç
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-studio-mode="backend"][aria-selected="true"]'))`),
+      'Adım 3b testi için Backend moduna geçilemedi.'
+    );
+
+    // Backend modunda Delete, Backspace, Ctrl+D, Ctrl+Z, Ctrl+Y, ok tuşları ve R tuşuna bas
+    await sendSingleKey(cdp, 'Delete', 'Delete', 46);
+    await sendSingleKey(cdp, 'Backspace', 'Backspace', 8);
+    await sendCtrlShortcut(cdp, 'd', 'KeyD', 68);
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    await sendCtrlShortcut(cdp, 'y', 'KeyY', 89);
+    await sendSingleKey(cdp, 'ArrowRight', 'ArrowRight', 39);
+    await sendSingleKey(cdp, 'ArrowDown', 'ArrowDown', 40);
+    await sendSingleKey(cdp, 'r', 'KeyR', 82);
+    await new Promise((r) => setTimeout(r, 120));
+
+    const duringBackendShortcutState = await cdp.evaluate(`
+      (() => {
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        return {
+          undoDisabled: Boolean(undoBtn?.disabled),
+          isSelectTool: Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')),
+          isDirtyBadge: document.body.innerText.includes('● Kaydedilmedi'),
+        };
+      })()
+    `);
+    assert.equal(duringBackendShortcutState.undoDisabled, false, 'Backend modunda Ctrl+Z tasarım geçmişini tüketti!');
+    assert.equal(duringBackendShortcutState.isSelectTool, true, 'Backend modunda R tuşu aktif aracı değiştirdi!');
+    assert.equal(duringBackendShortcutState.isDirtyBadge, true, 'Backend modunda Ctrl+Z kaydedilmemiş değişiklik durumunu bozdu!');
+
+    // Evrensel Ctrl+S kısayolunun Backend modunda çalıştığını doğrula
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('✓ Kaydedildi')`),
+      'Evrensel Ctrl+S kısayolu Backend modunda projeyi kaydetmedi!'
+    );
+
+    // Tasarım moduna geri dön: seçim korunmuş, eleman sayısı/konumu/aktif araç/geri al geçmişi değişmemiş ve tasarım kısayolları tekrar çalışıyor olmalı
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="design"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Adım 3b testi sonrası Tasarım moduna dönülemedi.'
+    );
+
+    const afterBackendShortcutState = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${shortcutModeElId}"]');
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        return {
+          hasSelection: document.body.innerText.includes('1 seçili'),
+          totalElements: document.querySelectorAll('#artboard-canvas [data-element-id]').length,
+          left: el?.style?.left || '',
+          top: el?.style?.top || '',
+          undoDisabled: Boolean(undoBtn?.disabled),
+          isSelectTool: Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')),
+        };
+      })()
+    `);
+    assert.equal(afterBackendShortcutState.hasSelection, true, 'Tasarım moduna dönüldüğünde seçim korunmadı.');
+    assert.equal(
+      afterBackendShortcutState.totalElements,
+      beforeBackendShortcutState.totalElements,
+      'Backend modunda basılan Delete/Backspace/Ctrl+D eleman sayısını değiştirdi!'
+    );
+    assert.equal(
+      afterBackendShortcutState.left,
+      beforeBackendShortcutState.left,
+      'Backend modunda basılan ok tuşları veya Ctrl+Z elemanın X konumunu değiştirdi!'
+    );
+    assert.equal(
+      afterBackendShortcutState.top,
+      beforeBackendShortcutState.top,
+      'Backend modunda basılan ok tuşları elemanın Y konumunu değiştirdi!'
+    );
+    assert.equal(afterBackendShortcutState.undoDisabled, false, 'Tasarım moduna dönüldüğünde geri al geçmişi korunmadı.');
+    assert.equal(afterBackendShortcutState.isSelectTool, true, 'Tasarım moduna dönüldüğünde aktif araç select değil.');
+
+    // Tasarım modunda kısayolların (R, V ve Ctrl+Z) tekrar çalıştığını doğrula
+    await sendSingleKey(cdp, 'r', 'KeyR', 82);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="rectangle"][aria-pressed="true"]'))`),
+      'Tasarım moduna dönüldükten sonra R kısayolu çalışmadı.'
+    );
+    await sendSingleKey(cdp, 'v', 'KeyV', 86);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]'))`),
+      'Tasarım moduna dönüldükten sonra V kısayolu çalışmadı.'
+    );
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelector('#artboard-canvas [data-element-id="${shortcutModeElId}"]')?.style?.left !== ${JSON.stringify(beforeBackendShortcutState.left)}`
+      ),
+      'Tasarım moduna dönüldükten sonra Ctrl+Z geri alma kısayolu çalışmadı.'
+    );
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    console.log('  ✓ Adım 3b: Backend modunda tasarım kısayolları (Delete/Backspace/Ctrl+D/Ctrl+Z/oklar/R) etkisiz, Ctrl+S aktif; Tasarım moduna dönünce seçim ve kısayollar aktif');
+
+    // 16. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
     await cdp.evaluate(`
       (() => {
         const homeBtn = Array.from(document.querySelectorAll('button')).find(
