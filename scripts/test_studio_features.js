@@ -81,12 +81,18 @@ import {
 import {
   createInitialWorkspaceLayout,
   updateActiveModeLeftDrawerTab,
+  updateActiveModeLeftDrawerWidth,
+  clampLeftDrawerWidth,
+  resolveEffectiveLeftDrawerWidth,
   updateActiveModeRightDock,
   computeEffectiveActivePanels,
   applyWorkspacePanelToggle,
   applyStudioModeTransition,
   applyWorkspaceLayoutReset,
 } from '../src/hooks/useWorkspaceLayout.js';
+import {
+  computeLeftOccupiedWidth,
+} from '../src/hooks/useCanvasView.js';
 import {
   applyProjectBackendUpdate,
   resolveResetProjectBackend,
@@ -3424,6 +3430,63 @@ test('useShortcuts mode profile table executes universal keys in both modes and 
       `[backend] ${row.label} expected ${expectedCalls} action calls, got ${backendCtx.calls.length}: ${JSON.stringify(backendCtx.calls)}`
     );
   }
+});
+
+test('leftDrawer.width state and computeLeftOccupiedWidth pass exact pixel widths per mode and replace the 292/340 estimate', () => {
+  let state = createInitialWorkspaceLayout();
+  assert.equal(state.layoutsByMode.design.leftDrawer.width, 248);
+  assert.equal(state.layoutsByMode.backend.leftDrawer.width, 256);
+
+  // Closed left drawer occupies only the 52px tool rail
+  assert.equal(
+    computeLeftOccupiedWidth({ previewMode: false, leftSidebarTab: null, leftSidebarWidth: 248 }),
+    52
+  );
+  // Open 'layers' at default 248px occupies 52 + 248 = 300px (no longer the hard-coded 292 estimate)
+  assert.equal(
+    computeLeftOccupiedWidth({ previewMode: false, leftSidebarTab: 'layers', leftSidebarWidth: 248 }),
+    300
+  );
+  // Open 'ai' enforces minimum 296px drawer width -> 52 + 296 = 348px (or larger if resized > 296)
+  assert.equal(
+    computeLeftOccupiedWidth({ previewMode: false, leftSidebarTab: 'ai', leftSidebarWidth: 248 }),
+    348
+  );
+  assert.equal(
+    computeLeftOccupiedWidth({ previewMode: false, leftSidebarTab: 'ai', leftSidebarWidth: 360 }),
+    412
+  );
+  // Preview mode occupies 0px
+  assert.equal(
+    computeLeftOccupiedWidth({ previewMode: true, leftSidebarTab: 'layers', leftSidebarWidth: 360 }),
+    0
+  );
+
+  // Resize design left drawer and clamp within [220, 440]
+  state = updateActiveModeLeftDrawerWidth(state, 340);
+  assert.equal(state.leftDrawer.width, 340);
+  assert.equal(state.layoutsByMode.design.leftDrawer.width, 340);
+  assert.equal(state.layoutsByMode.backend.leftDrawer.width, 256);
+  assert.equal(
+    computeLeftOccupiedWidth({
+      previewMode: false,
+      leftSidebarTab: 'layers',
+      leftSidebarWidth: state.leftDrawer.width,
+    }),
+    392
+  );
+
+  state = updateActiveModeLeftDrawerWidth(state, 999);
+  assert.equal(state.leftDrawer.width, 440);
+  state = updateActiveModeLeftDrawerWidth(state, 100);
+  assert.equal(state.leftDrawer.width, 220);
+  assert.equal(clampLeftDrawerWidth(180), 220);
+  assert.equal(resolveEffectiveLeftDrawerWidth('ai', 220), 296);
+
+  // Reset preserves custom leftDrawer.width per mode just like rightDock.width
+  state = updateActiveModeLeftDrawerWidth(state, 328);
+  state = applyWorkspaceLayoutReset(state, { showWelcomeScreen: false });
+  assert.equal(state.layoutsByMode.design.leftDrawer.width, 328);
 });
 
 // -----------------------------------------------------------------------------

@@ -1,6 +1,11 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   DEFAULT_STUDIO_MODE,
+  DEFAULT_LEFT_DRAWER_WIDTH,
+  MIN_LEFT_DRAWER_WIDTH,
+  MAX_LEFT_DRAWER_WIDTH,
+  MIN_AI_LEFT_DRAWER_WIDTH,
+  LEFT_RAIL_WIDTH,
   DEFAULT_RIGHT_DOCK_WIDTH,
   STUDIO_MODES,
   getStudioModeConfig,
@@ -13,6 +18,17 @@ export const INITIAL_FUNCTION_EDITOR_STATE = {
   bindTargetElementId: null,
 };
 
+export function clampLeftDrawerWidth(width, fallback = DEFAULT_LEFT_DRAWER_WIDTH) {
+  const numeric = Number(width);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  return Math.max(MIN_LEFT_DRAWER_WIDTH, Math.min(MAX_LEFT_DRAWER_WIDTH, Math.round(numeric)));
+}
+
+export function resolveEffectiveLeftDrawerWidth(activeTab, rawWidth = DEFAULT_LEFT_DRAWER_WIDTH) {
+  const clamped = clampLeftDrawerWidth(rawWidth);
+  return activeTab === 'ai' ? Math.max(clamped, MIN_AI_LEFT_DRAWER_WIDTH) : clamped;
+}
+
 export function createModeLayoutsMap(overrides = {}) {
   const designDefault = STUDIO_MODES.design.defaultLayout;
   const backendDefault = STUDIO_MODES.backend.defaultLayout;
@@ -22,6 +38,10 @@ export function createModeLayoutsMap(overrides = {}) {
         activeTab: overrides.design?.leftDrawer?.activeTab !== undefined
           ? overrides.design.leftDrawer.activeTab
           : designDefault.leftDrawer.activeTab,
+        width: clampLeftDrawerWidth(
+          overrides.design?.leftDrawer?.width,
+          designDefault.leftDrawer.width || DEFAULT_LEFT_DRAWER_WIDTH
+        ),
       },
       rightDock: {
         isOpen: overrides.design?.rightDock?.isOpen ?? designDefault.rightDock.isOpen,
@@ -34,6 +54,10 @@ export function createModeLayoutsMap(overrides = {}) {
         activeTab: overrides.backend?.leftDrawer?.activeTab !== undefined
           ? overrides.backend.leftDrawer.activeTab
           : backendDefault.leftDrawer.activeTab,
+        width: clampLeftDrawerWidth(
+          overrides.backend?.leftDrawer?.width,
+          backendDefault.leftDrawer.width || 256
+        ),
       },
       rightDock: {
         isOpen: overrides.backend?.rightDock?.isOpen ?? backendDefault.rightDock.isOpen,
@@ -104,6 +128,19 @@ export function updateActiveModeLeftDrawerTab(prevLayout, nextOrUpdater) {
   return syncActiveModeSlice(prevLayout, modeId, {
     ...curSlice,
     leftDrawer: { ...curSlice.leftDrawer, activeTab: nextTab },
+  });
+}
+
+export function updateActiveModeLeftDrawerWidth(prevLayout, nextOrUpdater) {
+  const modeId = isValidStudioMode(prevLayout.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const curWidth = curSlice.leftDrawer.width || DEFAULT_LEFT_DRAWER_WIDTH;
+  const rawNext = typeof nextOrUpdater === 'function' ? nextOrUpdater(curWidth) : nextOrUpdater;
+  const nextWidth = clampLeftDrawerWidth(rawNext, curWidth);
+  if (nextWidth === curWidth) return prevLayout;
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    leftDrawer: { ...curSlice.leftDrawer, width: nextWidth },
   });
 }
 
@@ -266,6 +303,12 @@ export function applyWorkspaceLayoutReset(prevLayout, {
   leftTab = null,
   aiMinimized = false,
 } = {}) {
+  const prevDesignLeftWidth = prevLayout?.layoutsByMode?.design?.leftDrawer?.width
+    || prevLayout?.leftDrawer?.width
+    || DEFAULT_LEFT_DRAWER_WIDTH;
+  const prevBackendLeftWidth = prevLayout?.layoutsByMode?.backend?.leftDrawer?.width
+    || STUDIO_MODES.backend.defaultLayout.leftDrawer.width
+    || 256;
   const prevDesignWidth = prevLayout?.layoutsByMode?.design?.rightDock?.width
     || prevLayout?.rightDock?.width
     || DEFAULT_RIGHT_DOCK_WIDTH;
@@ -274,14 +317,17 @@ export function applyWorkspaceLayoutReset(prevLayout, {
 
   const nextLayoutsByMode = createModeLayoutsMap({
     design: {
-      leftDrawer: { activeTab: leftTab },
+      leftDrawer: { activeTab: leftTab, width: prevDesignLeftWidth },
       rightDock: {
         ...STUDIO_MODES.design.defaultLayout.rightDock,
         width: prevDesignWidth,
       },
     },
     backend: {
-      leftDrawer: { ...STUDIO_MODES.backend.defaultLayout.leftDrawer },
+      leftDrawer: {
+        ...STUDIO_MODES.backend.defaultLayout.leftDrawer,
+        width: prevBackendLeftWidth,
+      },
       rightDock: {
         ...STUDIO_MODES.backend.defaultLayout.rightDock,
         width: prevBackendWidth,
@@ -362,6 +408,10 @@ export function useWorkspaceLayout(options = {}) {
 
   const setLeftSidebarTab = useCallback((nextOrUpdater) => {
     setLayout((prev) => updateActiveModeLeftDrawerTab(prev, nextOrUpdater));
+  }, []);
+
+  const setLeftSidebarWidth = useCallback((nextOrUpdater) => {
+    setLayout((prev) => updateActiveModeLeftDrawerWidth(prev, nextOrUpdater));
   }, []);
 
   const setRightDockOpen = useCallback((nextOrUpdater) => {
@@ -541,6 +591,8 @@ export function useWorkspaceLayout(options = {}) {
     setShowWelcomeScreen,
     leftSidebarTab: activeSlice.leftDrawer.activeTab,
     setLeftSidebarTab,
+    leftSidebarWidth: activeSlice.leftDrawer.width || DEFAULT_LEFT_DRAWER_WIDTH,
+    setLeftSidebarWidth,
     rightDockOpen: activeSlice.rightDock.isOpen,
     setRightDockOpen,
     rightPropertiesTab: activeSlice.rightDock.propertiesTab,

@@ -1,14 +1,36 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { clampCanvasZoom } from '../utils/canvasInputUtils';
+import { clampCanvasZoom } from '../utils/canvasInputUtils.js';
+import {
+  DEFAULT_LEFT_DRAWER_WIDTH,
+  MIN_AI_LEFT_DRAWER_WIDTH,
+  LEFT_RAIL_WIDTH,
+  RIGHT_RAIL_WIDTH,
+} from '../data/studioModesRegistry.js';
 
 const INITIAL_ZOOM = 0.56;
 const INITIAL_PAN_OFFSET = { x: 24, y: 48 };
 
 /**
+ * Pure helper computing the exact horizontal pixel width occupied by the left rail + left drawer.
+ * Replaces the former hard-coded 292 / 340 estimate with the real `leftSidebarWidth` state.
+ */
+export function computeLeftOccupiedWidth({
+  previewMode = false,
+  leftSidebarTab = null,
+  leftSidebarWidth = DEFAULT_LEFT_DRAWER_WIDTH,
+} = {}) {
+  if (previewMode) return 0;
+  if (!leftSidebarTab) return LEFT_RAIL_WIDTH;
+  const rawW = Number(leftSidebarWidth) || DEFAULT_LEFT_DRAWER_WIDTH;
+  const effectiveDrawerW = leftSidebarTab === 'ai' ? Math.max(rawW, MIN_AI_LEFT_DRAWER_WIDTH) : rawW;
+  return LEFT_RAIL_WIDTH + effectiveDrawerW;
+}
+
+/**
  * Canvas zoom, pan offset, viewport-fit, and horizontal centering hook.
  * Input:  {
- *   showWelcomeScreen, previewMode,
- *   leftSidebarTab, rightDockOpen, rightDockWidth,
+ *   showWelcomeScreen, previewMode, activeMode,
+ *   leftSidebarTab, leftSidebarWidth, rightDockOpen, rightDockWidth,
  *   activeTabId, viewportMode, canvasWidth, canvasHeight,
  * }
  * Output: {
@@ -21,6 +43,7 @@ export function useCanvasView({
   previewMode = false,
   activeMode = 'design',
   leftSidebarTab = null,
+  leftSidebarWidth = DEFAULT_LEFT_DRAWER_WIDTH,
   rightDockOpen = true,
   rightDockWidth = 336,
   activeTabId = 'tab-1',
@@ -40,8 +63,8 @@ export function useCanvasView({
     const canvasW = Number(overrideWidth) || Number(canvasWidth) || 1280;
     const canvasH = Number(canvasHeight) || 1350;
     const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
-    const estLeftW = previewMode ? 0 : (leftSidebarTab ? (leftSidebarTab === 'ai' ? 340 : 292) : 52);
-    const estRightW = previewMode ? 0 : (rightDockOpen ? rightDockWidth + 40 : 40);
+    const estLeftW = computeLeftOccupiedWidth({ previewMode, leftSidebarTab, leftSidebarWidth });
+    const estRightW = previewMode ? 0 : (rightDockOpen ? rightDockWidth + RIGHT_RAIL_WIDTH : RIGHT_RAIL_WIDTH);
     const availW = wrapperEl?.clientWidth || Math.max(360, (typeof window !== 'undefined' ? window.innerWidth : 1440) - estLeftW - estRightW);
     const availH = wrapperEl?.clientHeight || Math.max(420, (typeof window !== 'undefined' ? window.innerHeight : 920) - 76);
     const usableW = Math.max(240, availW - 48);
@@ -56,7 +79,7 @@ export function useCanvasView({
     const panX = Math.max(20, Math.round((availW - scaledW) / 2));
     setZoom(fitZoom);
     setPanOffset({ x: panX, y: previewMode ? 28 : 34 });
-  }, [canvasWidth, canvasHeight, previewMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
+  }, [canvasWidth, canvasHeight, previewMode, leftSidebarTab, leftSidebarWidth, rightDockOpen, rightDockWidth]);
 
   const centerCanvasHorizontally = useCallback(() => {
     if (previewMode) return;
@@ -103,7 +126,7 @@ export function useCanvasView({
   // Keep artboard horizontally centered whenever sidebars open/close, window resizes, or returning to design mode
   useEffect(() => {
     if (showWelcomeScreen || previewMode || activeMode !== 'design') return undefined;
-    const designLayoutKey = `${leftSidebarTab ?? ''}|${rightDockOpen}|${rightDockWidth}`;
+    const designLayoutKey = `${leftSidebarTab ?? ''}|${leftSidebarWidth}|${rightDockOpen}|${rightDockWidth}`;
     const didDesignLayoutChange =
       lastDesignLayoutKeyRef.current !== null && lastDesignLayoutKeyRef.current !== designLayoutKey;
     lastDesignLayoutKeyRef.current = designLayoutKey;
@@ -141,7 +164,7 @@ export function useCanvasView({
       ro?.disconnect();
       window.removeEventListener('resize', onResize);
     };
-  }, [showWelcomeScreen, previewMode, activeMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
+  }, [showWelcomeScreen, previewMode, activeMode, leftSidebarTab, leftSidebarWidth, rightDockOpen, rightDockWidth]);
 
   const handleResetZoom = useCallback(() => {
     fitCanvasToViewport();

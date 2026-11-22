@@ -63,6 +63,8 @@ function CraftStudioApp() {
     showWelcomeScreen,
     leftSidebarTab,
     setLeftSidebarTab,
+    leftSidebarWidth,
+    setLeftSidebarWidth,
     rightDockOpen,
     setRightDockOpen,
     rightPropertiesTab,
@@ -168,6 +170,7 @@ function CraftStudioApp() {
     previewMode,
     activeMode,
     leftSidebarTab,
+    leftSidebarWidth,
     rightDockOpen,
     rightDockWidth,
     activeTabId,
@@ -1143,6 +1146,8 @@ function CraftStudioApp() {
               <StudioLeftSidebar
                 activeTab={leftSidebarTab}
                 setActiveTab={setLeftSidebarTab}
+                drawerWidth={leftSidebarWidth}
+                onChangeDrawerWidth={setLeftSidebarWidth}
                 activeMode={activeMode}
                 modeConfig={currentModeConfig}
                 projectBackend={projectBackend}

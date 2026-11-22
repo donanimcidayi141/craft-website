@@ -4,7 +4,13 @@
  */
 
 export const DEFAULT_STUDIO_MODE = 'design';
+export const DEFAULT_LEFT_DRAWER_WIDTH = 248;
+export const MIN_LEFT_DRAWER_WIDTH = 220;
+export const MAX_LEFT_DRAWER_WIDTH = 440;
+export const MIN_AI_LEFT_DRAWER_WIDTH = 296;
+export const LEFT_RAIL_WIDTH = 52;
 export const DEFAULT_RIGHT_DOCK_WIDTH = 336;
+export const RIGHT_RAIL_WIDTH = 40;
 
 export const STUDIO_MODES = {
   design: {
@@ -115,7 +121,7 @@ export const STUDIO_MODES = {
     shortcutsProfile: 'design',
 
     defaultLayout: {
-      leftDrawer: { activeTab: null },
+      leftDrawer: { activeTab: null, width: DEFAULT_LEFT_DRAWER_WIDTH },
       rightDock: { isOpen: true, propertiesTab: 'layout', width: 336 },
       aiDock: { isMinimized: false },
     },
@@ -201,7 +207,7 @@ export const STUDIO_MODES = {
     shortcutsProfile: 'backend',
 
     defaultLayout: {
-      leftDrawer: { activeTab: 'flows' },
+      leftDrawer: { activeTab: 'flows', width: 256 },
       rightDock: { isOpen: true, propertiesTab: 'stepConfig', width: 336 },
       aiDock: { isMinimized: false },
     },

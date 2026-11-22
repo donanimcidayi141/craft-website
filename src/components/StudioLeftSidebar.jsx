@@ -105,6 +105,8 @@ export default function StudioLeftSidebar({
   activeMode = 'design',
   modeConfig = null,
   projectBackend = null,
+  drawerWidth: controlledDrawerWidth = null,
+  onChangeDrawerWidth = null,
 }) {
   const resolvedModeConfig = modeConfig || getStudioModeConfig(activeMode);
   const isBackendMode = activeMode === 'backend';
@@ -113,8 +115,14 @@ export default function StudioLeftSidebar({
   const [editingName, setEditingName] = useState('');
   const [layerSearchTerm, setLayerSearchTerm] = useState('');
 
-  // Drawer width resizing
-  const [drawerWidth, setDrawerWidth] = useState(DEFAULT_LEFT_WIDTH);
+  // Drawer width resizing (synced with useWorkspaceLayout when controlledDrawerWidth / onChangeDrawerWidth are provided)
+  const [localDrawerWidth, setLocalDrawerWidth] = useState(DEFAULT_LEFT_WIDTH);
+  const drawerWidth = Number(controlledDrawerWidth) > 0 ? Number(controlledDrawerWidth) : localDrawerWidth;
+  const setDrawerWidth = (nextWidth) => {
+    const clamped = Math.max(MIN_LEFT_WIDTH, Math.min(MAX_LEFT_WIDTH, Math.round(Number(nextWidth) || DEFAULT_LEFT_WIDTH)));
+    setLocalDrawerWidth(clamped);
+    onChangeDrawerWidth?.(clamped);
+  };
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef(null);
 
@@ -612,6 +620,7 @@ export default function StudioLeftSidebar({
 
         {activeTab && (
           <div
+            data-left-drawer-container="true"
             style={{ width: `${activeTab === 'ai' ? Math.max(drawerWidth, 296) : drawerWidth}px` }}
             className="relative bg-[#18181b] flex flex-col h-full text-xs text-zinc-300 min-w-0"
           >
@@ -659,6 +668,27 @@ export default function StudioLeftSidebar({
                 </div>
               </div>
             ) : null}
+
+            {/* Right-Edge Smooth Width Splitter */}
+            <div
+              data-left-drawer-splitter="true"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                resizeRef.current = { startX: e.clientX, startWidth: drawerWidth };
+                setIsResizing(true);
+              }}
+              onDoubleClick={() => setDrawerWidth(256)}
+              title="Panel genişliğini sürükle (çift tıkla: varsayılan)"
+              className={`absolute -right-1 top-0 bottom-0 w-2 cursor-col-resize z-30 transition-colors flex items-center justify-center group ${
+                isResizing ? 'bg-emerald-500/45' : 'hover:bg-emerald-500/20'
+              }`}
+            >
+              <span className={`w-0.5 h-10 rounded-sm transition-all ${
+                isResizing
+                  ? 'bg-emerald-400 opacity-100 h-16'
+                  : 'bg-zinc-600 group-hover:bg-emerald-400 opacity-0 group-hover:opacity-100'
+              }`} />
+            </div>
           </div>
         )}
       </aside>
@@ -1091,6 +1121,7 @@ export default function StudioLeftSidebar({
       {/* 2. RESIZABLE ACTIVE PANEL DRAWER */}
       {activeTab && (
         <div
+          data-left-drawer-container="true"
           style={{ width: `${activeTab === 'ai' ? Math.max(drawerWidth, 296) : drawerWidth}px` }}
           className="relative bg-[#18181b] flex flex-col h-full text-xs text-zinc-300 min-w-0"
         >
@@ -1420,6 +1451,7 @@ export default function StudioLeftSidebar({
 
           {/* Right-Edge Smooth Width Splitter */}
           <div
+            data-left-drawer-splitter="true"
             onPointerDown={(e) => {
               e.preventDefault();
               resizeRef.current = { startX: e.clientX, startWidth: drawerWidth };

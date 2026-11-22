@@ -269,6 +269,94 @@ async function main() {
     assert.ok(layersClosed, 'Katmanlar çekmecesi kapatılamadı.');
     console.log('  ✓ Katmanlar paneli açılıp kapatıldı');
 
+    // 1b. Sol panel genişliğinin (leftSidebarWidth) sürüklenerek değiştirilmesi, useCanvasView yatay ortalaması ve çift tıkla 248px varsayılanına sıfırlanması
+    // Tuvalin daralan çalışma alanında yatay ortalanmasını (scaledW < wrapperW - 24) ölçmek için 3 kademe uzaklaştır, ardından Katmanlar panelini aç
+    await cdp.evaluate(`
+      (() => {
+        const zoomOutBtn = document.querySelector('button[title^="Uzaklaştır"]');
+        zoomOutBtn?.click();
+        zoomOutBtn?.click();
+        zoomOutBtn?.click();
+      })()
+    `);
+    await clickWindowMenuItem(cdp, 'Katmanlar (Layers)');
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('[data-left-drawer-container="true"]'))`),
+      'Sol çekmece genişlik testi için Katmanlar paneli açılamadı.'
+    );
+    await new Promise((r) => setTimeout(r, 150));
+    const beforeLeftResize = await cdp.evaluate(`
+      (() => {
+        const drawer = document.querySelector('[data-left-drawer-container="true"]');
+        const splitter = document.querySelector('[data-left-drawer-splitter="true"]');
+        const wrapper = document.getElementById('canvas-wrapper');
+        const artboard = document.getElementById('artboard-canvas');
+        const sr = splitter?.getBoundingClientRect();
+        return {
+          drawerW: Math.round(drawer?.getBoundingClientRect().width || 0),
+          wrapperW: wrapper?.clientWidth || 0,
+          transform: artboard?.parentElement?.style?.transform || '',
+          splitterX: sr ? Math.round(sr.left + sr.width / 2) : 0,
+          splitterY: sr ? Math.round(sr.top + sr.height / 2) : 0,
+        };
+      })()
+    `);
+    assert.equal(beforeLeftResize.drawerW, 248, `Sol çekmece varsayılan genişliği 248px olmalı (bulunan: ${beforeLeftResize.drawerW}).`);
+
+    // Splitter'ı +80px sağa sürükle -> çekmece 328px olmalı, #canvas-wrapper 80px daralmalı ve tuval yatay merkezi güncellenmeli
+    await dragOnScreen(cdp, beforeLeftResize.splitterX, beforeLeftResize.splitterY, 80, 0);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 328`
+      ),
+      'Sol çekmece splitter sürüklemesi genişliği 328px yapmadı.'
+    );
+    await new Promise((r) => setTimeout(r, 120));
+    const afterLeftResize = await cdp.evaluate(`
+      (() => {
+        const drawer = document.querySelector('[data-left-drawer-container="true"]');
+        const wrapper = document.getElementById('canvas-wrapper');
+        const artboard = document.getElementById('artboard-canvas');
+        return {
+          drawerW: Math.round(drawer?.getBoundingClientRect().width || 0),
+          wrapperW: wrapper?.clientWidth || 0,
+          transform: artboard?.parentElement?.style?.transform || '',
+        };
+      })()
+    `);
+    assert.equal(afterLeftResize.drawerW, 328, `Sol çekmece +80px sürükleme sonrası 328px olmalı (bulunan: ${afterLeftResize.drawerW}).`);
+    assert.equal(
+      beforeLeftResize.wrapperW - afterLeftResize.wrapperW,
+      80,
+      `Sol çekmece 80px genişlediğinde #canvas-wrapper 80px daralmalı (önce=${beforeLeftResize.wrapperW}, sonra=${afterLeftResize.wrapperW}).`
+    );
+    assert.notEqual(
+      afterLeftResize.transform,
+      beforeLeftResize.transform,
+      'Sol çekmece genişliği değiştiğinde useCanvasView tuvali yatayda yeniden ortalamadı!'
+    );
+
+    // Splitter'a çift tıkla -> 248px varsayılanına dönmeli ve paneli kapat
+    await cdp.evaluate(`
+      (() => {
+        const splitter = document.querySelector('[data-left-drawer-splitter="true"]');
+        splitter?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+      })()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 248`
+      ),
+      'Sol çekmece splitter çift tıklaması genişliği 248px varsayılanına sıfırlamadı.'
+    );
+    await cdp.evaluate(`document.querySelector('button[title="Sol paneli gizle"]')?.click()`);
+    await waitFor(cdp, `!document.querySelector('[data-left-drawer-container="true"]')`);
+    await sendCtrlShortcut(cdp, '0', 'Digit0', 48);
+    await new Promise((r) => setTimeout(r, 120));
+    console.log('  ✓ Sol panel genişliği (248px -> 328px -> 248px) gerçek değerle useCanvasView tuval ortalamasına bağlandı');
+
     // 2. Şablonlar & Assetler panelini aç, hazır blok ekle (handleAddPreset), sonra kapat
     await clickWindowMenuItem(cdp, 'Assetler');
     const assetsVisible = await waitFor(
