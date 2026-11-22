@@ -897,6 +897,17 @@ function CraftStudioApp() {
     triggerFit();
   }, [switchViewportMode, triggerFit]);
 
+  // Reset selection & preview runtime overrides when the active tab is closed
+  const handleCloseTabWithReset = useCallback((tabId) => {
+    const wasActive = activeTabId === tabId;
+    const closed = handleCloseTab(tabId);
+    if (closed && wasActive) {
+      resetSelection();
+      setPreviewRuntimeOverrides({});
+    }
+    return closed;
+  }, [activeTabId, handleCloseTab, resetSelection]);
+
   useEffect(() => {
     if (showWelcomeScreen || !pendingWelcomeAiPrompt) return;
     const promptToSend = pendingWelcomeAiPrompt;
@@ -1032,7 +1043,7 @@ function CraftStudioApp() {
               setPreviewRuntimeOverrides({});
             }}
             onAddTab={handleAddTab}
-            onCloseTab={handleCloseTab}
+            onCloseTab={handleCloseTabWithReset}
             onRenameTab={handleRenameTab}
             previewMode={previewMode}
             setPreviewMode={handleTogglePreviewMode}

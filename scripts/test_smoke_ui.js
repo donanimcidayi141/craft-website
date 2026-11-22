@@ -838,7 +838,17 @@ async function main() {
       'Onay reddedildiği halde dolu sekme kapandı!'
     );
 
-    // 10c. Şimdi onayı kabul et (accept=true) -> Sayfa-2.craft kapanmalı
+    // 10c. Sayfa-2.craft aktifken bir eleman seç ("1 seçili"), ardından aktif sekmeyi kapat (accept=true) -> sekme kapanmalı ve seçim sıfırlanmalı
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-2.craft"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 150));
+    const activeTabElPt = await findVisiblePointForElement(cdp, tab2ElInitial.id);
+    assert.ok(activeTabElPt, 'Sayfa-2.craft üzerinde seçilecek eleman bulunamadı.');
+    await dragOnScreen(cdp, activeTabElPt.cx, activeTabElPt.cy, 0, 0);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('1 seçili')`),
+      'Aktif sekme kapatılmadan önce eleman seçilemedi.'
+    );
+
     nextDialogAccept = true;
     const closedTabClicked = await cdp.evaluate(`
       (() => {
@@ -854,7 +864,12 @@ async function main() {
       await waitFor(cdp, `!document.querySelector('div[title^="Sayfa-2.craft"]')`),
       'Sayfa-2.craft sekmesi onay sonrası kapatılamadı.'
     );
+    assert.ok(
+      await waitFor(cdp, `!document.body.innerText.includes('seçili')`),
+      'Aktif sekme kapatıldığında seçim (selectedIds) sıfırlanmadı!'
+    );
     console.log('  ✓ Sekme kapatma onayı (boş sekme onaysız, dolu sekmede onay/iptal kontrolü) doğrulandı');
+    console.log('  ✓ Aktif sekme kapatıldığında seçimin (resetSelection) sıfırlandığı doğrulandı');
 
     // Ctrl+Z sekme kapatmayı geri almamalı (history sekme bazlı AST geçmişidir)
     await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
