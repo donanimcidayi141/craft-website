@@ -70,6 +70,29 @@ async function sendCtrlShortcut(cdp, keyChar, keyCode, virtualKeyCode) {
   });
 }
 
+async function sendSingleKey(cdp, keyChar, keyCode, virtualKeyCode, { blurFirst = true } = {}) {
+  if (blurFirst) {
+    await cdp.evaluate(`document.activeElement?.blur?.()`);
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    modifiers: 0,
+    key: keyChar,
+    code: keyCode,
+    windowsVirtualKeyCode: virtualKeyCode,
+    nativeVirtualKeyCode: virtualKeyCode,
+  });
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    modifiers: 0,
+    key: keyChar,
+    code: keyCode,
+    windowsVirtualKeyCode: virtualKeyCode,
+    nativeVirtualKeyCode: virtualKeyCode,
+  });
+}
+
 async function findVisiblePointForElement(cdp, elementId = null) {
   return cdp.evaluate(`
     (() => {
@@ -984,7 +1007,103 @@ async function main() {
     );
     console.log('  ✓ Otomatik taslak (2sn debounce -> sayfa yenileme -> Kaydedilmemiş Taslak -> Geri Yükle) doğrulandı');
 
-    // 13. .craft.json dosyasını tarayıcı file-input yoluyla içe aktar (cdp.setFileInputFiles)
+    // 13. Klavye kısayolları (useShortcuts): V/H/R/O/T araç tuşları, input içinde yazarken araç değişmemesi, Ctrl+C/V, Ctrl+D, Delete, Ctrl+Z/Y ve Ctrl+S
+    const toolShortcutChecks = [
+      { key: 'h', code: 'KeyH', vk: 72, expectedTool: 'hand' },
+      { key: 'r', code: 'KeyR', vk: 82, expectedTool: 'rectangle' },
+      { key: 'o', code: 'KeyO', vk: 79, expectedTool: 'circle' },
+      { key: 't', code: 'KeyT', vk: 84, expectedTool: 'text' },
+      { key: 'v', code: 'KeyV', vk: 86, expectedTool: 'select' },
+    ];
+    for (const item of toolShortcutChecks) {
+      await sendSingleKey(cdp, item.key, item.code, item.vk);
+      assert.ok(
+        await waitFor(
+          cdp,
+          `Boolean(document.querySelector('button[data-tool-id="${item.expectedTool}"][aria-pressed="true"]'))`
+        ),
+        `"${item.key.toUpperCase()}" kısayolu aktif aracı "${item.expectedTool}" yapmadı.`
+      );
+    }
+
+    // Bir input'a yazarken harf tuşlarının (V/H/R/O/T) araç değiştirmediğini doğrula
+    const focusedInput = await cdp.evaluate(`
+      (() => {
+        const inp = document.querySelector('input[title="Proje adını düzenle"]');
+        if (!inp) return false;
+        inp.focus();
+        return document.activeElement === inp;
+      })()
+    `);
+    assert.ok(focusedInput, 'Proje adı input alanı odaklanamadı.');
+    for (const item of [
+      { key: 'h', code: 'KeyH', vk: 72 },
+      { key: 'r', code: 'KeyR', vk: 82 },
+      { key: 'o', code: 'KeyO', vk: 79 },
+      { key: 't', code: 'KeyT', vk: 84 },
+    ]) {
+      await sendSingleKey(cdp, item.key, item.code, item.vk, { blurFirst: false });
+    }
+    await new Promise((r) => setTimeout(r, 120));
+    const stillSelectToolWhileTyping = await cdp.evaluate(
+      `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]'))`
+    );
+    assert.ok(stillSelectToolWhileTyping, 'Input içine harf yazarken aktif araç değişti!');
+    await cdp.evaluate(`document.activeElement?.blur?.()`);
+
+    // Geri yüklenen taslaktaki tek elemanı seç, Ctrl+C / Ctrl+V, Ctrl+D, Delete, Ctrl+Z, Ctrl+Y ve Ctrl+S kısayollarını doğrula
+    const shortcutTargetPt = await findVisiblePointForElement(cdp, draftElementBeforeReload.id);
+    assert.ok(shortcutTargetPt, 'Kısayol testi için tuvaldeki eleman tıklanabilir bulunamadı.');
+    await dragOnScreen(cdp, shortcutTargetPt.cx, shortcutTargetPt.cy, 0, 0);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('1 seçili')`),
+      'Kısayol testi için eleman seçilemedi.'
+    );
+
+    // Ctrl+C ve Ctrl+V -> eleman sayısı 1'den 2'ye çıkmalı
+    await sendCtrlShortcut(cdp, 'c', 'KeyC', 67);
+    await new Promise((r) => setTimeout(r, 60));
+    await sendCtrlShortcut(cdp, 'v', 'KeyV', 86);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 2`),
+      'Ctrl+C / Ctrl+V sonrası eleman yapıştırılamadı (beklenen=2).'
+    );
+
+    // Ctrl+D -> eleman sayısı 2'den 3'e çıkmalı
+    await sendCtrlShortcut(cdp, 'd', 'KeyD', 68);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 3`),
+      'Ctrl+D sonrası seçili eleman çoğaltılamadı (beklenen=3).'
+    );
+
+    // Delete -> seçili çoğaltılan eleman silinmeli, sayı 3'ten 2'ye düşmeli
+    await sendSingleKey(cdp, 'Delete', 'Delete', 46);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 2`),
+      'Delete tuşu seçili elemanı silmedi (beklenen=2).'
+    );
+
+    // Ctrl+Z -> silme geri alınmalı (3), Ctrl+Y -> silme ileri alınmalı (2)
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 3`),
+      'Ctrl+Z silinen elemanı geri getirmedi (beklenen=3).'
+    );
+    await sendCtrlShortcut(cdp, 'y', 'KeyY', 89);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 2`),
+      'Ctrl+Y silme işlemini ileri almadı (beklenen=2).'
+    );
+
+    // Ctrl+S -> projeyi klavyeden kaydetmeli ("✓ Kaydedildi" rozeti görünmeli)
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('✓ Kaydedildi')`),
+      'Ctrl+S klavye kısayolu projeyi kaydetmedi.'
+    );
+    console.log('  ✓ Klavye kısayolları (V/H/R/O/T, input koruması, Ctrl+C/V, Ctrl+D, Delete, Ctrl+Z/Y, Ctrl+S) doğrulandı');
+
+    // 14. .craft.json dosyasını tarayıcı file-input yoluyla içe aktar (cdp.setFileInputFiles)
     const craftJsonFixturePath = path.join(ROOT_DIR, 'scripts', 'fixtures', 'import', 'project.craft.json');
     assert.ok(fs.existsSync(craftJsonFixturePath), 'project.craft.json fixture dosyası bulunamadı.');
     await cdp.setFileInputFiles('input[type="file"][accept*=".craft.json"]', [craftJsonFixturePath]);

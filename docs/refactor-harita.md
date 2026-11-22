@@ -310,3 +310,46 @@ Bölme sırasında en çok dikkat gerektiren çapraz okuma/yazma noktaları şun
   - `handleApplyAiResult` (`handleSelectElements`, `triggerAiHighlight`, `showToastMessage`) & `handleRestoreAiSnapshot` (`handleSelectElements`, `setAiHighlightedIds([])`, `showToastMessage`)
   - `handleKeyDown` ok tuşu nudge (`selectedIds` okur) ve `PropertiesPanel` `onUpdateResolvedElements` (`syncViewportTreeDiffs` + `updateElementsWithHistory`)
 
+---
+
+## 6. Refactor Sonucu (Aşama 2 → Aşama 4 Tamamlanan Durum)
+
+### 6.1 Final Hook Listesi ve Sorumlulukları (`src/hooks/`)
+
+| Hook Dosyası | Satır Sayısı | Sorumluluğu (1 Satır) |
+| :--- | :---: | :--- |
+| `src/hooks/useWorkspaceLayout.js` | `393` | Sol çekmece, sağ özellikler dock'u, yüzen AI dock, tüm modal pencereler, toast bildirimleri ve `#/ice-aktar`–`#/projeler` hash dönüşlerini tek bir `layout` nesnesinde yönetir. |
+| `src/hooks/useProjectState.js` | `506` | Çoklu sayfa sekmeleri (`tabs`, `activeTabId`), aktif cihaz görünümü (`viewportMode`), AST çözümlemesi (`elements`), sekme bazlı undo/redo yığını (`historyByTab` + `latestTabSnapshotRef`) ve proje meta/fonksiyon/sayfa bağlantılarını yönetir. |
+| `src/hooks/useCanvasView.js` | `140` | Tuval `zoom`, `panOffset`, `fitVersion`, ekran boyutuna otomatik sığdırma (`fitCanvasToViewport`) ve panel/pencere değişimlerinde `ResizeObserver` ile yatay ortalama döngüsünü yönetir. |
+| `src/hooks/useSelection.js` | `255` | Seçili öğe ID'leri (`selectedIds`), grup izolasyonu (`editingGroupId`), pano (`clipboard`) ve kopyala/kes/yapıştır/ebeveyn-çocuk seçim gezinmesini yönetir. |
+| `src/hooks/useProjectIO.js` | `820` | Proje kaydetme/açma (`.craft.json`, HTML/JSX dosya ve klasör içe aktarma), `1500ms` otomatik taslak (`autosaveDraft`), `beforeunload` koruması, son projeler (`recentProjects`) ve yeni/modüler proje başlatıcılarını yönetir. |
+| `src/hooks/useShortcuts.js` | `360` | Global `window` `keydown` kısayollarını (`Ctrl+S/O/E/A/C/X/V/D/G/N/Z/Y/K`, ok tuşlarıyla kaydırma, `Delete`, `Esc`, `Enter`, Z-order, ızgara/cetvel ve tek tuş araçları) bayat closure olmadan (`latestRef`) yönetir. |
+| `src/hooks/useAiChatSession.js` | `466` | *(Mevcut)* Gemini AI sohbet oturumu, model seçimi, mesaj geçmişi ve tasarım uygulama/geri alma akışını yönetir. |
+
+### 6.2 Dosya Satır Sayıları (Başlangıç vs. Son)
+
+| Dosya | Başlangıç (`a3a9bbf`) | Son (`refactor/workspace-core`) | Değişim |
+| :--- | :---: | :---: | :---: |
+| **`src/App.jsx`** | **`2.845`** | **`1.338`** | **`-1.507` (%53,0 azalma)** |
+| `src/components/Canvas.jsx` | `3.118` | `3.062` | `-56` *(Aşama 2 saf yardımcılar ayrıldı)* |
+| `src/components/PropertiesPanel.jsx` | `2.673` | `2.673` | `0` *(Aşama 5 kapsamı)* |
+| `src/utils/projectAssemblyUtils.js` | *(yeni — Aşama 2)* | `30` | `+30` |
+| `src/utils/canvasToolsUtils.js` | `308` | `460` | `+152` *(Aşama 2 saf tuval yardımcıları)* |
+| `src/hooks/useSelection.js` | *(yeni — Aşama 3a)* | `255` | `+255` |
+| `src/hooks/useWorkspaceLayout.js` | *(yeni — Aşama 3a/4)* | `393` | `+393` |
+| `src/hooks/useCanvasView.js` | *(yeni — Aşama 3b-1)* | `140` | `+140` |
+| `src/hooks/useProjectState.js` | *(yeni — Aşama 3b-2)* | `506` | `+506` |
+| `src/hooks/useProjectIO.js` | *(yeni — Aşama 3b-3)* | `820` | `+820` |
+| `src/hooks/useShortcuts.js` | *(yeni — Aşama 3b-4)* | `360` | `+360` |
+
+### 6.3 Bilinen Kalan İşler (Sonraki Fazlar)
+1. **Aşama 5 (`Canvas.jsx` & `PropertiesPanel.jsx` Bölünmesi):** `Canvas.jsx` (`3.062` satır -> `CanvasNode`, `useCanvasNavigation`, `useCanvasInteractions`, `useCanvasToolbox`, overlay bileşenleri) ve `PropertiesPanel.jsx` (`2.673` satır -> sekme alt bileşenleri) bölünmesi henüz yapılmadı.
+2. **`useAppShell` Ayrımı:** `useWorkspaceLayout` içindeki `showWelcomeScreen`, `previewToast` / `showToastMessage`, `hashchange` dinleyicisi ve `App.jsx` içindeki `document.title` / `#/editor` hash senkronizasyonu ileride bağımsız bir `useAppShell` hook'una ayrılacak.
+3. **Davranış İyileştirmeleri (`docs/sonra-yapilacaklar.md`):**
+   - Sekme kapatma geri alınamıyor ve onay yok.
+   - Sekme kapatınca seçim sıfırlanmıyor.
+   - Geri alınca seçili eleman yoksa seçim eski ID'de kalıyor.
+4. **Kısayol Çakışma Notu (`docs/kisayollar.md`):**
+   - Tuval üzerinde sağ tık bağlam menüsü (`contextMenu`) açıkken `Escape`'e basıldığında hem `Canvas.jsx` menüyü kapatır hem de `useShortcuts.js` (`App.jsx`) `Escape` dalı tetiklenir.
+
+
