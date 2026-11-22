@@ -262,3 +262,51 @@ Bölme sırasında en çok dikkat gerektiren çapraz okuma/yazma noktaları şun
   4. `src/hooks/useCanvasToolbox.js` — `drawDraft` (`startDrawGesture`/`commitDrawnElement`), `zoomBox`, `eyedropperSample`, `altHoverTargetId` + `contextMenu` (~240 satır, Risk: **Orta**)
   5. Overlay alt bileşenleri: `CanvasSmartGuides.jsx` (L2637–2886), `CanvasRulers.jsx` (L2891–2958), `CanvasContextMenu.jsx` (L3022–3115) (~380 satır, Risk: **Düşük**)
 - **`PropertiesPanel.jsx` (2.673 satır):** Aşama 5 onaylandığında dosya içi tam okuma yapılıp sekmelere (`block`, `style`, `layout`, `props`, `css`, `code`) göre ayrılacak; tahmini hedef **6 alt bileşen + ~350 satır kabuk** (Risk: **Orta**).
+
+---
+
+## 5. Bölüm 5: Taşınan Handler Yan Etkileri (`useProjectState` — Aşama 3b-2)
+
+`useProjectState` yalnızca proje/sekme/history/viewport state'ini ve `latestTabSnapshotRef + setTabs + historyByTab` senkron halkasını kapsüller; diğer hook'ların (`useSelection`, `useCanvasView`, `useWorkspaceLayout`) state veya setter'larını doğrudan çağırmaz. Aşağıdaki tablo orijinal koddaki tüm proje-dışı yan etkileri ve `App.jsx` koordinasyon karşılıklarını listeler:
+
+| Handler / Çağrıcı | Orijinal Konum (`App.jsx`) | Saf Proje State Etkisi (`useProjectState`) | Proje-Dışı Bağımlılık / Yan Etki | `App.jsx` Koruma Stratejisi |
+| :--- | :--- | :--- | :--- | :--- |
+| `setTabHistory` | L219–224 | `setHistoryByTab` sıfırlama + `latestTabSnapshotRef[tabId]` senkronu | Yok | Hook içinde direkt döner |
+| `updateElementsWithHistory` | L227–255 | `setTabs`, `latestTabSnapshotRef`, `setHasUnsavedChanges(true)`, `setHistoryByTab` | Yok | Hook içinde direkt döner |
+| `handleCommitHistory` | L276–293 | `latestTabSnapshotRef` -> `setHasUnsavedChanges(true)`, `setHistoryByTab` | Yok | Hook içinde direkt döner |
+| `setCanvasSettings` | L296–310 | `setHasUnsavedChanges(true)`, `setTabs`, `latestTabSnapshotRef` | Yok | Hook içinde direkt döner |
+| `handleUpdateElement` | L313–329 | `latestTabSnapshotRef`, `setHasUnsavedChanges(true)`, `setTabs` | `selectedIds[0]` (`useSelection`) okur | Hook: `updateActiveTabElement(id, updates)`; `App.jsx`: `handleUpdateElement(updates)` sarmalayıcısı `selectedIds[0]` ile çağırır |
+| `handleUpdateElementDirect` | L332–335 | `applyNodeUpdateForViewport` + `updateElementsWithHistory` | Yok | Hook içinde direkt döner |
+| `handleUpdateMultipleElements` | L338–352 | `latestTabSnapshotRef`, `setHasUnsavedChanges(true)`, `setTabs` | Yok | Hook içinde direkt döner |
+| `handleRenameElement` | L621–623 | `handleUpdateElementDirect(id, { name })` | Yok | Hook içinde direkt döner |
+| `handleUndo` | L889–905 | `setTabs`, `latestTabSnapshotRef`, `setHistoryByTab` | Yok *(seçimi sıfırlamaz)* | Hook içinde direkt döner (`useCallback`) |
+| `handleRedo` | L907–923 | `setTabs`, `latestTabSnapshotRef`, `setHistoryByTab` | Yok *(seçimi sıfırlamaz)* | Hook içinde direkt döner (`useCallback`) |
+| `handleAddTab` | L986–993 | `buildTabState`, `setTabs`, `setTabHistory`, `setActiveTabId`, `setHasUnsavedChanges(true)` | Tablet/Mobil modundaysa `useEffect` adaptasyonu + `useCanvasView` fit effect'i | Hook içinde direkt döner |
+| `handleCloseTab` | L995–1003 | `setTabs`, aktifse `setActiveTabId(remaining[0].id)`, `setHasUnsavedChanges(true)` | Aktif sekme değişirse `useCanvasView` fit effect'i tetiklenir | Hook içinde direkt döner |
+| `handleRenameTab` | L1005–1016 | `setTabs` (`name`, `route`), `setHasUnsavedChanges(true)` | Yok | Hook içinde direkt döner |
+| Sekme seçimi (`TopMenuBar` / `onNavigateTab` / `PresentationOverlay`) | L2166–2170, L581–584, L2385 | `setActiveTabId(nextId)` | `TopMenuBar`: `resetSelection()` + `setPreviewRuntimeOverrides({})`; `onNavigateTab`: `resetSelection()`; `PresentationOverlay`: yok | Hook yalın `setActiveTabId` döner; `App.jsx` sarmalayıcıları ilgili yan etkileri birebir korur |
+| `handleSwitchViewport` | L1067–1112 | `setViewportMode`, `desktop` dışında `ensureViewportAdapted`, `canvasByViewport[vp].height`, `initializedViewports[vp] = true`, `latestTabSnapshotRef` | **`triggerFit()`** (`useCanvasView`, `desktop` dahil geçerli her çağrıda çalışır) | Hook: `switchViewportMode(nextViewport)` (`boolean` döner); `App.jsx`: `handleSwitchViewport` geçerli dönüşte `triggerFit()` çağırır |
+| Sekme değişimi auto-adapt `useEffect` | L2090–2094 | `viewportMode !== 'desktop' && !activeTab.initializedViewports?.[viewportMode]` iken `switchViewportMode(viewportMode)` | Yeni sekme adaptasyonu sonrası `useCanvasView` `activeTabId`/`viewportMode`/`fit` effect'i | Hook içinde döngü korumalı `useEffect` (`autoAdaptedPairsRef`: aynı `tabId:viewportMode` çifti tek sefer); `App.jsx` veya ek `triggerFit` ihtiyacı yok |
+| `handleResetViewportFromDesktop` | L1115–1136 | `ensureViewportAdapted(forceReset: true)`, `initializedViewports[vp] = true`, `updateElementsWithHistory` | Yok | Hook içinde direkt döner |
+| `handleRenameProject` | L1496–1499 | `setProjectMeta(name)`, `setHasUnsavedChanges(true)` | Pencere başlığı `document.title` reaktif effect'i | Hook içinde direkt döner; başlık effect'i `App.jsx`'te korunur |
+| `saveProjectFunction` (`handleSaveProjectFunction`) | L537–560 | `setProjectFunctions`, `setHasUnsavedChanges(true)`, hedefli `updateElementsWithHistory` | `functionEditorState.bindTargetElementId` (`useWorkspaceLayout`) + **`showToastMessage(..., 'success')`** | Hook: `saveProjectFunction(savedFn, bindTargetElementId)`; `App.jsx`: `handleSaveProjectFunction` toast + `bindTargetElementId` bağlamasını korur |
+| `handleDeleteProjectFunction` | L562–565 | `setProjectFunctions`, `setHasUnsavedChanges(true)` | Yok | Hook içinde direkt döner |
+
+### `updateElementsWithHistory` Çağıran Diğer İşlemler (`App.jsx` & `useSelection.js` Dışı Yan Etkiler)
+
+- `useSelection.js`: `handleCut` (`setClipboard`, `setSelectedIds([])`), `handlePaste` (`setSelectedIds(newIds)`) — zaten `useSelection` içinde.
+- `App.jsx` orkestrasyon katmanında kalarak proje + seçim/araç/UI yan etkilerini birlikte yönetenler:
+  - `handleGroupSelected` (`selectedIds` okur)
+  - `handleUngroupSelected` (`selectedIds` okur, `setEditingGroupId(null)`)
+  - `handleDeleteSelected` (`selectedIds` okur, `setSelectedIds([])`, `setEditingGroupId(null)`)
+  - `handleDuplicateSelected` (`selectedIds` okur, `setSelectedIds(newSelectedIds)`)
+  - `handleAltDuplicateElements` (`setSelectedIds(newSelectedIds)`)
+  - `handleWrapSelected` (`selectedIds` okur, `setSelectedIds([wrapperId])`)
+  - `handleUnwrapElement` (`selectedIds` / `editingGroupId` okur, `setEditingGroupId`, `setSelectedIds(restoredIds)`)
+  - `handleReparentElement` (`setSelectedIds([sourceId])`)
+  - `handleAlignHorizontalCenter` / `handleAlignVerticalCenter` (`selectedIds` okur)
+  - `handleAddElementAt` (`setSelectedIds([rawNewElement.id])`, `!keepActiveTool && setActiveTool('select')`) — ayrıca `handleSelectNewTag` (`panOffset`, `zoom`, `primaryColor` okur, `setShowAddTagModal(false)`)
+  - `handleAddPreset` (`panOffset`, `zoom` okur; `setCanvasSettings`, `setSelectedIds`, `setActiveTool('select')`, koşullu `setRightDockOpen(true)` + `setRightPropertiesTab('block')`)
+  - `handleApplyAiResult` (`handleSelectElements`, `triggerAiHighlight`, `showToastMessage`) & `handleRestoreAiSnapshot` (`handleSelectElements`, `setAiHighlightedIds([])`, `showToastMessage`)
+  - `handleKeyDown` ok tuşu nudge (`selectedIds` okur) ve `PropertiesPanel` `onUpdateResolvedElements` (`syncViewportTreeDiffs` + `updateElementsWithHistory`)
+

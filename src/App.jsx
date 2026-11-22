@@ -30,7 +30,6 @@ import {
 } from './utils/treeUtils';
 import {
   createDefaultCanvasByViewport,
-  resolveTreeForViewport,
   applyNodeUpdateForViewport,
   applyMultipleUpdatesForViewport,
   syncViewportTreeDiffs,
@@ -58,7 +57,6 @@ import {
   buildSerializableProjectSchema,
   parseAndMigrateLoadedProject,
   detectInitializedViewports,
-  slugifyTabRoute,
   loadRecentProjects,
   upsertRecentProject,
   removeRecentProject,
@@ -77,36 +75,11 @@ import ProtoApp from './proto/ProtoApp';
 import { buildTabState } from './utils/projectAssemblyUtils';
 import { useSelection } from './hooks/useSelection';
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
+import { useProjectState } from './hooks/useProjectState';
 import { useCanvasView } from './hooks/useCanvasView';
 
 function CraftStudioApp() {
-  // Document Tabs state (each tab carries shared AST + per-viewport canvas geometry)
-  const [tabs, setTabs] = useState(() => [
-    buildTabState('tab-1', 'Anasayfa.craft', DEFAULT_UNIVERSAL_PROJECT),
-    buildTabState('tab-2', 'Özellikler.craft', []),
-  ]);
-  const [activeTabId, setActiveTabId] = useState('tab-1');
-  const [viewportMode, setViewportMode] = useState('desktop');
-
-  // Active Tab & viewport resolution
-  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
-  const rawElements = activeTab.elements;
-  const elements = useMemo(
-    () => resolveTreeForViewport(rawElements, viewportMode),
-    [rawElements, viewportMode]
-  );
-
-  const activeCanvasByViewport = activeTab.canvasByViewport || createDefaultCanvasByViewport();
-  const canvasSettings = activeCanvasByViewport[viewportMode] || activeCanvasByViewport.desktop;
-
-  // Project Metadata, Functions, Preview Runtime & Recent Projects
-  const [projectMeta, setProjectMeta] = useState({
-    id: 'proj-initial',
-    name: 'CraftStudio Projesi',
-    filePath: null,
-    createdAt: null,
-  });
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // 1. Workspace Layout (panels, docks, modals, toasts)
   const {
     effectiveActivePanels,
     showWelcomeScreen,
@@ -144,42 +117,46 @@ function CraftStudioApp() {
     handleDockFloatingInspector,
     togglePanel,
     reset: resetWorkspaceLayout,
-  } = useWorkspaceLayout({ hasUnsavedChanges, projectName: projectMeta.name });
+  } = useWorkspaceLayout();
 
-  const [projectFunctions, setProjectFunctions] = useState([]);
-  const [pageLinks, setPageLinks] = useState([]);
-  const [previewRuntimeOverrides, setPreviewRuntimeOverrides] = useState({});
-  const projectFileInputRef = useRef(null);
-  const projectFolderInputRef = useRef(null);
-  const [recentProjects, setRecentProjects] = useState(() => loadRecentProjects());
-  const [autosaveDraft, setAutosaveDraft] = useState(() => loadAutosaveDraft());
-
-  // Per-tab History for Undo / Redo (snapshots preserve elements + per-viewport canvas sizes)
-  const [historyByTab, setHistoryByTab] = useState(() => ({
-    'tab-1': {
-      items: [{ elements: DEFAULT_UNIVERSAL_PROJECT, canvasByViewport: createDefaultCanvasByViewport() }],
-      index: 0,
-    },
-    'tab-2': {
-      items: [{ elements: [], canvasByViewport: createDefaultCanvasByViewport() }],
-      index: 0,
-    },
-  }));
-  const currentTabHistory = historyByTab[activeTab.id] || {
-    items: [{ elements: rawElements, canvasByViewport: activeCanvasByViewport }],
-    index: 0,
-  };
-  const history = currentTabHistory.items;
-  const historyIndex = currentTabHistory.index;
-
-  // Synchronous ref snapshot so onCommitHistory immediately after onUpdateElement never reads stale state
-  const latestTabSnapshotRef = useRef({});
-  useEffect(() => {
-    latestTabSnapshotRef.current[activeTab.id] = {
-      elements: rawElements,
-      canvasByViewport: activeCanvasByViewport,
-    };
-  }, [activeTab.id, rawElements, activeCanvasByViewport]);
+  // 2. Project State (tabs, viewportMode, history ring, metadata, functions, pageLinks)
+  const {
+    tabs,
+    activeTabId,
+    setActiveTabId,
+    viewportMode,
+    activeTab,
+    rawElements,
+    elements,
+    activeCanvasByViewport,
+    canvasSettings,
+    projectMeta,
+    setProjectMeta,
+    hasUnsavedChanges,
+    setHasUnsavedChanges,
+    projectFunctions,
+    pageLinks,
+    history,
+    historyIndex,
+    updateElementsWithHistory,
+    handleCommitHistory,
+    setCanvasSettings,
+    updateActiveTabElement,
+    handleUpdateElementDirect,
+    handleUpdateMultipleElements,
+    handleRenameElement,
+    handleUndo,
+    handleRedo,
+    handleAddTab,
+    handleCloseTab,
+    handleRenameTab,
+    switchViewportMode,
+    handleResetViewportFromDesktop,
+    handleRenameProject,
+    saveProjectFunction,
+    handleDeleteProjectFunction,
+    reset: resetProjectState,
+  } = useProjectState();
 
   const [activeTool, setActiveTool] = useState('select');
   const [primaryColor, setPrimaryColor] = useState('#d4af37');
@@ -191,6 +168,7 @@ function CraftStudioApp() {
   const [showRulers, setShowRulers] = useState(false);
   const [copiedElementStyle, setCopiedElementStyle] = useState(null);
 
+  // 3. Canvas View (zoom, pan, viewport fit, ResizeObserver)
   const {
     zoom,
     setZoom,
@@ -211,49 +189,7 @@ function CraftStudioApp() {
     canvasHeight: canvasSettings?.height,
   });
 
-  // Bottom-Center Floating AI Highlight & Welcome Prompt State
-  const [aiHighlightedIds, setAiHighlightedIds] = useState([]);
-  const aiHighlightTimerRef = useRef(null);
-  const [pendingWelcomeAiPrompt, setPendingWelcomeAiPrompt] = useState(null);
-
-  const setTabHistory = useCallback((tabId, snapshot) => {
-    setHistoryByTab(prev => ({
-      ...prev,
-      [tabId]: { items: [snapshot], index: 0 },
-    }));
-  }, []);
-
-  // Synchronize Tab Elements (and optional canvasByViewport) update with history
-  const updateElementsWithHistory = useCallback((newRawElements, nextCanvasByViewport = null) => {
-    let resolvedCanvasByVp = nextCanvasByViewport;
-    setTabs(prevTabs => prevTabs.map(t => {
-      if (t.id === activeTabId) {
-        const finalCanvasByVp = nextCanvasByViewport || t.canvasByViewport || createDefaultCanvasByViewport();
-        resolvedCanvasByVp = finalCanvasByVp;
-        latestTabSnapshotRef.current[t.id] = { elements: newRawElements, canvasByViewport: finalCanvasByVp };
-        return { ...t, elements: newRawElements, canvasByViewport: finalCanvasByVp };
-      }
-      return t;
-    }));
-    setHasUnsavedChanges(true);
-
-    const snapshot = {
-      elements: newRawElements,
-      canvasByViewport: resolvedCanvasByVp || activeCanvasByViewport,
-    };
-    setHistoryByTab(prev => {
-      const cur = prev[activeTabId] || { items: [{ elements: rawElements, canvasByViewport: activeCanvasByViewport }], index: 0 };
-      const updated = cur.items.slice(0, cur.index + 1);
-      return {
-        ...prev,
-        [activeTabId]: {
-          items: [...updated, snapshot],
-          index: updated.length,
-        },
-      };
-    });
-  }, [activeTabId, activeCanvasByViewport, rawElements]);
-
+  // 4. Selection & Clipboard
   const {
     selectedIds,
     setSelectedIds,
@@ -272,83 +208,35 @@ function CraftStudioApp() {
     reset: resetSelection,
   } = useSelection({ elements, rawElements, updateElementsWithHistory });
 
-  // Commit current elements/canvas to history after finishing an interaction (e.g. drag, resize, bottom extender)
-  const handleCommitHistory = useCallback(() => {
-    const snap = latestTabSnapshotRef.current[activeTabId] || {
-      elements: rawElements,
-      canvasByViewport: activeCanvasByViewport,
-    };
-    setHasUnsavedChanges(true);
-    setHistoryByTab(prev => {
-      const cur = prev[activeTabId] || { items: [snap], index: 0 };
-      const updated = cur.items.slice(0, cur.index + 1);
-      return {
-        ...prev,
-        [activeTabId]: {
-          items: [...updated, snap],
-          index: updated.length,
-        },
-      };
-    });
-  }, [activeTabId, rawElements, activeCanvasByViewport]);
+  // Reflect project name & dirty dot (`●`) in browser / Electron window title
+  useEffect(() => {
+    if (showWelcomeScreen) {
+      document.title = 'CraftStudio - Web Tasarımcı & React Oluşturucu';
+      return;
+    }
+    if (typeof window !== 'undefined' && window.location.hash && window.location.hash !== '#/editor') {
+      window.location.hash = '#/editor';
+    }
+    const prefix = hasUnsavedChanges ? '● ' : '';
+    document.title = `${prefix}${projectMeta.name || 'CraftStudio Projesi'} — CraftStudio`;
+  }, [showWelcomeScreen, hasUnsavedChanges, projectMeta.name]);
 
-  // Direct canvas settings updater for active viewport
-  const setCanvasSettings = useCallback((updaterOrPartial) => {
-    setHasUnsavedChanges(true);
-    setTabs(prevTabs => prevTabs.map(t => {
-      if (t.id !== activeTabId) return t;
-      const byVp = t.canvasByViewport || createDefaultCanvasByViewport();
-      const cur = byVp[viewportMode] || byVp.desktop;
-      const patch = typeof updaterOrPartial === 'function' ? updaterOrPartial(cur) : updaterOrPartial;
-      const nextByVp = {
-        ...byVp,
-        [viewportMode]: { ...cur, ...patch },
-      };
-      latestTabSnapshotRef.current[t.id] = { elements: t.elements, canvasByViewport: nextByVp };
-      return { ...t, canvasByViewport: nextByVp };
-    }));
-  }, [activeTabId, viewportMode]);
+  // Project IO refs & persistence lists
+  const [previewRuntimeOverrides, setPreviewRuntimeOverrides] = useState({});
+  const projectFileInputRef = useRef(null);
+  const projectFolderInputRef = useRef(null);
+  const [recentProjects, setRecentProjects] = useState(() => loadRecentProjects());
+  const [autosaveDraft, setAutosaveDraft] = useState(() => loadAutosaveDraft());
 
-  // Direct element modification in active viewport (synchronously updates snapshot ref so immediate commits never go stale)
+  // Bottom-Center Floating AI Highlight & Welcome Prompt State
+  const [aiHighlightedIds, setAiHighlightedIds] = useState([]);
+  const aiHighlightTimerRef = useRef(null);
+  const [pendingWelcomeAiPrompt, setPendingWelcomeAiPrompt] = useState(null);
+
+  // Direct element modification in active viewport for current selection
   const handleUpdateElement = (updates) => {
     if (selectedIds.length === 0) return;
-    const targetId = selectedIds[0];
-    const currentSnap = latestTabSnapshotRef.current[activeTabId] || {
-      elements: rawElements,
-      canvasByViewport: activeCanvasByViewport,
-    };
-    const nextRaw = applyNodeUpdateForViewport(currentSnap.elements, targetId, updates, viewportMode);
-    latestTabSnapshotRef.current[activeTabId] = {
-      elements: nextRaw,
-      canvasByViewport: currentSnap.canvasByViewport,
-    };
-    setHasUnsavedChanges(true);
-    setTabs(prevTabs => prevTabs.map(t => (
-      t.id === activeTabId ? { ...t, elements: nextRaw } : t
-    )));
-  };
-
-  // Direct element modification with history (accepts explicit element id)
-  const handleUpdateElementDirect = (id, updates) => {
-    const newRaw = applyNodeUpdateForViewport(rawElements, id, updates, viewportMode);
-    updateElementsWithHistory(newRaw);
-  };
-
-  // Multiple elements modification across the tree for active viewport
-  const handleUpdateMultipleElements = (updatesMap) => {
-    const currentSnap = latestTabSnapshotRef.current[activeTabId] || {
-      elements: rawElements,
-      canvasByViewport: activeCanvasByViewport,
-    };
-    const nextRaw = applyMultipleUpdatesForViewport(currentSnap.elements, updatesMap, viewportMode);
-    latestTabSnapshotRef.current[activeTabId] = {
-      elements: nextRaw,
-      canvasByViewport: currentSnap.canvasByViewport,
-    };
-    setHasUnsavedChanges(true);
-    setTabs(prevTabs => prevTabs.map(t => (
-      t.id === activeTabId ? { ...t, elements: nextRaw } : t
-    )));
+    updateActiveTabElement(selectedIds[0], updates);
   };
 
   // Group Selected (Ctrl+G) - Packs selected sibling nodes into a container div
@@ -535,33 +423,8 @@ function CraftStudioApp() {
 
   // ⚡ Project Function CRUD & Preview Interactive Runtime Handlers
   const handleSaveProjectFunction = (savedFn) => {
-    const { _isNew, ...cleanFn } = savedFn;
-    setProjectFunctions((prev) => {
-      const exists = prev.some((f) => f.id === cleanFn.id);
-      return exists ? prev.map((f) => (f.id === cleanFn.id ? cleanFn : f)) : [...prev, cleanFn];
-    });
-    setHasUnsavedChanges(true);
-
-    if (functionEditorState.bindTargetElementId) {
-      const targetId = functionEditorState.bindTargetElementId;
-      const found = findNodeAndParent(elements, targetId);
-      const nextEvents = {
-        ...(found?.node?.events || {}),
-        onClick: {
-          mode: 'function',
-          functionId: cleanFn.id,
-          functionName: cleanFn.name,
-        },
-      };
-      const nextRaw = applyNodeUpdateForViewport(rawElements, targetId, { events: nextEvents }, viewportMode);
-      updateElementsWithHistory(nextRaw);
-    }
+    const cleanFn = saveProjectFunction(savedFn, functionEditorState.bindTargetElementId);
     showToastMessage(`Fonksiyon kaydedildi: ${cleanFn.name}()`, 'success');
-  };
-
-  const handleDeleteProjectFunction = (fnId) => {
-    setProjectFunctions((prev) => prev.filter((f) => f.id !== fnId));
-    setHasUnsavedChanges(true);
   };
 
   const handlePreviewInputChange = useCallback((nodeId, val) => {
@@ -615,11 +478,6 @@ function CraftStudioApp() {
     const nextTree = reparentNodeForViewport(rawElements, sourceId, targetParentId, targetIndex);
     updateElementsWithHistory(nextTree);
     setSelectedIds([sourceId]);
-  };
-
-  // Rename element
-  const handleRenameElement = (id, newName) => {
-    handleUpdateElementDirect(id, { name: newName });
   };
 
   // Alignment: Sayfada veya Ebeveyn İçinde Ortala (isolated per active viewport)
@@ -885,43 +743,6 @@ function CraftStudioApp() {
     }
   };
 
-  // Undo / Redo
-  const handleUndo = () => {
-    if (historyIndex > 0) {
-      const targetIndex = historyIndex - 1;
-      const snap = history[targetIndex];
-      setTabs(prevTabs => prevTabs.map(t => {
-        if (t.id === activeTabId) {
-          latestTabSnapshotRef.current[t.id] = snap;
-          return { ...t, elements: snap.elements, canvasByViewport: snap.canvasByViewport };
-        }
-        return t;
-      }));
-      setHistoryByTab(prev => ({
-        ...prev,
-        [activeTabId]: { items: history, index: targetIndex },
-      }));
-    }
-  };
-
-  const handleRedo = () => {
-    if (historyIndex < history.length - 1) {
-      const targetIndex = historyIndex + 1;
-      const snap = history[targetIndex];
-      setTabs(prevTabs => prevTabs.map(t => {
-        if (t.id === activeTabId) {
-          latestTabSnapshotRef.current[t.id] = snap;
-          return { ...t, elements: snap.elements, canvasByViewport: snap.canvasByViewport };
-        }
-        return t;
-      }));
-      setHistoryByTab(prev => ({
-        ...prev,
-        [activeTabId]: { items: history, index: targetIndex },
-      }));
-    }
-  };
-
   const triggerAiHighlight = useCallback((ids = []) => {
     if (aiHighlightTimerRef.current) clearTimeout(aiHighlightTimerRef.current);
     const valid = (Array.isArray(ids) ? ids : []).filter(Boolean);
@@ -983,38 +804,6 @@ function CraftStudioApp() {
     onRestoreAiSnapshot: handleRestoreAiSnapshot,
   });
 
-  const handleAddTab = () => {
-    const newTabId = `tab-${Date.now()}`;
-    const newTab = buildTabState(newTabId, `Sayfa-${tabs.length + 1}.craft`, []);
-    setTabs([...tabs, newTab]);
-    setTabHistory(newTabId, { elements: [], canvasByViewport: newTab.canvasByViewport });
-    setActiveTabId(newTabId);
-    setHasUnsavedChanges(true);
-  };
-
-  const handleCloseTab = (tabId) => {
-    if (tabs.length <= 1) return;
-    const remaining = tabs.filter(t => t.id !== tabId);
-    setTabs(remaining);
-    if (activeTabId === tabId) {
-      setActiveTabId(remaining[0].id);
-    }
-    setHasUnsavedChanges(true);
-  };
-
-  const handleRenameTab = useCallback((tabId, nextName) => {
-    const cleaned = String(nextName || '').trim();
-    if (!cleaned) return;
-    setTabs((prevTabs) =>
-      prevTabs.map((t, idx) =>
-        t.id === tabId
-          ? { ...t, name: cleaned, route: slugifyTabRoute(cleaned, idx) }
-          : t
-      )
-    );
-    setHasUnsavedChanges(true);
-  }, []);
-
   // Tutorial actions
   const handleTutorialAddBox = () => {
     handleAddElementAt({
@@ -1063,77 +852,11 @@ function CraftStudioApp() {
     handleAlignVerticalCenter();
   };
 
-  // Switch between Desktop / Tablet / Mobile, auto-adapting on first visit & keeping each device remembered
+  // Switch between Desktop / Tablet / Mobile & refit canvas viewport
   const handleSwitchViewport = useCallback((nextViewport) => {
-    if (!['desktop', 'tablet', 'mobile'].includes(nextViewport)) return;
-    setViewportMode(nextViewport);
+    if (!switchViewportMode(nextViewport)) return;
     triggerFit();
-
-    if (nextViewport === 'desktop') return;
-
-    setTabs(prevTabs => prevTabs.map(t => {
-      if (t.id !== activeTabId) return t;
-      const byVp = t.canvasByViewport || createDefaultCanvasByViewport();
-      const alreadyInitialized = Boolean(t.initializedViewports?.[nextViewport]);
-      const { tree, changed, suggestedHeight } = ensureViewportAdapted(t.elements, nextViewport, {
-        forceReset: false,
-        desktopWidth: byVp.desktop?.width || 1280,
-      });
-
-      if (!changed && alreadyInitialized) {
-        return t;
-      }
-
-      const nextByVp = !alreadyInitialized
-        ? {
-            ...byVp,
-            [nextViewport]: {
-              ...(byVp[nextViewport] || getViewportPreset(nextViewport)),
-              height: suggestedHeight,
-            },
-          }
-        : byVp;
-
-      const updatedTab = {
-        ...t,
-        elements: changed ? tree : t.elements,
-        canvasByViewport: nextByVp,
-        initializedViewports: {
-          ...(t.initializedViewports || { desktop: true }),
-          [nextViewport]: true,
-        },
-      };
-      latestTabSnapshotRef.current[t.id] = {
-        elements: updatedTab.elements,
-        canvasByViewport: updatedTab.canvasByViewport,
-      };
-      return updatedTab;
-    }));
-  }, [activeTabId, triggerFit]);
-
-  // Re-adapt current Tablet / Mobile design cleanly from Desktop layout (with Undo support)
-  const handleResetViewportFromDesktop = useCallback(() => {
-    if (viewportMode === 'desktop') return;
-    const { tree, suggestedHeight } = ensureViewportAdapted(rawElements, viewportMode, {
-      forceReset: true,
-      desktopWidth: activeCanvasByViewport.desktop?.width || 1280,
-    });
-    const nextByVp = {
-      ...activeCanvasByViewport,
-      [viewportMode]: {
-        ...(activeCanvasByViewport[viewportMode] || getViewportPreset(viewportMode)),
-        height: suggestedHeight,
-      },
-    };
-    setTabs(prevTabs => prevTabs.map(t => {
-      if (t.id !== activeTabId) return t;
-      return {
-        ...t,
-        initializedViewports: { ...(t.initializedViewports || { desktop: true }), [viewportMode]: true },
-      };
-    }));
-    updateElementsWithHistory(tree, nextByVp);
-  }, [viewportMode, rawElements, activeCanvasByViewport, activeTabId, updateElementsWithHistory]);
+  }, [switchViewportMode, triggerFit]);
 
   const buildCurrentProjectSchema = useCallback((overrides = {}) => {
     return buildSerializableProjectSchema({
@@ -1181,19 +904,21 @@ function CraftStudioApp() {
     const nextFilePath = extraMeta.filePath !== undefined ? extraMeta.filePath : (schema.filePath || null);
     const finalName = extraMeta.name || schema.name || 'Yüklenen Proje';
 
-    setTabs(loadedTabs);
-    setHistoryByTab(nextHistory);
-    setActiveTabId(resolvedActiveId);
-    setViewportMode(schema.viewportMode || 'desktop');
-    setProjectFunctions(Array.isArray(schema.projectFunctions) ? schema.projectFunctions : []);
-    setPageLinks(Array.isArray(schema.pageLinks) ? schema.pageLinks : []);
-    setProjectMeta({
-      id: schema.id,
-      name: finalName,
-      filePath: nextFilePath,
-      createdAt: schema.createdAt || new Date().toISOString(),
+    resetProjectState({
+      tabs: loadedTabs,
+      historyByTab: nextHistory,
+      activeTabId: resolvedActiveId,
+      viewportMode: schema.viewportMode || 'desktop',
+      projectFunctions: Array.isArray(schema.projectFunctions) ? schema.projectFunctions : [],
+      pageLinks: Array.isArray(schema.pageLinks) ? schema.pageLinks : [],
+      projectMeta: {
+        id: schema.id,
+        name: finalName,
+        filePath: nextFilePath,
+        createdAt: schema.createdAt || new Date().toISOString(),
+      },
+      hasUnsavedChanges: Boolean(extraMeta.markUnsaved),
     });
-    setHasUnsavedChanges(Boolean(extraMeta.markUnsaved));
     resetSelection();
     setPreviewMode(false);
     setPreviewRuntimeOverrides({});
@@ -1208,7 +933,7 @@ function CraftStudioApp() {
       });
       setRecentProjects(updatedRecent);
     }
-  }, [resetSelection, resetWorkspaceLayout, resetCanvasView]);
+  }, [resetProjectState, resetSelection, resetWorkspaceLayout, resetCanvasView]);
 
   // Debounced autosave draft in localStorage whenever user edits an open project
   useEffect(() => {
@@ -1235,63 +960,55 @@ function CraftStudioApp() {
   const handleStartNewProject = (type) => {
     const newProjId = `proj-${Date.now()}`;
     const newTabId = `tab-${Date.now()}`;
-    setProjectFunctions([]);
-    setPageLinks([]);
-    setPreviewMode(false);
-    setPreviewRuntimeOverrides({});
-    resetSelection();
-    setHasUnsavedChanges(false);
+    let nextTab = null;
+    let nextViewportMode = 'desktop';
+    let nextProjectMeta = null;
 
     if (type === 'universal' || type === 'jewelry') {
-      const newTab = buildTabState(newTabId, 'Web-Sayfasi.craft', DEFAULT_UNIVERSAL_PROJECT, { width: 1280, height: 1350, backgroundColor: '#0b0a09' });
-      setTabs([newTab]);
-      setTabHistory(newTabId, { elements: newTab.elements, canvasByViewport: newTab.canvasByViewport });
-      setActiveTabId(newTabId);
-      setViewportMode('desktop');
-      setProjectMeta({ id: newProjId, name: 'Aurelia Atelier Vitrini', filePath: null, createdAt: new Date().toISOString() });
+      nextTab = buildTabState(newTabId, 'Web-Sayfasi.craft', DEFAULT_UNIVERSAL_PROJECT, { width: 1280, height: 1350, backgroundColor: '#0b0a09' });
+      nextProjectMeta = { id: newProjId, name: 'Aurelia Atelier Vitrini', filePath: null, createdAt: new Date().toISOString() };
     } else if (type === 'blank') {
-      const newTab = buildTabState(newTabId, 'Yeni-Tasarim.craft', [], { width: 1280, height: 1200, backgroundColor: '#ffffff' });
-      setTabs([newTab]);
-      setTabHistory(newTabId, { elements: [], canvasByViewport: newTab.canvasByViewport });
-      setActiveTabId(newTabId);
-      setViewportMode('desktop');
-      setProjectMeta({ id: newProjId, name: 'Yeni Boş Proje', filePath: null, createdAt: new Date().toISOString() });
+      nextTab = buildTabState(newTabId, 'Yeni-Tasarim.craft', [], { width: 1280, height: 1200, backgroundColor: '#ffffff' });
+      nextProjectMeta = { id: newProjId, name: 'Yeni Boş Proje', filePath: null, createdAt: new Date().toISOString() };
     } else if (type === 'blank-tablet' || type === 'tablet') {
       const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1280, backgroundColor: '#ffffff' });
-      const newTab = {
+      nextTab = {
         ...buildTabState(newTabId, 'Tablet-Tasarim.craft', [], byVp),
         initializedViewports: { desktop: true, tablet: true, mobile: false },
       };
-      setTabs([newTab]);
-      setTabHistory(newTabId, { elements: [], canvasByViewport: newTab.canvasByViewport });
-      setActiveTabId(newTabId);
-      setViewportMode('tablet');
-      setProjectMeta({ id: newProjId, name: 'Tablet Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() });
+      nextViewportMode = 'tablet';
+      nextProjectMeta = { id: newProjId, name: 'Tablet Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() };
     } else if (type === 'blank-mobile') {
       const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1200, backgroundColor: '#ffffff' });
-      const newTab = {
+      nextTab = {
         ...buildTabState(newTabId, 'Mobil-Tasarim.craft', [], byVp),
         initializedViewports: { desktop: true, tablet: false, mobile: true },
       };
-      setTabs([newTab]);
-      setTabHistory(newTabId, { elements: [], canvasByViewport: newTab.canvasByViewport });
-      setActiveTabId(newTabId);
-      setViewportMode('mobile');
-      setProjectMeta({ id: newProjId, name: 'Mobil Boş Proje', filePath: null, createdAt: new Date().toISOString() });
+      nextViewportMode = 'mobile';
+      nextProjectMeta = { id: newProjId, name: 'Mobil Boş Proje', filePath: null, createdAt: new Date().toISOString() };
     } else if (type === 'mobile') {
       const adapted = ensureViewportAdapted(DEFAULT_UNIVERSAL_PROJECT, 'mobile', { forceReset: true });
       const byVp = createDefaultCanvasByViewport({ width: 1280, height: 1350, backgroundColor: '#0b0a09' });
       byVp.mobile.height = adapted.suggestedHeight;
-      const newTab = {
+      nextTab = {
         ...buildTabState(newTabId, 'Mobil-Web.craft', adapted.tree, byVp),
         initializedViewports: { desktop: true, tablet: false, mobile: true },
       };
-      setTabs([newTab]);
-      setTabHistory(newTabId, { elements: newTab.elements, canvasByViewport: newTab.canvasByViewport });
-      setActiveTabId(newTabId);
-      setViewportMode('mobile');
-      setProjectMeta({ id: newProjId, name: 'Mobil Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() });
+      nextViewportMode = 'mobile';
+      nextProjectMeta = { id: newProjId, name: 'Mobil Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() };
     }
+
+    resetProjectState({
+      ...(nextTab ? { tabs: [nextTab], activeTabId: newTabId } : {}),
+      viewportMode: nextViewportMode,
+      ...(nextProjectMeta ? { projectMeta: nextProjectMeta } : {}),
+      hasUnsavedChanges: false,
+      projectFunctions: [],
+      pageLinks: [],
+    });
+    setPreviewMode(false);
+    setPreviewRuntimeOverrides({});
+    resetSelection();
     resetWorkspaceLayout({ showWelcomeScreen: false });
     resetCanvasView();
   };
@@ -1434,22 +1151,23 @@ function CraftStudioApp() {
       initializedViewports: initViewports,
     };
 
-    setProjectFunctions([]);
-    setPageLinks([]);
+    resetProjectState({
+      tabs: [newTab],
+      activeTabId: newTabId,
+      viewportMode: targetVp,
+      projectMeta: {
+        id: newProjId,
+        name: cleanBrand ? `${cleanBrand} — Web Projesi` : name,
+        filePath: null,
+        createdAt: new Date().toISOString(),
+      },
+      hasUnsavedChanges: assembledElements.length > 0,
+      projectFunctions: [],
+      pageLinks: [],
+    });
     setPreviewMode(false);
     setPreviewRuntimeOverrides({});
     resetSelection();
-    setHasUnsavedChanges(assembledElements.length > 0);
-    setTabs([newTab]);
-    setTabHistory(newTabId, { elements: newTab.elements, canvasByViewport: newTab.canvasByViewport });
-    setActiveTabId(newTabId);
-    setViewportMode(targetVp);
-    setProjectMeta({
-      id: newProjId,
-      name: cleanBrand ? `${cleanBrand} — Web Projesi` : name,
-      filePath: null,
-      createdAt: new Date().toISOString(),
-    });
     const cleanPrompt = String(aiPrompt || '').trim();
     resetWorkspaceLayout({
       showWelcomeScreen: false,
@@ -1463,7 +1181,7 @@ function CraftStudioApp() {
     } else if (assembledElements.length > 0) {
       showToastMessage(`✓ ${assembledElements.length} modüler katman tuvale yerleştirildi`, 'success');
     }
-  }, [setTabHistory, showToastMessage, resetSelection, resetWorkspaceLayout, resetCanvasView]);
+  }, [resetProjectState, showToastMessage, resetSelection, resetWorkspaceLayout, resetCanvasView]);
 
   // Karşılama ekranındaki Gemini komut kutusundan boş tuval + ilk AI isteğini başlatır
   const handleStartAiPromptFromWelcome = (promptText, options = null) => {
@@ -1492,11 +1210,6 @@ function CraftStudioApp() {
     setPendingWelcomeAiPrompt(null);
     aiChat.handleSendPrompt(promptToSend);
   }, [showWelcomeScreen, pendingWelcomeAiPrompt, aiChat]);
-
-  const handleRenameProject = (nextName) => {
-    setProjectMeta((prev) => ({ ...prev, name: nextName }));
-    setHasUnsavedChanges(true);
-  };
 
   // 💾 Save Project (.craft.json via Electron native dialog OR Web storage + download)
   const handleSaveProject = useCallback(async (saveAs = false) => {
@@ -2085,13 +1798,6 @@ function CraftStudioApp() {
     elements, rawElements, viewportMode, clipboard, updateElementsWithHistory,
     handleSaveProject, handleOpenProjectFile, handleTogglePreviewMode
   ]);
-
-  // Ensure any tab switched to while already in Tablet/Mobile is initialized for that viewport
-  useEffect(() => {
-    if (viewportMode !== 'desktop' && !activeTab.initializedViewports?.[viewportMode]) {
-      handleSwitchViewport(viewportMode);
-    }
-  }, [activeTabId, viewportMode, activeTab.initializedViewports, handleSwitchViewport]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#111113] text-zinc-200 select-none overflow-hidden font-sans relative">

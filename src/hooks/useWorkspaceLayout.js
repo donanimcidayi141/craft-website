@@ -34,7 +34,7 @@ const INITIAL_WORKSPACE_LAYOUT = {
 
 /**
  * Unified workspace layout, panel/dock, modal, and toast controller.
- * Input:  { hasUnsavedChanges, projectName }
+ * Input:  none (title/hash sync lives at App orchestration layer until useAppShell)
  * Output: {
  *   layout, setLayout, effectiveActivePanels,
  *   showWelcomeScreen, setShowWelcomeScreen,
@@ -50,7 +50,7 @@ const INITIAL_WORKSPACE_LAYOUT = {
  *   reset,
  * }
  */
-export function useWorkspaceLayout({ hasUnsavedChanges = false, projectName = 'CraftStudio Projesi' } = {}) {
+export function useWorkspaceLayout() {
   const [layout, setLayout] = useState(INITIAL_WORKSPACE_LAYOUT);
   const [previewToast, setPreviewToast] = useState(null);
   const previewToastTimerRef = useRef(null);
@@ -338,19 +338,6 @@ export function useWorkspaceLayout({ hasUnsavedChanges = false, projectName = 'C
       },
     }));
   }, []);
-
-  // Reflect project name & dirty dot (`●`) in browser / Electron window title
-  useEffect(() => {
-    if (layout.showWelcomeScreen) {
-      document.title = 'CraftStudio - Web Tasarımcı & React Oluşturucu';
-      return;
-    }
-    if (typeof window !== 'undefined' && window.location.hash && window.location.hash !== '#/editor') {
-      window.location.hash = '#/editor';
-    }
-    const prefix = hasUnsavedChanges ? '● ' : '';
-    document.title = `${prefix}${projectName || 'CraftStudio Projesi'} — CraftStudio`;
-  }, [layout.showWelcomeScreen, hasUnsavedChanges, projectName]);
 
   useEffect(() => {
     const handleAppHashChange = () => {

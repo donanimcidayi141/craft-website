@@ -70,6 +70,79 @@ async function sendCtrlShortcut(cdp, keyChar, keyCode, virtualKeyCode) {
   });
 }
 
+async function findVisiblePointForElement(cdp, elementId = null) {
+  return cdp.evaluate(`
+    (() => {
+      const candidates = ${elementId
+        ? `[document.querySelector('#artboard-canvas > [data-element-id="${elementId}"]')].filter(Boolean)`
+        : `Array.from(document.querySelectorAll('#artboard-canvas > [data-element-id]'))`};
+      for (const el of candidates) {
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 16) continue;
+        const sampleFractions = [
+          [0.5, 0.5],
+          [0.25, 0.25],
+          [0.75, 0.25],
+          [0.25, 0.75],
+          [0.5, 0.2],
+        ];
+        for (const [fx, fy] of sampleFractions) {
+          const px = Math.round(rect.left + rect.width * fx);
+          const py = Math.round(rect.top + rect.height * fy);
+          const hit = document.elementFromPoint(px, py);
+          const hitNode = hit?.closest?.('[data-element-id]');
+          if (hit === el || hitNode === el) {
+            return {
+              id: el.getAttribute('data-element-id'),
+              left: el.style.left,
+              top: el.style.top,
+              width: el.style.width,
+              height: el.style.height,
+              cx: px,
+              cy: py,
+            };
+          }
+        }
+      }
+      return null;
+    })()
+  `);
+}
+
+async function dragOnScreen(cdp, fromX, fromY, dx, dy) {
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: fromX, y: fromY });
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: fromX,
+    y: fromY,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((r) => setTimeout(r, 40));
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: Math.round(fromX + dx / 2),
+    y: Math.round(fromY + dy / 2),
+    button: 'left',
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: Math.round(fromX + dx),
+    y: Math.round(fromY + dy),
+    button: 'left',
+  });
+  await new Promise((r) => setTimeout(r, 40));
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: Math.round(fromX + dx),
+    y: Math.round(fromY + dy),
+    button: 'left',
+    clickCount: 1,
+  });
+}
+
 async function main() {
   const distIndex = path.join(ROOT_DIR, 'dist', 'index.html');
   assert.ok(fs.existsSync(distIndex), 'dist/index.html bulunamadı; önce npm run build çalıştırılmalı.');
@@ -327,7 +400,7 @@ async function main() {
     );
     console.log('  ✓ Araç rayı, ızgara ve cetvel kontrolleri doğrulandı');
 
-    // 6. Yeni sekme ekle ve sekmeler arası geç
+    // 6. Yeni sekmede tablete geçiş + sayfa yüksekliği uyumu + iki sekmede bağımsız düzenleme ve Ctrl+Z izolasyonu
     await cdp.evaluate(`document.querySelector('button[title="Yeni Sayfa Sekmesi Ekle"]')?.click()`);
     const newTabReady = await waitFor(
       cdp,
@@ -335,25 +408,275 @@ async function main() {
     );
     assert.ok(newTabReady, 'Yeni sayfa sekmesi (Sayfa-2.craft) eklenemedi.');
 
-    await cdp.evaluate(`
+    // Yeni sekme (Sayfa-2.craft) aktifken tablete geç ve sayfa yüksekliğinin canvas viewport'una sığdığını doğrula
+    await cdp.evaluate(`document.querySelector('button[title^="Tablet Tasarımı"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '768px'`),
+      'Yeni sekmede Tablet viewport (768px) geçişi başarısız.'
+    );
+    await new Promise((r) => setTimeout(r, 250));
+    const newTabTabletFit = await cdp.evaluate(`
       (() => {
-        const tab = document.querySelector('div[title^="Anasayfa.craft"]');
-        tab?.click();
+        const art = document.getElementById('artboard-canvas');
+        const wrap = document.getElementById('canvas-wrapper');
+        if (!art || !wrap) return null;
+        const artRect = art.getBoundingClientRect();
+        const wrapRect = wrap.getBoundingClientRect();
+        return {
+          styleWidth: parseFloat(art.style.width) || 0,
+          styleHeight: parseFloat(art.style.height) || 0,
+          artRectW: artRect.width,
+          artRectH: artRect.height,
+          wrapRectW: wrapRect.width,
+          wrapRectH: wrapRect.height,
+        };
       })()
     `);
+    assert.ok(newTabTabletFit, 'Yeni sekmede artboard veya canvas wrapper ölçülemedi.');
+    assert.ok(
+      newTabTabletFit.styleHeight >= 1650 &&
+      newTabTabletFit.artRectH > 0 &&
+      newTabTabletFit.artRectH <= newTabTabletFit.wrapRectH &&
+      newTabTabletFit.artRectW <= newTabTabletFit.wrapRectW,
+      `Yeni sekmede tablet sayfa yüksekliği canvas alanına sığmadı: ${JSON.stringify(newTabTabletFit)}`
+    );
+    console.log('  ✓ Yeni sekmede tablete geçildi ve sayfa yüksekliğinin canvasa sığdığı doğrulandı');
+
+    // Masaüstüne dönüp Sayfa-2.craft içine Dikdörtgen aracıyla bir eleman çiz
+    await cdp.evaluate(`document.querySelector('button[title^="Masaüstü Tasarımı"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '1280px'`),
+      'Sayfa-2 masaüstü dönüşü başarısız.'
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    await cdp.evaluate(`document.querySelector('button[data-tool-id="rectangle"]')?.click()`);
+    const drawOrigin = await cdp.evaluate(`
+      (() => {
+        const art = document.getElementById('artboard-canvas');
+        const r = art?.getBoundingClientRect();
+        return r ? { x: Math.round(r.left + 80), y: Math.round(r.top + 80) } : null;
+      })()
+    `);
+    assert.ok(drawOrigin, 'Sayfa-2 çizim koordinatı alınamadı.');
+    await dragOnScreen(cdp, drawOrigin.x, drawOrigin.y, 120, 70);
+
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 1`),
+      'Sayfa-2.craft üzerine çizilen eleman oluşturulamadı.'
+    );
+    await cdp.evaluate(`document.querySelector('button[data-tool-id="select"]')?.click()`);
+    const tab2ElInitial = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id]');
+        if (!el) return null;
+        return { id: el.getAttribute('data-element-id'), left: el.style.left, top: el.style.top };
+      })()
+    `);
+    assert.ok(tab2ElInitial?.id, 'Sayfa-2.craft elemanı okunamadı.');
+
+    // İlk sekmeye geç, görünür/tıklanabilir bir elemanı seçip taşı (Tab 1 edit)
+    await cdp.evaluate(`document.querySelector('div[title^="Anasayfa.craft"]')?.click()`);
     const switchedBackToFirst = await waitFor(
       cdp,
-      `document.querySelectorAll('#artboard-canvas > [data-element-id]').length > 0`
+      `Boolean(document.querySelector('#artboard-canvas > [data-element-id="${dragTarget.id}"]')) && document.querySelectorAll('#artboard-canvas > [data-element-id]').length > 1`
     );
     assert.ok(switchedBackToFirst, 'İlk sekmeye geri geçilemedi.');
-    console.log('  ✓ Yeni sekme eklendi ve sekmeler arası geçiş doğrulandı');
+    await new Promise((r) => setTimeout(r, 250));
 
-    // 7. Viewport Tablet -> Mobil -> Masaüstü geçişleri
+    // Eğer Görünüm popover açık kaldıysa kapat
+    await cdp.evaluate(`
+      (() => {
+        if (document.querySelector('button[data-toggle-grid]')) {
+          document.querySelector('button[data-rail-popover="view"]')?.click();
+        }
+      })()
+    `);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const tab1Target = (await findVisiblePointForElement(cdp, dragTarget.id)) || (await findVisiblePointForElement(cdp, null));
+    assert.ok(tab1Target && tab1Target.id, 'Anasayfa.craft üzerinde sürüklenebilir eleman noktası bulunamadı.');
+    const tab1TargetId = tab1Target.id;
+
+    // Container içine oto-parenting düşebileceğinden descendant dahil [data-element-id] ile izle
+    await dragOnScreen(cdp, tab1Target.cx, tab1Target.cy, -24, -14);
+    assert.ok(
+      await waitFor(cdp, `(() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${tab1TargetId}"]');
+        return Boolean(el) && (el.style.left !== ${JSON.stringify(tab1Target.left)} || el.style.top !== ${JSON.stringify(tab1Target.top)});
+      })()`, 3000),
+      `Anasayfa.craft üzerindeki bağımsız düzenleme uygulanamadı (target=${tab1TargetId}, before=${tab1Target.left},${tab1Target.top}).`
+    );
+    const tab1MovedPos = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${tab1TargetId}"]');
+        return { left: el?.style.left, top: el?.style.top };
+      })()
+    `);
+
+    // Tekrar Sayfa-2.craft'a dön, kendi elemanının korunduğunu gör ve taşı, sonra Ctrl+Z yap
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-2.craft"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]')) && document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 1`),
+      'Sayfa-2.craft elemanları sekmeler arası geçişte korunmadı.'
+    );
+    await new Promise((r) => setTimeout(r, 250));
+    const tab2Target = await findVisiblePointForElement(cdp, tab2ElInitial.id);
+    assert.ok(tab2Target, 'Sayfa-2.craft üzerinde eleman noktası bulunamadı.');
+    await dragOnScreen(cdp, tab2Target.cx, tab2Target.cy, 44, 28);
+    assert.ok(
+      await waitFor(cdp, `(() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return Boolean(el) && (el.style.left !== ${JSON.stringify(tab2ElInitial.left)} || el.style.top !== ${JSON.stringify(tab2ElInitial.top)});
+      })()`),
+      'Sayfa-2.craft elemanı taşınamadı.'
+    );
+
+    // Ctrl+Z -> yalnızca Sayfa-2.craft geri alınmalı, Anasayfa.craft değişikliği aynen kalmalı
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    assert.ok(
+      await waitFor(cdp, `(() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return Boolean(el) && el.style.left === ${JSON.stringify(tab2ElInitial.left)} && el.style.top === ${JSON.stringify(tab2ElInitial.top)};
+      })()`),
+      'Ctrl+Z aktif sekmede (Sayfa-2.craft) elemanı eski konumuna almadı.'
+    );
+
+    await cdp.evaluate(`document.querySelector('div[title^="Anasayfa.craft"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('#artboard-canvas [data-element-id="${tab1TargetId}"]'))`),
+      'Anasayfa.craft sekmesine geçilemedi.'
+    );
+    const tab1AfterTab2Undo = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${tab1TargetId}"]');
+        return { left: el?.style.left, top: el?.style.top };
+      })()
+    `);
+    assert.deepEqual(
+      tab1AfterTab2Undo,
+      tab1MovedPos,
+      'Diğer sekmedeki Ctrl+Z işlemi Anasayfa.craft elemanını da etkiledi!'
+    );
+
+    // Şimdi Anasayfa.craft'ta Ctrl+Z -> yalnızca Anasayfa.craft geri alınmalı
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    assert.ok(
+      await waitFor(cdp, `(() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${tab1TargetId}"]');
+        return Boolean(el) && el.style.left === ${JSON.stringify(tab1Target.left)} && el.style.top === ${JSON.stringify(tab1Target.top)};
+      })()`),
+      'Anasayfa.craft içinde Ctrl+Z çalışmadı.'
+    );
+    console.log('  ✓ İki sekmede bağımsız düzenleme ve per-tab Ctrl+Z izolasyonu doğrulandı');
+
+    // 7. Tablet / Masaüstü override bağımsızlığı (konum + boyut) & Mobil/Masaüstü geçişleri
+    // Sayfa-2.craft üzerinde tek eleman ile oto-parenting riski olmadan test edilir
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-2.craft"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]'))`),
+      'Step 7 için Sayfa-2.craft sekmesine geçilemedi.'
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    const desktopGeoBefore = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return el ? { left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height } : null;
+      })()
+    `);
+    assert.ok(desktopGeoBefore, 'Masaüstü eleman geometrisi okunamadı.');
+
     await cdp.evaluate(`document.querySelector('button[title^="Tablet Tasarımı"]')?.click()`);
     assert.ok(
       await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '768px'`),
       'Tablet viewport (768px) geçişi başarısız.'
     );
+    await new Promise((r) => setTimeout(r, 250));
+
+    const tabletGeoBefore = await findVisiblePointForElement(cdp, tab2ElInitial.id);
+    assert.ok(tabletGeoBefore, 'Tablet modunda hedef eleman görünür/tıklanabilir bulunamadı.');
+
+    // Tablet modunda konum değiştir (tıkla + sürükle)
+    await dragOnScreen(cdp, tabletGeoBefore.cx, tabletGeoBefore.cy, 42, 26);
+    assert.ok(
+      await waitFor(cdp, `(() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return Boolean(el) && (el.style.left !== ${JSON.stringify(tabletGeoBefore.left)} || el.style.top !== ${JSON.stringify(tabletGeoBefore.top)});
+      })()`),
+      'Tablet modunda eleman konumu değiştirilemedi.'
+    );
+
+    // Tablet modunda SE tutamacıyla boyut değiştir
+    const seHandlePt = await waitFor(
+      cdp,
+      `Boolean(Array.from(document.querySelectorAll('#artboard-canvas div')).find((d) => d.style.cursor === 'nwse-resize' && d.style.bottom === '-5px' && d.style.right === '-5px'))`
+    ).then(async (found) => {
+      if (!found) return null;
+      return cdp.evaluate(`
+        (() => {
+          const handle = Array.from(document.querySelectorAll('#artboard-canvas div')).find(
+            (d) => d.style.cursor === 'nwse-resize' && d.style.bottom === '-5px' && d.style.right === '-5px'
+          );
+          handle?.scrollIntoView?.({ block: 'center', inline: 'center' });
+          const r = handle?.getBoundingClientRect();
+          return r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+        })()
+      `);
+    });
+    assert.ok(seHandlePt, 'Tablet modunda güneydoğu (se) boyutlandırma tutamacı bulunamadı.');
+    await dragOnScreen(cdp, seHandlePt.x, seHandlePt.y, 32, 20);
+    assert.ok(
+      await waitFor(cdp, `(() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return Boolean(el) && (el.style.width !== ${JSON.stringify(tabletGeoBefore.width)} || el.style.height !== ${JSON.stringify(tabletGeoBefore.height)});
+      })()`),
+      'Tablet modunda eleman boyutu değiştirilemedi.'
+    );
+
+    const tabletGeoAfter = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return el ? { left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height } : null;
+      })()
+    `);
+
+    // Masaüstüne dön -> masaüstü değerinin hiç DEĞİŞMEDİĞİNİ doğrula
+    await cdp.evaluate(`document.querySelector('button[title^="Masaüstü Tasarımı"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '1280px'`),
+      'Masaüstü dönüşü başarısız.'
+    );
+    const desktopGeoAfter = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return el ? { left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height } : null;
+      })()
+    `);
+    assert.deepEqual(
+      desktopGeoAfter,
+      desktopGeoBefore,
+      `Tablette yapılan düzenleme masaüstü geometrisini değiştirdi! Önce: ${JSON.stringify(desktopGeoBefore)}, Sonra: ${JSON.stringify(desktopGeoAfter)}`
+    );
+
+    // Tekrar Tablete dön -> tabletteki yeni boyut/konumun korunduğunu doğrula
+    await cdp.evaluate(`document.querySelector('button[title^="Tablet Tasarımı"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '768px'`),
+      'Tablete ikinci geçiş başarısız.'
+    );
+    const tabletGeoPersisted = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return el ? { left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height } : null;
+      })()
+    `);
+    assert.deepEqual(
+      tabletGeoPersisted,
+      tabletGeoAfter,
+      `Masaüstüne geçip dönünce tabletteki override kayboldu! Beklenen: ${JSON.stringify(tabletGeoAfter)}, Gelen: ${JSON.stringify(tabletGeoPersisted)}`
+    );
+
+    // Mobil ve tekrar Masaüstü kontrolü; ardından Step 8 kaydı için Anasayfa.craft sekmesine dön
     await cdp.evaluate(`document.querySelector('button[title^="Mobil Tasarımı"]')?.click()`);
     assert.ok(
       await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '375px'`),
@@ -364,7 +687,12 @@ async function main() {
       await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '1280px'`),
       'Masaüstü viewport (1280px) dönüşü başarısız.'
     );
-    console.log('  ✓ Tablet / Mobil / Masaüstü viewport geçişleri doğrulandı');
+    await cdp.evaluate(`document.querySelector('div[title^="Anasayfa.craft"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length > 1`),
+      'Anasayfa.craft sekmesine dönüş başarısız.'
+    );
+    console.log('  ✓ Tablet/Masaüstü override bağımsızlığı ve Mobil/Masaüstü viewport geçişleri doğrulandı');
 
     // 8. Projeyi kaydet, ana sayfaya dön ve son projelerden tekrar aç
     const savedRootCount = await cdp.evaluate(
