@@ -77,26 +77,7 @@ import AttributesCssInspectorModal from './components/AttributesCssInspectorModa
 import FunctionEditorModal from './components/FunctionEditorModal';
 import StudioRightDock, { DEFAULT_RIGHT_DOCK_WIDTH } from './components/StudioRightDock';
 import ProtoApp from './proto/ProtoApp';
-
-function buildTabState(id, name, elems = [], canvasOrByViewport = {}) {
-  const hasPerViewport = canvasOrByViewport && (canvasOrByViewport.desktop || canvasOrByViewport.tablet || canvasOrByViewport.mobile);
-  const baseDefaults = createDefaultCanvasByViewport(hasPerViewport ? canvasOrByViewport.desktop : canvasOrByViewport);
-  const canvasByViewport = hasPerViewport
-    ? {
-        desktop: { ...baseDefaults.desktop, ...(canvasOrByViewport.desktop || {}) },
-        tablet: { ...baseDefaults.tablet, ...(canvasOrByViewport.tablet || {}) },
-        mobile: { ...baseDefaults.mobile, ...(canvasOrByViewport.mobile || {}) },
-      }
-    : baseDefaults;
-
-  return {
-    id,
-    name,
-    elements: elems,
-    canvasByViewport,
-    initializedViewports: detectInitializedViewports(elems, true),
-  };
-}
+import { buildTabState } from './utils/projectAssemblyUtils';
 
 function CraftStudioApp() {
   const [showWelcomeScreen, setShowWelcomeScreen] = useState(true);

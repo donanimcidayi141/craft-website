@@ -115,6 +115,7 @@ import {
   parseCssColorToHex,
   computeContrastRatio,
 } from '../src/utils/canvasToolsUtils.js';
+import { buildTabState } from '../src/utils/projectAssemblyUtils.js';
 
 let passed = 0;
 let failed = 0;
@@ -2910,6 +2911,46 @@ test('computeAltMeasureGuides & Eyedropper contrast helpers calculate gaps and W
   assert.equal(parseCssColorToHex('rgb(13, 153, 255)'), '#0D99FF');
   assert.equal(parseCssColorToHex('rgba(0, 0, 0, 0)'), null);
   assert.equal(computeContrastRatio('#000000', '#FFFFFF'), 21);
+});
+
+// -----------------------------------------------------------------------------
+// [17] REFACTOR STAGE 2 UTILS (projectAssemblyUtils)
+// -----------------------------------------------------------------------------
+console.log('\n🧩 [17] Refactor Stage 2 Pure Utils');
+
+test('buildTabState creates normalized tab with base canvas defaults and detects viewport overrides', () => {
+  const emptyTab = buildTabState('tab-a', 'Anasayfa.craft');
+  assert.equal(emptyTab.id, 'tab-a');
+  assert.equal(emptyTab.name, 'Anasayfa.craft');
+  assert.deepEqual(emptyTab.elements, []);
+  assert.equal(emptyTab.canvasByViewport.desktop.width, 1280);
+  assert.equal(emptyTab.canvasByViewport.tablet.width, 768);
+  assert.equal(emptyTab.canvasByViewport.mobile.width, 375);
+  assert.deepEqual(emptyTab.initializedViewports, { desktop: true, tablet: false, mobile: false });
+
+  const singleCanvasTab = buildTabState('tab-b', 'Vitrin.craft', [
+    { id: 'n1', type: 'div', responsive: { mobile: { width: 320 } } },
+  ], { width: 1440, height: 1800, backgroundColor: '#0b0a09' });
+  assert.equal(singleCanvasTab.canvasByViewport.desktop.width, 1440);
+  assert.equal(singleCanvasTab.canvasByViewport.desktop.height, 1800);
+  assert.equal(singleCanvasTab.canvasByViewport.desktop.backgroundColor, '#0b0a09');
+  assert.deepEqual(singleCanvasTab.initializedViewports, { desktop: true, tablet: false, mobile: true });
+});
+
+test('buildTabState merges explicit per-viewport canvas overrides cleanly', () => {
+  const perVpTab = buildTabState('tab-c', 'Ozel.craft', [
+    { id: 'n2', type: 'section', children: [{ id: 'n3', type: 'p', responsive: { tablet: { x: 12 } } }] },
+  ], {
+    desktop: { width: 1280, height: 1500, backgroundColor: '#111111' },
+    tablet: { height: 2100 },
+    mobile: { backgroundColor: '#222222' },
+  });
+  assert.equal(perVpTab.canvasByViewport.desktop.height, 1500);
+  assert.equal(perVpTab.canvasByViewport.tablet.width, 768);
+  assert.equal(perVpTab.canvasByViewport.tablet.height, 2100);
+  assert.equal(perVpTab.canvasByViewport.mobile.width, 375);
+  assert.equal(perVpTab.canvasByViewport.mobile.backgroundColor, '#222222');
+  assert.deepEqual(perVpTab.initializedViewports, { desktop: true, tablet: true, mobile: false });
 });
 
 // -----------------------------------------------------------------------------
