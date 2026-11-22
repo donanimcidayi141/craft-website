@@ -91,6 +91,9 @@ import {
   applyProjectBackendUpdate,
   resolveResetProjectBackend,
 } from '../src/hooks/useProjectState.js';
+import {
+  dispatchStudioShortcut,
+} from '../src/hooks/useShortcuts.js';
 import { DEFAULT_UNIVERSAL_PROJECT, PRESET_ASSETS } from '../src/constants.js';
 import { CONTENT_PACK_ASSETS } from '../src/data/contentPacks.js';
 import {
@@ -3274,6 +3277,153 @@ test('useProjectState & useProjectIO backend primitives update, persist across s
     pageLinks: [],
   });
   assert.deepEqual(afterNewProjectReset, createDefaultProjectBackend());
+});
+
+test('useShortcuts mode profile table executes universal keys in both modes and restricts design shortcuts to design mode only', () => {
+  const sampleTree = [{ id: 'el-1', type: 'rectangle', x: 100, y: 200, width: 120, height: 80 }];
+  const makeContext = (activeMode, overrides = {}) => {
+    const calls = [];
+    const state = {
+      activeMode,
+      showWelcomeScreen: false,
+      previewMode: false,
+      activeTool: 'select',
+      selectedIds: ['el-1'],
+      elements: sampleTree,
+      rawElements: sampleTree,
+      viewportMode: 'desktop',
+      showExportModal: false,
+      showTutorial: false,
+      showAddTagModal: false,
+      showImportReportModal: false,
+      showAttributesInspectorModal: false,
+      functionEditorState: { isOpen: false },
+      ...overrides,
+    };
+    const actions = {
+      setAiDockMinimized: (v) => calls.push(['setAiDockMinimized', v]),
+      setAiFocusSignal: () => calls.push(['setAiFocusSignal']),
+      handleSaveProject: (saveAs) => calls.push(['handleSaveProject', saveAs]),
+      handleOpenProjectFolder: () => calls.push(['handleOpenProjectFolder']),
+      handleOpenProjectFile: () => calls.push(['handleOpenProjectFile']),
+      setShowExportModal: (v) => calls.push(['setShowExportModal', v]),
+      handleSelectAll: () => calls.push(['handleSelectAll']),
+      handleCopyElementStyle: () => calls.push(['handleCopyElementStyle']),
+      handleCopy: () => calls.push(['handleCopy']),
+      handleCut: () => calls.push(['handleCut']),
+      handlePasteElementStyle: () => calls.push(['handlePasteElementStyle']),
+      handlePaste: () => calls.push(['handlePaste']),
+      handleDuplicateSelected: () => calls.push(['handleDuplicateSelected']),
+      handleToggleLockSelected: () => calls.push(['handleToggleLockSelected']),
+      handleStartNewProject: (tpl) => calls.push(['handleStartNewProject', tpl]),
+      handleAddTab: () => calls.push(['handleAddTab']),
+      handleUngroupSelected: () => calls.push(['handleUngroupSelected']),
+      handleGroupSelected: () => calls.push(['handleGroupSelected']),
+      handleUndo: () => calls.push(['handleUndo']),
+      handleRedo: () => calls.push(['handleRedo']),
+      handleDeleteSelected: () => calls.push(['handleDeleteSelected']),
+      updateElementsWithHistory: () => calls.push(['updateElementsWithHistory']),
+      handleTogglePreviewMode: (v) => calls.push(['handleTogglePreviewMode', v]),
+      setActiveTool: (t) => calls.push(['setActiveTool', t]),
+      handleSelectParent: () => calls.push(['handleSelectParent']),
+      handleSelectChild: () => calls.push(['handleSelectChild']),
+      setZoom: () => calls.push(['setZoom']),
+      handleResetZoom: () => calls.push(['handleResetZoom']),
+      handleZOrderSelected: (dir) => calls.push(['handleZOrderSelected', dir]),
+      setShowLayoutGrid: () => calls.push(['setShowLayoutGrid']),
+      setShowRulers: () => calls.push(['setShowRulers']),
+    };
+    return { state, actions, calls };
+  };
+
+  // Profile Table: { label, event, stateOverrides, expectedDesign, expectedBackend, expectedBackendCalls }
+  const profileTable = [
+    // Universal shortcuts (design + backend)
+    { label: 'Ctrl+K', event: { key: 'k', ctrlKey: true }, expectedDesign: 'ai_dock_focus', expectedBackend: 'ai_dock_focus', expectedBackendCalls: 2 },
+    { label: 'Ctrl+S', event: { key: 's', ctrlKey: true }, expectedDesign: 'save', expectedBackend: 'save', expectedBackendCalls: 1 },
+    { label: 'Ctrl+Shift+S', event: { key: 's', ctrlKey: true, shiftKey: true }, expectedDesign: 'save_as', expectedBackend: 'save_as', expectedBackendCalls: 1 },
+    { label: 'Ctrl+O', event: { key: 'o', ctrlKey: true }, expectedDesign: 'open_file', expectedBackend: 'open_file', expectedBackendCalls: 1 },
+    { label: 'Ctrl+Shift+O', event: { key: 'o', ctrlKey: true, shiftKey: true }, expectedDesign: 'open_folder', expectedBackend: 'open_folder', expectedBackendCalls: 1 },
+    { label: 'Ctrl+E', event: { key: 'e', ctrlKey: true }, expectedDesign: 'export_modal', expectedBackend: 'export_modal', expectedBackendCalls: 1 },
+    { label: 'Escape (previewMode)', event: { key: 'Escape' }, stateOverrides: { previewMode: true }, expectedDesign: 'escape_preview', expectedBackend: 'escape_preview', expectedBackendCalls: 1 },
+    { label: 'Escape (hand -> select)', event: { key: 'Escape' }, stateOverrides: { activeTool: 'hand' }, expectedDesign: 'escape_tool', expectedBackend: 'escape_tool', expectedBackendCalls: 1 },
+    { label: 'Escape (select -> parent only in design)', event: { key: 'Escape' }, expectedDesign: 'escape_parent', expectedBackend: 'escape_noop', expectedBackendCalls: 0 },
+
+    // Design-only shortcuts (must return null & invoke 0 callbacks in backend mode)
+    { label: 'Ctrl+A', event: { key: 'a', ctrlKey: true }, expectedDesign: 'select_all', expectedBackend: null },
+    { label: 'Ctrl+C', event: { key: 'c', ctrlKey: true }, expectedDesign: 'copy', expectedBackend: null },
+    { label: 'Ctrl+Shift+C', event: { key: 'c', ctrlKey: true, shiftKey: true }, expectedDesign: 'copy_style', expectedBackend: null },
+    { label: 'Ctrl+X', event: { key: 'x', ctrlKey: true }, expectedDesign: 'cut', expectedBackend: null },
+    { label: 'Ctrl+V', event: { key: 'v', ctrlKey: true }, expectedDesign: 'paste', expectedBackend: null },
+    { label: 'Ctrl+Shift+V', event: { key: 'v', ctrlKey: true, shiftKey: true }, expectedDesign: 'paste_style', expectedBackend: null },
+    { label: 'Ctrl+D', event: { key: 'd', ctrlKey: true }, expectedDesign: 'duplicate', expectedBackend: null },
+    { label: 'Ctrl+Shift+L', event: { key: 'l', ctrlKey: true, shiftKey: true }, expectedDesign: 'toggle_lock', expectedBackend: null },
+    { label: 'Ctrl+Shift+N', event: { key: 'n', ctrlKey: true, shiftKey: true }, expectedDesign: 'new_blank_project', expectedBackend: null },
+    { label: 'Ctrl+N', event: { key: 'n', ctrlKey: true }, expectedDesign: 'add_tab', expectedBackend: null },
+    { label: 'Ctrl+G', event: { key: 'g', ctrlKey: true }, expectedDesign: 'group', expectedBackend: null },
+    { label: 'Ctrl+Shift+G', event: { key: 'g', ctrlKey: true, shiftKey: true }, expectedDesign: 'ungroup', expectedBackend: null },
+    { label: 'Ctrl+Z', event: { key: 'z', ctrlKey: true }, expectedDesign: 'undo', expectedBackend: null },
+    { label: 'Ctrl+Shift+Z', event: { key: 'z', ctrlKey: true, shiftKey: true }, expectedDesign: 'redo', expectedBackend: null },
+    { label: 'Ctrl+Y', event: { key: 'y', ctrlKey: true }, expectedDesign: 'redo', expectedBackend: null },
+    { label: 'Delete', event: { key: 'Delete' }, expectedDesign: 'delete', expectedBackend: null },
+    { label: 'Backspace', event: { key: 'Backspace' }, expectedDesign: 'delete', expectedBackend: null },
+    { label: 'ArrowUp', event: { key: 'ArrowUp' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'ArrowDown', event: { key: 'ArrowDown' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'ArrowLeft', event: { key: 'ArrowLeft' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'ArrowRight', event: { key: 'ArrowRight' }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'Shift+ArrowRight', event: { key: 'ArrowRight', shiftKey: true }, expectedDesign: 'nudge', expectedBackend: null },
+    { label: 'Enter', event: { key: 'Enter' }, expectedDesign: 'select_child', expectedBackend: null },
+    { label: 'Ctrl+=', event: { key: '=', ctrlKey: true }, expectedDesign: 'zoom_in', expectedBackend: null },
+    { label: 'Ctrl++', event: { key: '+', ctrlKey: true }, expectedDesign: 'zoom_in', expectedBackend: null },
+    { label: 'Ctrl+-', event: { key: '-', ctrlKey: true }, expectedDesign: 'zoom_out', expectedBackend: null },
+    { label: 'Ctrl+0', event: { key: '0', ctrlKey: true }, expectedDesign: 'zoom_reset', expectedBackend: null },
+    { label: ']', event: { key: ']', code: 'BracketRight' }, expectedDesign: 'z_order_forward', expectedBackend: null },
+    { label: 'Ctrl+]', event: { key: ']', code: 'BracketRight', ctrlKey: true }, expectedDesign: 'z_order_front', expectedBackend: null },
+    { label: '[', event: { key: '[', code: 'BracketLeft' }, expectedDesign: 'z_order_backward', expectedBackend: null },
+    { label: 'Ctrl+[', event: { key: '[', code: 'BracketLeft', ctrlKey: true }, expectedDesign: 'z_order_back', expectedBackend: null },
+    { label: 'Shift+G', event: { key: 'G', shiftKey: true }, expectedDesign: 'toggle_grid', expectedBackend: null },
+    { label: 'Shift+R', event: { key: 'R', shiftKey: true }, expectedDesign: 'toggle_rulers', expectedBackend: null },
+    { label: 'V', event: { key: 'v' }, expectedDesign: 'tool:select', expectedBackend: null },
+    { label: 'H', event: { key: 'h' }, expectedDesign: 'tool:hand', expectedBackend: null },
+    { label: 'Z', event: { key: 'z' }, expectedDesign: 'tool:zoom', expectedBackend: null },
+    { label: 'R', event: { key: 'r' }, expectedDesign: 'tool:rectangle', expectedBackend: null },
+    { label: 'O', event: { key: 'o' }, expectedDesign: 'tool:circle', expectedBackend: null },
+    { label: 'L', event: { key: 'l' }, expectedDesign: 'tool:line', expectedBackend: null },
+    { label: 'F', event: { key: 'f' }, expectedDesign: 'tool:frame', expectedBackend: null },
+    { label: 'T', event: { key: 't' }, expectedDesign: 'tool:text', expectedBackend: null },
+    { label: 'I', event: { key: 'i' }, expectedDesign: 'tool:eyedropper', expectedBackend: null },
+  ];
+
+  for (const row of profileTable) {
+    const designCtx = makeContext('design', row.stateOverrides);
+    const designResult = dispatchStudioShortcut(
+      { ...row.event, preventDefault: () => {} },
+      { activeMode: 'design', state: designCtx.state, actions: designCtx.actions, activeElement: null }
+    );
+    assert.equal(
+      designResult,
+      row.expectedDesign,
+      `[design] ${row.label} expected "${row.expectedDesign}", got "${designResult}"`
+    );
+    assert.ok(designCtx.calls.length >= 1, `[design] ${row.label} should invoke at least 1 action callback`);
+
+    const backendCtx = makeContext('backend', row.stateOverrides);
+    const backendResult = dispatchStudioShortcut(
+      { ...row.event, preventDefault: () => {} },
+      { activeMode: 'backend', state: backendCtx.state, actions: backendCtx.actions, activeElement: null }
+    );
+    assert.equal(
+      backendResult,
+      row.expectedBackend,
+      `[backend] ${row.label} expected "${row.expectedBackend}", got "${backendResult}"`
+    );
+    const expectedCalls = row.expectedBackendCalls ?? 0;
+    assert.equal(
+      backendCtx.calls.length,
+      expectedCalls,
+      `[backend] ${row.label} expected ${expectedCalls} action calls, got ${backendCtx.calls.length}: ${JSON.stringify(backendCtx.calls)}`
+    );
+  }
 });
 
 // -----------------------------------------------------------------------------

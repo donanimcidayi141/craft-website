@@ -1608,6 +1608,146 @@ async function main() {
     );
     console.log('  ✓ Adım 3a: Mod anahtarı, Backend yer tutucu ekranı, mod bazlı panel hafızası, zoom/pan korunumu ve design modunda açılış doğrulandı');
 
+    // 15c. Adım 3b: Kısayolların moda göre ayrılması (Backend modunda tasarım kısayolları ve Ctrl+Z/Y devre dışı, Ctrl+S aktif; Tasarım'a dönünce seçim ve kısayollar aktif)
+    const shortcutModeElId = await cdp.evaluate(
+      `document.querySelector('#artboard-canvas [data-element-id]')?.getAttribute('data-element-id') || null`
+    );
+    assert.ok(shortcutModeElId, 'Adım 3b kısayol testi için tuvalde eleman bulunamadı.');
+    const shortcutModePt = await findVisiblePointForElement(cdp, shortcutModeElId);
+    assert.ok(shortcutModePt, 'Adım 3b kısayol testi için elemanın tıklanabilir noktası bulunamadı.');
+    await dragOnScreen(cdp, shortcutModePt.cx, shortcutModePt.cy, 0, 0);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('1 seçili')`),
+      'Adım 3b testi öncesi Tasarım modunda eleman seçilemedi.'
+    );
+
+    // Geri al geçmişinde en az 1 adım olması ve "● Kaydedilmedi" rozetinin aktif olması için Tasarım modunda ArrowRight ile 1px kaydır
+    await sendSingleKey(cdp, 'ArrowRight', 'ArrowRight', 39);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.body.innerText.includes('● Kaydedilmedi') && !document.querySelector('button[title="Geri Al (Ctrl+Z)"]')?.disabled`
+      ),
+      'Adım 3b testi öncesi Tasarım modunda ok tuşuyla geri al geçmişi oluşturulamadı.'
+    );
+
+    const beforeBackendShortcutState = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${shortcutModeElId}"]');
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        return {
+          totalElements: document.querySelectorAll('#artboard-canvas [data-element-id]').length,
+          left: el?.style?.left || '',
+          top: el?.style?.top || '',
+          undoDisabled: Boolean(undoBtn?.disabled),
+          isSelectTool: Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')),
+        };
+      })()
+    `);
+    assert.equal(beforeBackendShortcutState.undoDisabled, false, 'Backend geçişi öncesi Geri Al butonu aktif olmalı.');
+    assert.equal(beforeBackendShortcutState.isSelectTool, true, 'Backend geçişi öncesi aktif araç select olmalı.');
+
+    // Backend moduna geç
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-studio-mode="backend"][aria-selected="true"]'))`),
+      'Adım 3b testi için Backend moduna geçilemedi.'
+    );
+
+    // Backend modunda Delete, Backspace, Ctrl+D, Ctrl+Z, Ctrl+Y, ok tuşları ve R tuşuna bas
+    await sendSingleKey(cdp, 'Delete', 'Delete', 46);
+    await sendSingleKey(cdp, 'Backspace', 'Backspace', 8);
+    await sendCtrlShortcut(cdp, 'd', 'KeyD', 68);
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    await sendCtrlShortcut(cdp, 'y', 'KeyY', 89);
+    await sendSingleKey(cdp, 'ArrowRight', 'ArrowRight', 39);
+    await sendSingleKey(cdp, 'ArrowDown', 'ArrowDown', 40);
+    await sendSingleKey(cdp, 'r', 'KeyR', 82);
+    await new Promise((r) => setTimeout(r, 120));
+
+    const duringBackendShortcutState = await cdp.evaluate(`
+      (() => {
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        return {
+          undoDisabled: Boolean(undoBtn?.disabled),
+          isSelectTool: Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')),
+          isDirtyBadge: document.body.innerText.includes('● Kaydedilmedi'),
+        };
+      })()
+    `);
+    assert.equal(duringBackendShortcutState.undoDisabled, false, 'Backend modunda Ctrl+Z tasarım geçmişini tüketti!');
+    assert.equal(duringBackendShortcutState.isSelectTool, true, 'Backend modunda R tuşu aktif aracı değiştirdi!');
+    assert.equal(duringBackendShortcutState.isDirtyBadge, true, 'Backend modunda Ctrl+Z kaydedilmemiş değişiklik durumunu bozdu!');
+
+    // Evrensel Ctrl+S kısayolunun Backend modunda çalıştığını doğrula
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('✓ Kaydedildi')`),
+      'Evrensel Ctrl+S kısayolu Backend modunda projeyi kaydetmedi!'
+    );
+
+    // Tasarım moduna geri dön: seçim korunmuş, eleman sayısı/konumu/aktif araç/geri al geçmişi değişmemiş ve tasarım kısayolları tekrar çalışıyor olmalı
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="design"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Adım 3b testi sonrası Tasarım moduna dönülemedi.'
+    );
+
+    const afterBackendShortcutState = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas [data-element-id="${shortcutModeElId}"]');
+        const undoBtn = document.querySelector('button[title="Geri Al (Ctrl+Z)"]');
+        return {
+          hasSelection: document.body.innerText.includes('1 seçili'),
+          totalElements: document.querySelectorAll('#artboard-canvas [data-element-id]').length,
+          left: el?.style?.left || '',
+          top: el?.style?.top || '',
+          undoDisabled: Boolean(undoBtn?.disabled),
+          isSelectTool: Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')),
+        };
+      })()
+    `);
+    assert.equal(afterBackendShortcutState.hasSelection, true, 'Tasarım moduna dönüldüğünde seçim korunmadı.');
+    assert.equal(
+      afterBackendShortcutState.totalElements,
+      beforeBackendShortcutState.totalElements,
+      'Backend modunda basılan Delete/Backspace/Ctrl+D eleman sayısını değiştirdi!'
+    );
+    assert.equal(
+      afterBackendShortcutState.left,
+      beforeBackendShortcutState.left,
+      'Backend modunda basılan ok tuşları veya Ctrl+Z elemanın X konumunu değiştirdi!'
+    );
+    assert.equal(
+      afterBackendShortcutState.top,
+      beforeBackendShortcutState.top,
+      'Backend modunda basılan ok tuşları elemanın Y konumunu değiştirdi!'
+    );
+    assert.equal(afterBackendShortcutState.undoDisabled, false, 'Tasarım moduna dönüldüğünde geri al geçmişi korunmadı.');
+    assert.equal(afterBackendShortcutState.isSelectTool, true, 'Tasarım moduna dönüldüğünde aktif araç select değil.');
+
+    // Tasarım modunda kısayolların (R, V ve Ctrl+Z) tekrar çalıştığını doğrula
+    await sendSingleKey(cdp, 'r', 'KeyR', 82);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="rectangle"][aria-pressed="true"]'))`),
+      'Tasarım moduna dönüldükten sonra R kısayolu çalışmadı.'
+    );
+    await sendSingleKey(cdp, 'v', 'KeyV', 86);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]'))`),
+      'Tasarım moduna dönüldükten sonra V kısayolu çalışmadı.'
+    );
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelector('#artboard-canvas [data-element-id="${shortcutModeElId}"]')?.style?.left !== ${JSON.stringify(beforeBackendShortcutState.left)}`
+      ),
+      'Tasarım moduna dönüldükten sonra Ctrl+Z geri alma kısayolu çalışmadı.'
+    );
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    console.log('  ✓ Adım 3b: Backend modunda tasarım kısayolları (Delete/Backspace/Ctrl+D/Ctrl+Z/oklar/R) etkisiz, Ctrl+S aktif; Tasarım moduna dönünce seçim ve kısayollar aktif');
+
     // 16. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
     await cdp.evaluate(`
       (() => {

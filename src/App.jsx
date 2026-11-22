@@ -980,7 +980,9 @@ function CraftStudioApp() {
 
   // 7. Global Studio Keyboard Shortcuts
   useShortcuts({
+    activeMode,
     state: {
+      activeMode,
       showWelcomeScreen,
       previewMode,
       activeTool,
