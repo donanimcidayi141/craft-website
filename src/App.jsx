@@ -77,6 +77,7 @@ import ProtoApp from './proto/ProtoApp';
 import { buildTabState } from './utils/projectAssemblyUtils';
 import { useSelection } from './hooks/useSelection';
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
+import { useCanvasView } from './hooks/useCanvasView';
 
 function CraftStudioApp() {
   // Document Tabs state (each tab carries shared AST + per-viewport canvas geometry)
@@ -184,21 +185,36 @@ function CraftStudioApp() {
   const [primaryColor, setPrimaryColor] = useState('#d4af37');
   const [secondaryColor, setSecondaryColor] = useState('#1a1816');
 
-  // Canvas Viewport
-  const [zoom, setZoom] = useState(0.56);
-  const [panOffset, setPanOffset] = useState({ x: 24, y: 48 });
-  const [fitVersion, setFitVersion] = useState(0);
-
-  // Bottom-Center Floating AI Highlight & Welcome Prompt State
-  const [aiHighlightedIds, setAiHighlightedIds] = useState([]);
-  const aiHighlightTimerRef = useRef(null);
-  const [pendingWelcomeAiPrompt, setPendingWelcomeAiPrompt] = useState(null);
-
   // Preview Mode & Canvas Helpers
   const [previewMode, setPreviewMode] = useState(false);
   const [showLayoutGrid, setShowLayoutGrid] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
   const [copiedElementStyle, setCopiedElementStyle] = useState(null);
+
+  const {
+    zoom,
+    setZoom,
+    panOffset,
+    setPanOffset,
+    handleResetZoom,
+    triggerFit,
+    reset: resetCanvasView,
+  } = useCanvasView({
+    showWelcomeScreen,
+    previewMode,
+    leftSidebarTab,
+    rightDockOpen,
+    rightDockWidth,
+    activeTabId,
+    viewportMode,
+    canvasWidth: canvasSettings?.width,
+    canvasHeight: canvasSettings?.height,
+  });
+
+  // Bottom-Center Floating AI Highlight & Welcome Prompt State
+  const [aiHighlightedIds, setAiHighlightedIds] = useState([]);
+  const aiHighlightTimerRef = useRef(null);
+  const [pendingWelcomeAiPrompt, setPendingWelcomeAiPrompt] = useState(null);
 
   const setTabHistory = useCallback((tabId, snapshot) => {
     setHistoryByTab(prev => ({
@@ -588,88 +604,11 @@ function CraftStudioApp() {
     });
   }, [elements, projectFunctions, previewRuntimeOverrides, tabs, showToastMessage]);
 
-  const fitCanvasToViewport = useCallback((overrideWidth = null) => {
-    const canvasW = Number(overrideWidth) || Number(canvasSettings?.width) || 1280;
-    const canvasH = Number(canvasSettings?.height) || 1350;
-    const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
-    const estLeftW = previewMode ? 0 : (leftSidebarTab ? (leftSidebarTab === 'ai' ? 340 : 292) : 52);
-    const estRightW = previewMode ? 0 : (rightDockOpen ? rightDockWidth + 40 : 40);
-    const availW = wrapperEl?.clientWidth || Math.max(360, (typeof window !== 'undefined' ? window.innerWidth : 1440) - estLeftW - estRightW);
-    const availH = wrapperEl?.clientHeight || Math.max(420, (typeof window !== 'undefined' ? window.innerHeight : 920) - 76);
-    const usableW = Math.max(240, availW - 48);
-    let rawFitZoom = usableW / canvasW;
-    // Keep desktop/short artboards wholly clear of top breadcrumb and lifted Gemini chat dock
-    if (!previewMode && canvasH <= 1650) {
-      const usableH = Math.max(240, availH - 186);
-      rawFitZoom = Math.min(rawFitZoom, usableH / canvasH);
-    }
-    const fitZoom = clampCanvasZoom(Math.min(1, +rawFitZoom.toFixed(2)));
-    const scaledW = canvasW * fitZoom;
-    const panX = Math.max(20, Math.round((availW - scaledW) / 2));
-    setZoom(fitZoom);
-    setPanOffset({ x: panX, y: previewMode ? 28 : 34 });
-  }, [canvasSettings?.width, canvasSettings?.height, previewMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
-
-  const centerCanvasHorizontally = useCallback(() => {
-    if (previewMode) return;
-    const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
-    if (!wrapperEl || !wrapperEl.clientWidth) return;
-    const canvasW = Number(canvasSettings?.width) || 1280;
-    const scaledW = canvasW * zoom;
-    if (scaledW > wrapperEl.clientWidth - 24) return;
-    const centeredX = Math.max(20, Math.round((wrapperEl.clientWidth - scaledW) / 2));
-    setPanOffset((prev) => (Math.abs(prev.x - centeredX) <= 1 ? prev : { ...prev, x: centeredX }));
-  }, [previewMode, canvasSettings?.width, zoom]);
-
-  const fitCanvasRef = useRef(fitCanvasToViewport);
-  const centerHorizRef = useRef(centerCanvasHorizontally);
-  useEffect(() => {
-    fitCanvasRef.current = fitCanvasToViewport;
-  }, [fitCanvasToViewport]);
-  useEffect(() => {
-    centerHorizRef.current = centerCanvasHorizontally;
-  }, [centerCanvasHorizontally]);
-
-  // Fit & center artboard on initial load, tab switch, viewport switch, or fit trigger
-  useEffect(() => {
-    if (showWelcomeScreen) return undefined;
-    let cancelled = false;
-    let raf2 = null;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        if (!cancelled) fitCanvasRef.current?.();
-      });
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf1);
-      if (raf2) cancelAnimationFrame(raf2);
-    };
-  }, [showWelcomeScreen, fitVersion, activeTabId, viewportMode, canvasSettings?.width]);
-
-  // Keep artboard horizontally centered whenever sidebars open/close or window resizes
-  useEffect(() => {
-    if (showWelcomeScreen || previewMode) return undefined;
-    let rafId = requestAnimationFrame(() => centerHorizRef.current?.());
-    const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
-    const ro = wrapperEl && typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(() => centerHorizRef.current?.())
-      : null;
-    if (ro && wrapperEl) ro.observe(wrapperEl);
-    const onResize = () => centerHorizRef.current?.();
-    window.addEventListener('resize', onResize);
-    return () => {
-      cancelAnimationFrame(rafId);
-      ro?.disconnect();
-      window.removeEventListener('resize', onResize);
-    };
-  }, [showWelcomeScreen, previewMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
-
   const handleTogglePreviewMode = useCallback((nextVal) => {
     setPreviewRuntimeOverrides({});
     setPreviewMode((prev) => (typeof nextVal === 'boolean' ? nextVal : !prev));
-    setFitVersion((v) => v + 1);
-  }, []);
+    triggerFit();
+  }, [triggerFit]);
 
   // Reparent element (moving into another container or canvas root while keeping all viewports anchored)
   const handleReparentElement = (sourceId, targetParentId, targetIndex = -1) => {
@@ -983,11 +922,6 @@ function CraftStudioApp() {
     }
   };
 
-  // Reset Zoom (Fit artboard cleanly inside visible workspace)
-  const handleResetZoom = useCallback(() => {
-    fitCanvasToViewport();
-  }, [fitCanvasToViewport]);
-
   const triggerAiHighlight = useCallback((ids = []) => {
     if (aiHighlightTimerRef.current) clearTimeout(aiHighlightTimerRef.current);
     const valid = (Array.isArray(ids) ? ids : []).filter(Boolean);
@@ -1133,7 +1067,7 @@ function CraftStudioApp() {
   const handleSwitchViewport = useCallback((nextViewport) => {
     if (!['desktop', 'tablet', 'mobile'].includes(nextViewport)) return;
     setViewportMode(nextViewport);
-    setFitVersion((v) => v + 1);
+    triggerFit();
 
     if (nextViewport === 'desktop') return;
 
@@ -1175,7 +1109,7 @@ function CraftStudioApp() {
       };
       return updatedTab;
     }));
-  }, [activeTabId]);
+  }, [activeTabId, triggerFit]);
 
   // Re-adapt current Tablet / Mobile design cleanly from Desktop layout (with Undo support)
   const handleResetViewportFromDesktop = useCallback(() => {
@@ -1264,7 +1198,7 @@ function CraftStudioApp() {
     setPreviewMode(false);
     setPreviewRuntimeOverrides({});
     resetWorkspaceLayout({ showWelcomeScreen: false });
-    setFitVersion((v) => v + 1);
+    resetCanvasView();
 
     if (!extraMeta.skipRecentUpdate) {
       const updatedRecent = upsertRecentProject({
@@ -1274,7 +1208,7 @@ function CraftStudioApp() {
       });
       setRecentProjects(updatedRecent);
     }
-  }, [resetSelection, resetWorkspaceLayout]);
+  }, [resetSelection, resetWorkspaceLayout, resetCanvasView]);
 
   // Debounced autosave draft in localStorage whenever user edits an open project
   useEffect(() => {
@@ -1359,7 +1293,7 @@ function CraftStudioApp() {
       setProjectMeta({ id: newProjId, name: 'Mobil Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() });
     }
     resetWorkspaceLayout({ showWelcomeScreen: false });
-    setFitVersion((v) => v + 1);
+    resetCanvasView();
   };
 
   // Karşılama ekranındaki Tane Tane Site Kurgulayıcı veya Hazır Blok Kütüphanesinden modüler proje kurar
@@ -1522,14 +1456,14 @@ function CraftStudioApp() {
       leftTab: cleanPrompt ? 'ai' : null,
       aiMinimized: false,
     });
-    setFitVersion((v) => v + 1);
+    resetCanvasView();
 
     if (cleanPrompt) {
       setPendingWelcomeAiPrompt(cleanPrompt);
     } else if (assembledElements.length > 0) {
       showToastMessage(`✓ ${assembledElements.length} modüler katman tuvale yerleştirildi`, 'success');
     }
-  }, [setTabHistory, showToastMessage, resetSelection, resetWorkspaceLayout]);
+  }, [setTabHistory, showToastMessage, resetSelection, resetWorkspaceLayout, resetCanvasView]);
 
   // Karşılama ekranındaki Gemini komut kutusundan boş tuval + ilk AI isteğini başlatır
   const handleStartAiPromptFromWelcome = (promptText, options = null) => {
