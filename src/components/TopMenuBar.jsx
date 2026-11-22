@@ -6,10 +6,11 @@ import {
   AlignHorizontalJustifyCenter, AlignVerticalJustifyCenter,
   FolderCheck, HelpCircle, Group, Ungroup, Tag as TagIcon, Save,
   FolderOpen, FilePlus2, FileCode2, FileText, CopyPlus,
-  Workflow, Database, Zap, Palette
+  Workflow, Database, Zap, Palette, LayoutGrid
 } from 'lucide-react';
 import { hasViewportOverrides } from '../utils/responsiveUtils';
 import { STUDIO_MODE_LIST, getStudioModeConfig } from '../data/studioModesRegistry';
+import { WORKSPACE_PRESET_LIST, DEFAULT_WORKSPACE_PRESET_ID } from '../data/panelRegistry';
 
 const MENU_PANEL_ICON_MAP = {
   Sliders,
@@ -62,6 +63,9 @@ export default function TopMenuBar({
   activeMode = 'design',
   onSelectStudioMode = null,
   modeConfig = null,
+  activePresetId = DEFAULT_WORKSPACE_PRESET_ID,
+  onSelectWorkspacePreset = null,
+  onResetWorkspaceLayout = null,
 }) {
   const resolvedModeConfig = modeConfig || getStudioModeConfig(activeMode);
   const resolvedMenuPanels = resolvedModeConfig.menuPanels || [];
@@ -353,6 +357,48 @@ export default function TopMenuBar({
                       </React.Fragment>
                     );
                   })}
+
+                  <div className="h-px bg-[#27272d] my-1 mx-1" />
+                  <div className="px-2.5 py-1 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">
+                    Hazır Düzenler
+                  </div>
+                  {WORKSPACE_PRESET_LIST.map((preset) => {
+                    const isPresetSelected = activePresetId === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        data-workspace-preset={preset.id}
+                        onClick={() => {
+                          onSelectWorkspacePreset?.(preset.id);
+                          setOpenMenu(null);
+                        }}
+                        className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
+                      >
+                        <span className="flex items-center gap-2">
+                          <LayoutGrid size={12} className="text-zinc-400" />
+                          <span>{preset.label}</span>
+                        </span>
+                        {isPresetSelected && <Check size={12} className="text-[#0d99ff]" />}
+                      </button>
+                    );
+                  })}
+
+                  <div className="h-px bg-[#27272d] my-1 mx-1" />
+                  <button
+                    type="button"
+                    data-reset-workspace-layout="true"
+                    onClick={() => {
+                      onResetWorkspaceLayout?.();
+                      setOpenMenu(null);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-amber-300 font-medium transition-colors"
+                  >
+                    <span className="flex items-center gap-2">
+                      <RotateCcw size={12} className="text-amber-400" />
+                      <span>Düzeni sıfırla</span>
+                    </span>
+                  </button>
                 </div>
               )}
             </div>

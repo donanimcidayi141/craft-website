@@ -11,6 +11,16 @@ import {
   getStudioModeConfig,
   isValidStudioMode,
 } from '../data/studioModesRegistry.js';
+import {
+  DEFAULT_WORKSPACE_PRESET_ID,
+  isValidWorkspacePreset,
+  resolvePresetModeLayout,
+} from '../data/panelRegistry.js';
+import {
+  getWorkspaceLayoutsByMode,
+  saveWorkspaceLayoutsByMode,
+  sanitizeWorkspaceLayoutsByMode,
+} from '../settings/settingsStore.js';
 
 export const INITIAL_FUNCTION_EDITOR_STATE = {
   isOpen: false,
@@ -34,6 +44,9 @@ export function createModeLayoutsMap(overrides = {}) {
   const backendDefault = STUDIO_MODES.backend.defaultLayout;
   return {
     design: {
+      presetId: isValidWorkspacePreset(overrides.design?.presetId) || overrides.design?.presetId === 'custom'
+        ? overrides.design.presetId
+        : DEFAULT_WORKSPACE_PRESET_ID,
       leftDrawer: {
         activeTab: overrides.design?.leftDrawer?.activeTab !== undefined
           ? overrides.design.leftDrawer.activeTab
@@ -48,8 +61,14 @@ export function createModeLayoutsMap(overrides = {}) {
         propertiesTab: overrides.design?.rightDock?.propertiesTab || designDefault.rightDock.propertiesTab,
         width: overrides.design?.rightDock?.width || DEFAULT_RIGHT_DOCK_WIDTH,
       },
+      aiDock: {
+        isMinimized: Boolean(overrides.design?.aiDock?.isMinimized ?? designDefault.aiDock?.isMinimized),
+      },
     },
     backend: {
+      presetId: isValidWorkspacePreset(overrides.backend?.presetId) || overrides.backend?.presetId === 'custom'
+        ? overrides.backend.presetId
+        : DEFAULT_WORKSPACE_PRESET_ID,
       leftDrawer: {
         activeTab: overrides.backend?.leftDrawer?.activeTab !== undefined
           ? overrides.backend.leftDrawer.activeTab
@@ -64,12 +83,16 @@ export function createModeLayoutsMap(overrides = {}) {
         propertiesTab: overrides.backend?.rightDock?.propertiesTab || backendDefault.rightDock.propertiesTab,
         width: overrides.backend?.rightDock?.width || DEFAULT_RIGHT_DOCK_WIDTH,
       },
+      aiDock: {
+        isMinimized: Boolean(overrides.backend?.aiDock?.isMinimized ?? backendDefault.aiDock?.isMinimized),
+      },
     },
   };
 }
 
-export function createInitialWorkspaceLayout() {
-  const layoutsByMode = createModeLayoutsMap();
+export function createInitialWorkspaceLayout({ storage = null, usePersistedSettings = false } = {}) {
+  const persistedOverrides = usePersistedSettings ? getWorkspaceLayoutsByMode(storage) : {};
+  const layoutsByMode = createModeLayoutsMap(persistedOverrides);
   const activeMode = DEFAULT_STUDIO_MODE;
   const currentSlice = layoutsByMode[activeMode];
   return {
@@ -82,7 +105,7 @@ export function createInitialWorkspaceLayout() {
     leftDrawer: currentSlice.leftDrawer,
     rightDock: currentSlice.rightDock,
     aiDock: {
-      isMinimized: false,
+      isMinimized: Boolean(currentSlice.aiDock?.isMinimized),
       focusSignal: 0,
     },
     modals: {
@@ -298,6 +321,43 @@ export function applyStudioModeTransition(prevLayout, nextModeId, callbacks = {}
   return { changed: true, layout: nextLayout, defaultToolId };
 }
 
+export function applyWorkspacePresetToLayout(
+  prevLayout,
+  presetId = DEFAULT_WORKSPACE_PRESET_ID,
+  modeId = prevLayout?.activeMode,
+) {
+  if (!isValidWorkspacePreset(presetId)) return prevLayout;
+  const resolvedMode = isValidStudioMode(modeId) ? modeId : DEFAULT_STUDIO_MODE;
+  const presetSlice = resolvePresetModeLayout(presetId, resolvedMode);
+  const nextModeSlice = {
+    presetId,
+    leftDrawer: { ...presetSlice.leftDrawer },
+    rightDock: { ...presetSlice.rightDock },
+    aiDock: { isMinimized: Boolean(presetSlice.aiDock?.isMinimized) },
+  };
+  const synced = syncActiveModeSlice(prevLayout, resolvedMode, nextModeSlice);
+  const isCurrentMode = resolvedMode === synced.activeMode;
+  return {
+    ...synced,
+    aiDock: isCurrentMode
+      ? {
+          ...synced.aiDock,
+          isMinimized: Boolean(presetSlice.aiDock?.isMinimized),
+        }
+      : synced.aiDock,
+    modals: isCurrentMode
+      ? {
+          ...synced.modals,
+          attributesInspector: Boolean(presetSlice.modals?.attributesInspector),
+        }
+      : synced.modals,
+  };
+}
+
+export function resetModeWorkspaceLayout(prevLayout, modeId = prevLayout?.activeMode) {
+  return applyWorkspacePresetToLayout(prevLayout, DEFAULT_WORKSPACE_PRESET_ID, modeId);
+}
+
 export function applyWorkspaceLayoutReset(prevLayout, {
   showWelcomeScreen = false,
   leftTab = null,
@@ -362,9 +422,26 @@ export function useWorkspaceLayout(options = {}) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  const [layout, setLayout] = useState(createInitialWorkspaceLayout);
+  const [layout, setLayout] = useState(() =>
+    createInitialWorkspaceLayout({ usePersistedSettings: true })
+  );
   const [previewToast, setPreviewToast] = useState(null);
   const previewToastTimerRef = useRef(null);
+
+  // Persist per-mode workspace layouts (design & backend) to settingsStore (`craftstudio_settings_v1`).
+  // Never touches `.craft.json` or `hasUnsavedChanges`.
+  useEffect(() => {
+    const modeId = isValidStudioMode(layout.activeMode) ? layout.activeMode : DEFAULT_STUDIO_MODE;
+    const activeModeSlice = layout.layoutsByMode?.[modeId];
+    const toPersist = {
+      ...layout.layoutsByMode,
+      [modeId]: {
+        ...activeModeSlice,
+        aiDock: { isMinimized: Boolean(layout.aiDock?.isMinimized) },
+      },
+    };
+    saveWorkspaceLayoutsByMode(toPersist);
+  }, [layout.layoutsByMode, layout.activeMode, layout.aiDock?.isMinimized]);
 
   useEffect(() => () => {
     if (previewToastTimerRef.current) {
@@ -565,6 +642,14 @@ export function useWorkspaceLayout(options = {}) {
     setLayout((prev) => applyWorkspaceLayoutReset(prev, resetOptions));
   }, []);
 
+  const applyWorkspacePreset = useCallback((presetId) => {
+    setLayout((prev) => applyWorkspacePresetToLayout(prev, presetId, prev.activeMode));
+  }, []);
+
+  const resetWorkspaceLayoutToStandard = useCallback((targetMode = null) => {
+    setLayout((prev) => resetModeWorkspaceLayout(prev, targetMode || prev.activeMode));
+  }, []);
+
   useEffect(() => {
     const handleAppHashChange = () => {
       const h = String(window.location.hash || '').toLowerCase();
@@ -623,6 +708,9 @@ export function useWorkspaceLayout(options = {}) {
     handleSelectRightDockTarget,
     handleDockFloatingInspector,
     togglePanel,
+    activePresetId: activeSlice.presetId || DEFAULT_WORKSPACE_PRESET_ID,
+    applyWorkspacePreset,
+    resetWorkspaceLayoutToStandard,
     reset,
   };
 }

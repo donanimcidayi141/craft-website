@@ -14,6 +14,7 @@ import {
   resetLocalSettings,
   SAVED_PROJECTS_STORAGE_KEY,
   setApiKey,
+  SETTINGS_SCHEMA_VERSION,
   SETTINGS_STORAGE_KEY,
   subscribe,
   testGeminiKey,
@@ -68,7 +69,7 @@ await test('eski sürüm (v0) ayar nesnesinden v1 şemasına göç', () => {
     }),
   });
   const migrated = getSettings(legacyStorage);
-  assert.equal(migrated.version, 1);
+  assert.equal(migrated.version, SETTINGS_SCHEMA_VERSION);
   assert.equal(migrated.defaultModel, 'gemini-pro-latest');
   assert.equal(migrated.defaultDevice, 'mobile');
   assert.equal(migrated.showAmbientBg, false);

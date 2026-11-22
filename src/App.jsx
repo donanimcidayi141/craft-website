@@ -95,6 +95,9 @@ function CraftStudioApp() {
     handleSelectRightDockTarget,
     handleDockFloatingInspector,
     togglePanel,
+    activePresetId,
+    applyWorkspacePreset,
+    resetWorkspaceLayoutToStandard,
     reset: resetWorkspaceLayout,
   } = useWorkspaceLayout();
 
@@ -313,6 +316,16 @@ function CraftStudioApp() {
       setActiveTool,
     });
   }, [previewMode, setStudioMode, setEditingGroupId, triggerFit]);
+
+  const handleSelectWorkspacePreset = useCallback((presetId) => {
+    applyWorkspacePreset(presetId);
+    triggerFit();
+  }, [applyWorkspacePreset, triggerFit]);
+
+  const handleResetWorkspaceLayout = useCallback(() => {
+    resetWorkspaceLayoutToStandard();
+    triggerFit();
+  }, [resetWorkspaceLayoutToStandard, triggerFit]);
 
   // Direct element modification in active viewport for current selection
   const handleUpdateElement = (updates) => {
@@ -1137,6 +1150,9 @@ function CraftStudioApp() {
             activeMode={activeMode}
             onSelectStudioMode={handleSelectStudioMode}
             modeConfig={currentModeConfig}
+            activePresetId={activePresetId}
+            onSelectWorkspacePreset={handleSelectWorkspacePreset}
+            onResetWorkspaceLayout={handleResetWorkspaceLayout}
           />
 
           {/* Main Workspace (Toolbar + Canvas + Docked Panels) */}

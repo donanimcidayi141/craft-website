@@ -107,8 +107,23 @@ import {
   computeEffectiveActivePanels,
   applyWorkspacePanelToggle,
   applyStudioModeTransition,
+  applyWorkspacePresetToLayout,
+  resetModeWorkspaceLayout,
   applyWorkspaceLayoutReset,
 } from '../src/hooks/useWorkspaceLayout.js';
+import {
+  SETTINGS_STORAGE_KEY,
+  SETTINGS_SCHEMA_VERSION,
+  DEFAULT_SETTINGS,
+  DEFAULT_WORKSPACE_LAYOUTS_BY_MODE,
+  sanitizeModeWorkspaceLayout,
+  sanitizeWorkspaceLayoutsByMode,
+  migrateSettings,
+  getSettings,
+  getWorkspaceLayoutsByMode,
+  saveWorkspaceLayoutsByMode,
+  resetWorkspaceLayoutsInSettings,
+} from '../src/settings/settingsStore.js';
 import {
   computeLeftOccupiedWidth,
 } from '../src/hooks/useCanvasView.js';
@@ -3716,6 +3731,146 @@ test('PANEL_REGISTRY defines valid zones, mode filters, and presets consistent w
   assert.equal(wideDesign.leftDrawer.activeTab, null);
   assert.equal(wideDesign.rightDock.isOpen, false);
   assert.equal(wideDesign.aiDock.isMinimized, true);
+});
+
+test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken JSON / unknown panels / excessive widths / legacy v1, and never writes to .craft.json', () => {
+  const memStore = (() => {
+    const map = new Map();
+    return {
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => map.set(k, String(v)),
+      removeItem: (k) => map.delete(k),
+    };
+  })();
+
+  // 1. Broken JSON or empty storage falls back to safe v2 defaults without throwing
+  memStore.setItem(SETTINGS_STORAGE_KEY, '{broken_json_payload!!!');
+  const fromBroken = getSettings(memStore);
+  assert.equal(fromBroken.version, SETTINGS_SCHEMA_VERSION);
+  assert.deepEqual(fromBroken.workspaceLayoutsByMode, DEFAULT_WORKSPACE_LAYOUTS_BY_MODE);
+
+  // 2. Legacy v0 / v1 settings record migrates to version 2 with safe default workspaceLayoutsByMode
+  memStore.setItem(
+    SETTINGS_STORAGE_KEY,
+    JSON.stringify({
+      version: 1,
+      defaultModel: 'gemini-3-flash-preview',
+      defaultDevice: 'mobile',
+      showAmbientBg: false,
+      reduceMotion: true,
+    })
+  );
+  const fromLegacyV1 = getSettings(memStore);
+  assert.equal(fromLegacyV1.version, 2);
+  assert.equal(fromLegacyV1.defaultDevice, 'mobile');
+  assert.equal(fromLegacyV1.showAmbientBg, false);
+  assert.equal(fromLegacyV1.reduceMotion, true);
+  assert.deepEqual(fromLegacyV1.workspaceLayoutsByMode, DEFAULT_WORKSPACE_LAYOUTS_BY_MODE);
+
+  // 3. Unknown panel IDs, cross-mode panel IDs, excessive widths, and off-screen floatingRects are silently sanitized
+  const sanitizedCorrupt = sanitizeWorkspaceLayoutsByMode(
+    {
+      design: {
+        presetId: 'nonexistent_preset',
+        leftDrawer: { activeTab: 'unknown_ghost_panel', width: 99999 },
+        rightDock: { isOpen: 'not_a_bool', propertiesTab: 'stepConfig', width: -500 },
+        aiDock: { isMinimized: 'invalid' },
+        floatingRect: { x: 99999, y: -400, width: 5000, height: 4000 },
+      },
+      backend: {
+        presetId: 'wide_canvas',
+        leftDrawer: { activeTab: 'layers', width: 10 }, // 'layers' is a design panel, invalid in backend
+        rightDock: { isOpen: false, propertiesTab: 'unknown_right_tab', width: 8000 },
+        aiDock: { isMinimized: true },
+      },
+    },
+    { viewportWidth: 1440, viewportHeight: 900 }
+  );
+  assert.equal(sanitizedCorrupt.design.presetId, 'standard');
+  assert.equal(sanitizedCorrupt.design.leftDrawer.activeTab, null);
+  assert.equal(sanitizedCorrupt.design.leftDrawer.width, 440);
+  assert.equal(sanitizedCorrupt.design.rightDock.isOpen, true);
+  assert.equal(sanitizedCorrupt.design.rightDock.propertiesTab, 'layout');
+  assert.equal(sanitizedCorrupt.design.rightDock.width, 336);
+  assert.equal(sanitizedCorrupt.design.aiDock.isMinimized, false);
+  assert.ok(sanitizedCorrupt.design.floatingRect.x + sanitizedCorrupt.design.floatingRect.width <= 1440);
+  assert.ok(sanitizedCorrupt.design.floatingRect.y >= 0);
+
+  assert.equal(sanitizedCorrupt.backend.presetId, 'wide_canvas');
+  assert.equal(sanitizedCorrupt.backend.leftDrawer.activeTab, 'flows'); // fell back to backend default
+  assert.equal(sanitizedCorrupt.backend.leftDrawer.width, 220); // clamped to MIN_LEFT_DRAWER_WIDTH
+  assert.equal(sanitizedCorrupt.backend.rightDock.isOpen, false);
+  assert.equal(sanitizedCorrupt.backend.rightDock.propertiesTab, 'stepConfig');
+  assert.equal(sanitizedCorrupt.backend.rightDock.width, 540);
+  assert.equal(sanitizedCorrupt.backend.aiDock.isMinimized, true);
+
+  // 4. Small screen viewportWidth clamps combined left + right dock widths so center workspace >= 360px
+  const smallViewportSlice = sanitizeModeWorkspaceLayout(
+    'design',
+    {
+      leftDrawer: { activeTab: 'layers', width: 440 },
+      rightDock: { isOpen: true, propertiesTab: 'style', width: 540 },
+    },
+    { viewportWidth: 1024, viewportHeight: 768 }
+  );
+  assert.ok(
+    smallViewportSlice.leftDrawer.width + smallViewportSlice.rightDock.width <= 1024 - 52 - 40 - 360,
+    `Combined dock widths (${smallViewportSlice.leftDrawer.width} + ${smallViewportSlice.rightDock.width}) must leave >=360px center space on 1024px screen`
+  );
+
+  // 5. Round-trip save & read per mode + preset application + reset to standard
+  saveWorkspaceLayoutsByMode(
+    {
+      design: {
+        presetId: 'design_focused',
+        leftDrawer: { activeTab: 'layers', width: 328 },
+        rightDock: { isOpen: true, propertiesTab: 'style', width: 380 },
+        aiDock: { isMinimized: false },
+      },
+      backend: {
+        presetId: 'custom',
+        leftDrawer: { activeTab: 'dataModels', width: 316 },
+        rightDock: { isOpen: false, propertiesTab: 'dataBinding', width: 350 },
+        aiDock: { isMinimized: true },
+      },
+    },
+    memStore
+  );
+  const loadedFromStore = createInitialWorkspaceLayout({ storage: memStore, usePersistedSettings: true });
+  assert.equal(loadedFromStore.layoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.equal(loadedFromStore.layoutsByMode.design.leftDrawer.width, 328);
+  assert.equal(loadedFromStore.layoutsByMode.design.rightDock.propertiesTab, 'style');
+  assert.equal(loadedFromStore.layoutsByMode.design.rightDock.width, 380);
+  assert.equal(loadedFromStore.layoutsByMode.backend.leftDrawer.activeTab, 'dataModels');
+  assert.equal(loadedFromStore.layoutsByMode.backend.leftDrawer.width, 316);
+  assert.equal(loadedFromStore.layoutsByMode.backend.rightDock.isOpen, false);
+
+  // Applying presets and resetting active mode layout
+  const wideApplied = applyWorkspacePresetToLayout(loadedFromStore, 'wide_canvas', 'design');
+  assert.equal(wideApplied.layoutsByMode.design.presetId, 'wide_canvas');
+  assert.equal(wideApplied.layoutsByMode.design.leftDrawer.activeTab, null);
+  assert.equal(wideApplied.layoutsByMode.design.rightDock.isOpen, false);
+  assert.equal(wideApplied.aiDock.isMinimized, true);
+  // Backend slice untouched when preset applied in design mode
+  assert.equal(wideApplied.layoutsByMode.backend.leftDrawer.width, 316);
+
+  const resetDesign = resetModeWorkspaceLayout(wideApplied, 'design');
+  assert.equal(resetDesign.layoutsByMode.design.presetId, 'standard');
+  assert.equal(resetDesign.layoutsByMode.design.leftDrawer.activeTab, null);
+  assert.equal(resetDesign.layoutsByMode.design.leftDrawer.width, 248);
+  assert.equal(resetDesign.layoutsByMode.design.rightDock.isOpen, true);
+  assert.equal(resetDesign.layoutsByMode.design.rightDock.propertiesTab, 'layout');
+  assert.equal(resetDesign.layoutsByMode.design.rightDock.width, 336);
+  assert.equal(resetDesign.aiDock.isMinimized, false);
+
+  resetWorkspaceLayoutsInSettings('design', memStore);
+  assert.deepEqual(getWorkspaceLayoutsByMode(memStore).design, DEFAULT_WORKSPACE_LAYOUTS_BY_MODE.design);
+  assert.equal(getWorkspaceLayoutsByMode(memStore).backend.leftDrawer.width, 316);
+
+  // 6. Verify .craft.json schema NEVER includes workspaceLayoutsByMode or layoutsByMode
+  const serializedProject = buildSerializableProjectSchema({ id: 'proj-no-layout', name: 'Temiz Şema' });
+  assert.equal(Object.prototype.hasOwnProperty.call(serializedProject, 'workspaceLayoutsByMode'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(serializedProject, 'layoutsByMode'), false);
 });
 
 // -----------------------------------------------------------------------------

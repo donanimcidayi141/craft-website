@@ -1974,6 +1974,188 @@ async function main() {
     await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
     console.log('  ✓ Adım 3b: Backend modunda tasarım kısayolları (Delete/Backspace/Ctrl+D/Ctrl+Z/oklar/R) etkisiz, Ctrl+S aktif; Tasarım moduna dönünce seçim ve kısayollar aktif');
 
+    // 15d. Adım 2b: Moda göre pencere düzeninin settingsStore'da saklanması, sayfa yenileyince her iki modda korunması,
+    // Hazır Düzenler (Tasarım Odaklı, Geniş Tuval) + "Düzeni sıfırla" ve düzen değişiminin "● Kaydedilmedi" rozetini tetiklememesi
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('✓ Kaydedildi')`),
+      'Adım 2b testi öncesi proje kaydedilmiş durumda değil.'
+    );
+
+    // 1) Tasarım modunda Katmanlar panelini aç ve genişliğini 248px -> 328px (+80px) yap
+    const layersOpenFor2b = await cdp.evaluate(`Boolean(document.querySelector('[data-left-drawer-container="true"]'))`);
+    if (!layersOpenFor2b) {
+      await clickWindowMenuItem(cdp, 'Katmanlar (Layers)');
+      assert.ok(
+        await waitFor(cdp, `Boolean(document.querySelector('[data-left-drawer-container="true"]'))`),
+        'Adım 2b için Tasarım modunda Katmanlar çekmecesi açılamadı.'
+      );
+    }
+    const designSpl = await cdp.evaluate(`
+      (() => {
+        const s = document.querySelector('[data-left-drawer-splitter="true"]');
+        const r = s?.getBoundingClientRect();
+        return r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+      })()
+    `);
+    assert.ok(designSpl, 'Tasarım sol çekmece splitter koordinatı alınamadı.');
+    await dragOnScreen(cdp, designSpl.x, designSpl.y, 80, 0);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 328`
+      ),
+      'Adım 2b: Tasarım sol çekmecesi 328px genişliğe getirilemedi.'
+    );
+
+    // 2) Backend moduna geç ve Backend sol çekmecesinin genişliğini 256px -> 316px (+60px) yap
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-studio-mode="backend"][aria-selected="true"]'))`),
+      'Adım 2b için Backend moduna geçilemedi.'
+    );
+    const backendDrawerOpen = await cdp.evaluate(`Boolean(document.querySelector('[data-left-drawer-container="true"]'))`);
+    if (!backendDrawerOpen) {
+      await cdp.evaluate(`document.querySelector('button[data-left-panel-id="flows"]')?.click()`);
+      assert.ok(
+        await waitFor(cdp, `Boolean(document.querySelector('[data-left-drawer-container="true"]'))`),
+        'Adım 2b için Backend sol çekmecesi açılamadı.'
+      );
+    }
+    const backendSpl = await cdp.evaluate(`
+      (() => {
+        const s = document.querySelector('[data-left-drawer-splitter="true"]');
+        const r = s?.getBoundingClientRect();
+        return r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+      })()
+    `);
+    assert.ok(backendSpl, 'Backend sol çekmece splitter koordinatı alınamadı.');
+    await dragOnScreen(cdp, backendSpl.x, backendSpl.y, 60, 0);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 316`
+      ),
+      'Adım 2b: Backend sol çekmecesi 316px genişliğe getirilemedi.'
+    );
+
+    // Düzen değişikliklerinin "● Kaydedilmedi" rozetini tetiklemediğini doğrula ("✓ Kaydedildi" kalmalı)
+    const stillSavedAfterLayoutChange = await cdp.evaluate(`document.body.innerText.includes('✓ Kaydedildi')`);
+    assert.equal(
+      stillSavedAfterLayoutChange,
+      true,
+      'Panel genişliği veya mod düzeni değiştiğinde "● Kaydedilmedi" rozeti yandı (hasUnsavedChanges tetiklenmemeli)!'
+    );
+
+    // 3) Sayfayı yenile -> Son Projeler'den projeyi aç -> hem Tasarım (328px) hem Backend (316px) genişliklerinin korunduğunu ve "✓ Kaydedildi" rozetinin bozulmadığını doğrula
+    await cdp.navigate(testAppUrl);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft)').length > 0`
+      ),
+      'Sayfa yenileme sonrası Son Projeler listesi görünmedi.'
+    );
+    await cdp.evaluate(`
+      document.querySelector('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft) .welcome-project-row__main')?.click()
+    `);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Sayfa yenileme sonrası proje tekrar açılamadı.'
+    );
+    assert.equal(
+      await cdp.evaluate(`document.body.innerText.includes('✓ Kaydedildi')`),
+      true,
+      'Kaydet/aç sonrası projede "● Kaydedilmedi" rozeti yandı!'
+    );
+
+    // Tasarım modunda Katmanlar panelini aç -> genişlik 328px olarak hatırlanmalı
+    await clickWindowMenuItem(cdp, 'Katmanlar (Layers)');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 328`
+      ),
+      'Sayfa yenileme sonrası Tasarım modu sol panel genişliği (328px) settingsStore üzerinden korunmadı!'
+    );
+
+    // Backend moduna geç -> genişlik 316px olarak bağımsız hatırlanmalı
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 316`
+      ),
+      'Sayfa yenileme sonrası Backend modu sol panel genişliği (316px) settingsStore üzerinden korunmadı!'
+    );
+
+    // 4) Tasarım moduna dön, Pencere menüsünden Hazır Düzenleri (Geniş Tuval, Tasarım Odaklı) ve "Düzeni sıfırla" aksiyonunu doğrula
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="design"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Hazır düzen testi için Tasarım moduna dönülemedi.'
+    );
+
+    await clickWindowMenuItem(cdp, 'Geniş Tuval');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `!document.querySelector('[data-left-drawer-container="true"]') && Boolean(document.querySelector('button[title="Sağ Paneli Aç"]')) && Boolean(document.querySelector('button[title*="Gemini Sohbet Kutusunu Aç"]'))`
+      ),
+      '"Geniş Tuval" hazır düzeni sol çekmeceyi, sağ docku ve AI sohbet kutusunu daraltmadı!'
+    );
+
+    await clickWindowMenuItem(cdp, 'Tasarım Odaklı');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('[data-left-drawer-container="true"]')) && Boolean(document.querySelector('button[title="Sağ Paneli Daralt"]')) && Boolean(document.querySelector('[data-ai-dock="true"]'))`
+      ),
+      '"Tasarım Odaklı" hazır düzeni Katmanlar ve Sağ Özellikler panellerini açmadı!'
+    );
+
+    // Tekrar genişliği 328px yapıp "Düzeni sıfırla"ya bas -> Standart düzene (sol çekmece kapalı, açıldığında 248px, sağ dock açık 336px) dönmeli
+    const splBeforeReset = await cdp.evaluate(`
+      (() => {
+        const s = document.querySelector('[data-left-drawer-splitter="true"]');
+        const r = s?.getBoundingClientRect();
+        return r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+      })()
+    `);
+    await dragOnScreen(cdp, splBeforeReset.x, splBeforeReset.y, 80, 0);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 328`
+      ),
+      'Düzen sıfırlama öncesi sol çekmece 328px yapılamadı.'
+    );
+
+    await clickWindowMenuItem(cdp, 'Düzeni sıfırla');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `!document.querySelector('[data-left-drawer-container="true"]') && Boolean(document.querySelector('button[title="Sağ Paneli Daralt"]'))`
+      ),
+      '"Düzeni sıfırla" sonrası Standart düzene (sol çekmece kapalı, sağ dock açık) dönülmedi!'
+    );
+
+    // Katmanlar'ı açıp genişliğin fabrika varsayılanı olan 248px'e döndüğünü doğrula, sonra kapat
+    await clickWindowMenuItem(cdp, 'Katmanlar (Layers)');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 248`
+      ),
+      '"Düzeni sıfırla" sonrası sol çekmece genişliği 248px varsayılanına dönmedi!'
+    );
+    await cdp.evaluate(`document.querySelector('button[title="Sol paneli gizle"]')?.click()`);
+    assert.equal(
+      await cdp.evaluate(`document.body.innerText.includes('✓ Kaydedildi')`),
+      true,
+      'Hazır düzen veya Düzeni sıfırla işlemi "● Kaydedilmedi" rozetini tetikledi!'
+    );
+    console.log('  ✓ Adım 2b: Moda göre düzenin settingsStore kaydı, sayfa yenilemede korunması, Hazır Düzenler, Düzeni sıfırla ve Kaydedilmedi rozeti izolasyonu doğrulandı');
+
     // 16. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
     await cdp.evaluate(`
       (() => {
