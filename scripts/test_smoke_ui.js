@@ -154,6 +154,12 @@ async function main() {
   const consoleErrors = [];
   const uncaughtExceptions = [];
 
+  cdp.on('Page.javascriptDialogOpening', async () => {
+    try {
+      await cdp.send('Page.handleJavaScriptDialog', { accept: true });
+    } catch {}
+  });
+
   cdp.on('Runtime.consoleAPICalled', (params) => {
     if (params.type === 'error') {
       const text = (params.args || [])
@@ -919,6 +925,114 @@ async function main() {
       `Yeni Boş Proje sonrası eski elemanlar, sekmeler, seçim veya geçmiş temizlenmedi: ${JSON.stringify(cleanProjectState)}`
     );
     console.log('  ✓ Yeni Boş Proje başlatıldığında eski elemanların, sekmelerin, seçimin ve Ctrl+Z geçmişinin temizlendiği doğrulandı');
+
+    // 12. Otomatik taslak: eleman düzenle, 2 sn bekle, sayfayı yeniden yükle, karşılamada "Kaydedilmemiş Taslak" görünsün, geri yükle ile elemanlar geri gelsin
+    await cdp.evaluate(`document.querySelector('button[data-tool-id="rectangle"]')?.click()`);
+    const draftDrawOrigin = await cdp.evaluate(`
+      (() => {
+        const art = document.getElementById('artboard-canvas');
+        const r = art?.getBoundingClientRect();
+        return r ? { x: Math.round(r.left + 90), y: Math.round(r.top + 90) } : null;
+      })()
+    `);
+    assert.ok(draftDrawOrigin, 'Otomatik taslak çizim koordinatı alınamadı.');
+    await dragOnScreen(cdp, draftDrawOrigin.x, draftDrawOrigin.y, 130, 80);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 1`),
+      'Otomatik taslak için eleman çizilemedi.'
+    );
+    await cdp.evaluate(`document.querySelector('button[data-tool-id="select"]')?.click()`);
+    const draftElementBeforeReload = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id]');
+        return el ? { id: el.getAttribute('data-element-id'), left: el.style.left, top: el.style.top } : null;
+      })()
+    `);
+    assert.ok(draftElementBeforeReload?.id, 'Otomatik taslak elemanı okunamadı.');
+
+    // 1500ms debounce'un tetiklenmesi için 2 saniye bekle
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Sayfayı yeniden yükle -> karşılama ekranında "Kaydedilmemiş Taslak" görünmeli
+    await cdp.navigate(preview.url);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('.welcome-project-row--draft')) && document.body.innerText.includes('Kaydedilmemiş Taslak')`
+      ),
+      'Sayfa yeniden yüklendiğinde karşılama ekranında "Kaydedilmemiş Taslak" görünmedi.'
+    );
+
+    await cdp.evaluate(`document.querySelector('.welcome-project-row--draft .welcome-project-row__main')?.click()`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('#artboard-canvas > [data-element-id="${draftElementBeforeReload.id}"]'))`
+      ),
+      'Otomatik taslak geri yüklendiğinde çizilen eleman tuvale geri gelmedi.'
+    );
+    const draftElementAfterRestore = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${draftElementBeforeReload.id}"]');
+        return el ? { id: el.getAttribute('data-element-id'), left: el.style.left, top: el.style.top } : null;
+      })()
+    `);
+    assert.deepEqual(
+      draftElementAfterRestore,
+      draftElementBeforeReload,
+      'Geri yüklenen otomatik taslak elemanının konumu eşleşmedi.'
+    );
+    console.log('  ✓ Otomatik taslak (2sn debounce -> sayfa yenileme -> Kaydedilmemiş Taslak -> Geri Yükle) doğrulandı');
+
+    // 13. .craft.json dosyasını tarayıcı file-input yoluyla içe aktar (cdp.setFileInputFiles)
+    const craftJsonFixturePath = path.join(ROOT_DIR, 'scripts', 'fixtures', 'import', 'project.craft.json');
+    assert.ok(fs.existsSync(craftJsonFixturePath), 'project.craft.json fixture dosyası bulunamadı.');
+    await cdp.setFileInputFiles('input[type="file"][accept*=".craft.json"]', [craftJsonFixturePath]);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.body.innerText.includes('✓ Açıldı: project.craft.json') && document.querySelectorAll('#artboard-canvas [data-element-id]').length > 5`
+      ),
+      '.craft.json dosyası tarayıcı file-input yoluyla içe aktarılamadı.'
+    );
+    console.log('  ✓ .craft.json dosyası tarayıcı file-input (setFileInputFiles) yoluyla içe aktarıldı');
+
+    // 14. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
+    await cdp.evaluate(`
+      (() => {
+        const homeBtn = Array.from(document.querySelectorAll('button')).find(
+          (b) => b.textContent && b.textContent.trim() === 'Projeler'
+        );
+        homeBtn?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft)').length > 0`
+      ),
+      'Son Projeler listesinde silinecek kayıtlı proje bulunamadı.'
+    );
+
+    const beforeDeleteInfo = await cdp.evaluate(`
+      (() => {
+        const rows = Array.from(document.querySelectorAll('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft)'));
+        const firstRow = rows[0];
+        const firstName = firstRow?.querySelector('.welcome-project-row__name')?.textContent?.trim() || '';
+        const delBtn = firstRow?.querySelector('button[title="Projeyi Sil"]');
+        delBtn?.click();
+        return { count: rows.length, deletedName: firstName, clicked: Boolean(delBtn) };
+      })()
+    `);
+    assert.ok(beforeDeleteInfo.clicked, 'Projeyi Sil butonu tıklanamadı.');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft)').length === ${beforeDeleteInfo.count - 1}`
+      ),
+      'Silinen proje Son Projeler listesinden kaybolmadı.'
+    );
+    console.log('  ✓ Son Projeler listesinden bir proje silindi ve listeden kaybolduğu doğrulandı');
 
     await new Promise((r) => setTimeout(r, 250));
 
