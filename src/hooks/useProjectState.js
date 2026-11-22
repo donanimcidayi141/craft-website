@@ -244,7 +244,9 @@ export function useProjectState() {
         ...prev,
         [targetTabId]: { items: history, index: targetIndex },
       }));
+      return snap;
     }
+    return null;
   }, [activeTab.id, history, historyIndex]);
 
   const handleRedo = useCallback(() => {
@@ -262,7 +264,9 @@ export function useProjectState() {
         ...prev,
         [targetTabId]: { items: history, index: targetIndex },
       }));
+      return snap;
     }
+    return null;
   }, [activeTab.id, history, historyIndex]);
 
   const handleAddTab = useCallback(() => {

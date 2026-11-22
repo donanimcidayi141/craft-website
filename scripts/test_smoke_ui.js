@@ -1153,6 +1153,25 @@ async function main() {
       'Ctrl+Y silme işlemini ileri almadı (beklenen=2).'
     );
 
+    // Madde 3: Ctrl+V ile yeni eleman yapıştır (sayı 3 olur ve yeni eleman "1 seçili" olur), ardından Ctrl+Z ile geri al -> ağaçtan silinen ID selectedIds'den ayıklanmalı
+    await sendCtrlShortcut(cdp, 'v', 'KeyV', 86);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 3 && document.body.innerText.includes('1 seçili')`
+      ),
+      'Undo seçim ayıklama testi öncesi Ctrl+V ile yeni eleman seçili olarak eklenemedi.'
+    );
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 2 && !document.body.innerText.includes('seçili')`
+      ),
+      'Undo (Ctrl+Z) sonrası ağaçtan silinen elemanın IDsi selectedIds içinden ayıklanmadı!'
+    );
+    console.log('  ✓ Undo/Redo sonrası ağaçta olmayan seçili eleman IDlerinin ayıklandığı doğrulandı');
+
     // Ctrl+S -> projeyi klavyeden kaydetmeli ("✓ Kaydedildi" rozeti görünmeli)
     await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
     assert.ok(
