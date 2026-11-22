@@ -86,7 +86,37 @@ export function normalizeProjectTab(tab = {}, index = 0, fallbackCanvasSettings 
 }
 
 /**
+ * Creates the default empty backend section for `.craft.json` projects.
+ */
+export function createDefaultProjectBackend() {
+  return {
+    version: 1,
+    flows: [],
+    dataModels: [],
+    triggers: [],
+  };
+}
+
+/**
+ * Normalizes any raw `backend` section from a loaded project file, falling back
+ * to clean empty defaults when opening older `.craft.json` files without `backend`.
+ */
+export function normalizeProjectBackend(rawBackend = null) {
+  if (!rawBackend || typeof rawBackend !== 'object' || Array.isArray(rawBackend)) {
+    return createDefaultProjectBackend();
+  }
+  const parsedVersion = Number(rawBackend.version);
+  return {
+    version: Number.isFinite(parsedVersion) && parsedVersion > 0 ? parsedVersion : 1,
+    flows: Array.isArray(rawBackend.flows) ? rawBackend.flows : [],
+    dataModels: Array.isArray(rawBackend.dataModels) ? rawBackend.dataModels : [],
+    triggers: Array.isArray(rawBackend.triggers) ? rawBackend.triggers : [],
+  };
+}
+
+/**
  * Builds the canonical `craft.project.json` schema object ready to save or export.
+ * Note: `activeMode` is a runtime-only view state and is intentionally never persisted here.
  */
 export function buildSerializableProjectSchema(options = {}) {
   const {
@@ -98,6 +128,7 @@ export function buildSerializableProjectSchema(options = {}) {
     viewportMode = 'desktop',
     projectFunctions = [],
     pageLinks = [],
+    backend = null,
     createdAt = null,
   } = options;
 
@@ -124,6 +155,7 @@ export function buildSerializableProjectSchema(options = {}) {
     tabs: normalizedTabs,
     projectFunctions: Array.isArray(projectFunctions) ? projectFunctions : [],
     pageLinks: Array.isArray(pageLinks) ? pageLinks : [],
+    backend: normalizeProjectBackend(backend),
   };
 }
 
@@ -172,6 +204,7 @@ export function parseAndMigrateLoadedProject(rawInput) {
       tabs: migratedTabs,
       projectFunctions: Array.isArray(parsed.projectFunctions) ? parsed.projectFunctions : [],
       pageLinks: Array.isArray(parsed.pageLinks) ? parsed.pageLinks : [],
+      backend: parsed.backend,
     });
   }
 
@@ -197,6 +230,7 @@ export function parseAndMigrateLoadedProject(rawInput) {
       activeTabId: singleTab.id,
       projectFunctions: Array.isArray(parsed.projectFunctions) ? parsed.projectFunctions : [],
       pageLinks: Array.isArray(parsed.pageLinks) ? parsed.pageLinks : [],
+      backend: parsed.backend,
     });
   }
 

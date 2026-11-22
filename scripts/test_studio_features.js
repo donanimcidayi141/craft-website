@@ -56,6 +56,8 @@ import {
   buildSerializableProjectSchema,
   parseAndMigrateLoadedProject,
   normalizeProjectTab,
+  createDefaultProjectBackend,
+  normalizeProjectBackend,
   detectInitializedViewports,
   slugifyTabRoute,
   loadRecentProjects,
@@ -68,6 +70,14 @@ import {
   loadAutosaveDraft,
   clearAutosaveDraft,
 } from '../src/utils/projectStorage.js';
+import {
+  STUDIO_MODES,
+  DEFAULT_STUDIO_MODE,
+  STUDIO_MODE_LIST,
+  isValidStudioMode,
+  getStudioModeConfig,
+  isToolSupportedInMode,
+} from '../src/data/studioModesRegistry.js';
 import { DEFAULT_UNIVERSAL_PROJECT, PRESET_ASSETS } from '../src/constants.js';
 import { CONTENT_PACK_ASSETS } from '../src/data/contentPacks.js';
 import {
@@ -3006,6 +3016,85 @@ test('sampleColorAtClientPoint safely returns null without DOM and samples backg
     if (prevGetStyleDesc) Object.defineProperty(globalThis, 'getComputedStyle', prevGetStyleDesc);
     else delete globalThis.getComputedStyle;
   }
+});
+
+// -----------------------------------------------------------------------------
+// 18. STUDIO MODES REGISTRY & BACKEND SCHEMA DEFAULTS
+// -----------------------------------------------------------------------------
+console.log('\n🎛️ [18] Studio Modes Registry & Backend Schema Defaults');
+
+test('STUDIO_MODES defines design & backend modes with complete panel, tool, menu & layout schemas', () => {
+  assert.equal(DEFAULT_STUDIO_MODE, 'design');
+  assert.equal(STUDIO_MODE_LIST.length, 2);
+  assert.equal(isValidStudioMode('design'), true);
+  assert.equal(isValidStudioMode('backend'), true);
+  assert.equal(isValidStudioMode('unknown'), false);
+  assert.equal(getStudioModeConfig('invalid').id, 'design');
+
+  const design = getStudioModeConfig('design');
+  assert.equal(design.topBarConfig.showViewportSwitcher, true);
+  assert.equal(design.topBarConfig.showPageTabsBar, true);
+  assert.equal(design.centerView.supportsFloatingAiDock, true);
+  assert.equal(design.menuPanels.length, 5);
+  assert.equal(isToolSupportedInMode('design', 'select'), true);
+  assert.equal(isToolSupportedInMode('design', 'rectangle'), true);
+  assert.equal(isToolSupportedInMode('design', 'eyedropper'), true);
+
+  const backend = getStudioModeConfig('backend');
+  assert.equal(backend.topBarConfig.showViewportSwitcher, false);
+  assert.equal(backend.topBarConfig.showPageTabsBar, false);
+  assert.equal(backend.centerView.supportsFloatingAiDock, true);
+  assert.equal(isToolSupportedInMode('backend', 'select'), true);
+  assert.equal(isToolSupportedInMode('backend', 'hand'), true);
+  assert.equal(isToolSupportedInMode('backend', 'rectangle'), false);
+  assert.equal(isToolSupportedInMode('backend', 'eyedropper'), false);
+});
+
+test('projectStorage normalizes backend section with backward-compatible empty defaults and never persists activeMode', () => {
+  assert.deepEqual(createDefaultProjectBackend(), {
+    version: 1,
+    flows: [],
+    dataModels: [],
+    triggers: [],
+  });
+  assert.deepEqual(normalizeProjectBackend(null), {
+    version: 1,
+    flows: [],
+    dataModels: [],
+    triggers: [],
+  });
+
+  // Legacy project without backend field
+  const migratedLegacy = parseAndMigrateLoadedProject({
+    id: 'proj-old',
+    name: 'Eski Proje',
+    elements: [],
+  });
+  assert.deepEqual(migratedLegacy.backend, {
+    version: 1,
+    flows: [],
+    dataModels: [],
+    triggers: [],
+  });
+  assert.equal('activeMode' in migratedLegacy, false);
+
+  // Project with explicit backend section & projectFunctions preserved separately
+  const customBackend = {
+    version: 1,
+    flows: [{ id: 'flow-1', name: 'Sipariş Gönder' }],
+    dataModels: [{ id: 'model-1', name: 'Müşteriler' }],
+    triggers: [{ id: 'trig-1', event: 'onClick', targetElementId: 'btn-1', flowId: 'flow-1' }],
+  };
+  const saved = buildSerializableProjectSchema({
+    id: 'proj-new',
+    name: 'Yeni Proje',
+    projectFunctions: [{ id: 'fn-1', name: 'hesapla' }],
+    backend: customBackend,
+  });
+  const roundTripped = parseAndMigrateLoadedProject(JSON.stringify(saved));
+  assert.deepEqual(roundTripped.backend, customBackend);
+  assert.equal(roundTripped.projectFunctions.length, 1);
+  assert.equal('activeMode' in roundTripped, false);
 });
 
 // -----------------------------------------------------------------------------
