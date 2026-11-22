@@ -99,6 +99,7 @@ import {
 } from '../src/data/panelRegistry.js';
 import {
   createInitialWorkspaceLayout,
+  createWorkspacePanelActions,
   validateWorkspaceLayoutBridgeInvariant,
   assertWorkspaceLayoutBridgeInvariant,
   updateActiveModeLeftDrawerTab,
@@ -4225,6 +4226,76 @@ test('useWorkspaceLayout bridge invariant holds after every open/close/move/tab-
   const checkCorrupt = validateWorkspaceLayoutBridgeInvariant(corrupted);
   assert.equal(checkCorrupt.ok, false);
   assert.ok(checkCorrupt.errors.some((e) => e.includes('attributesInspector')));
+});
+
+test('panelActions unified API exposes all 8 actions and maintains bridge invariant across full lifecycle', () => {
+  let state = createInitialWorkspaceLayout();
+  const dispatch = (updater) => {
+    state = updater(state);
+    assertWorkspaceLayoutBridgeInvariant(state);
+  };
+  const panelActions = createWorkspacePanelActions(dispatch, () => ({ width: 1280, height: 800 }));
+
+  // Verify exact 8 unified methods exist
+  for (const method of [
+    'open',
+    'close',
+    'toggle',
+    'moveToZone',
+    'setDockActiveTab',
+    'updateFloatingRect',
+    'toggleFloatingMinimized',
+    'bringToFront',
+  ]) {
+    assert.equal(typeof panelActions[method], 'function', `panelActions.${method} must be a function`);
+  }
+
+  panelActions.open('layers');
+  assert.deepEqual(state.leftDrawer.tabs, ['layers']);
+  assert.equal(state.leftDrawer.activeTab, 'layers');
+
+  panelActions.open('assets');
+  assert.deepEqual(state.leftDrawer.tabs, ['layers', 'templates']);
+  assert.equal(state.leftDrawer.activeTab, 'templates');
+
+  panelActions.setDockActiveTab('left', 'layers');
+  assert.equal(state.leftDrawer.activeTab, 'layers');
+
+  panelActions.moveToZone('templates', 'right');
+  assert.deepEqual(state.leftDrawer.tabs, ['layers']);
+  assert.deepEqual(state.rightDock.tabs, ['properties', 'templates']);
+  assert.equal(state.rightDock.activeTab, 'templates');
+
+  panelActions.moveToZone('templates', 'floating', { floatingRect: { x: 200, y: 100, width: 340, height: 480 } });
+  assert.equal(state.layoutsByMode.design.panelZones.templates, 'floating');
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isOpen, true);
+  assert.deepEqual(state.rightDock.tabs, ['properties']);
+
+  panelActions.toggle('attributesAndCss');
+  assert.equal(state.modals.attributesInspector, true);
+  assert.equal(state.layoutsByMode.design.floatingPanels.attributesAndCss.isOpen, true);
+
+  panelActions.bringToFront('templates');
+  assert.ok(
+    state.layoutsByMode.design.floatingPanels.templates.zIndex >
+      state.layoutsByMode.design.floatingPanels.attributesAndCss.zIndex
+  );
+
+  panelActions.toggleFloatingMinimized('templates');
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isMinimized, true);
+  panelActions.toggleFloatingMinimized('templates', false);
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isMinimized, false);
+
+  panelActions.updateFloatingRect('templates', { x: 9999, y: -100, width: 320, height: 420 });
+  const rect = state.layoutsByMode.design.floatingPanels.templates.rect;
+  assert.ok(rect.x >= 12 && rect.x + rect.width <= 1280 - 12);
+  assert.ok(rect.y >= 12 && rect.y + rect.height <= 800 - 12);
+
+  panelActions.close('templates');
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isOpen, false);
+  panelActions.close('layers');
+  assert.equal(state.leftDrawer.activeTab, null);
+  assert.deepEqual(state.leftDrawer.tabs, []);
 });
 
 // -----------------------------------------------------------------------------

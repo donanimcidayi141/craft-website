@@ -1324,6 +1324,39 @@ export function applyWorkspaceLayoutReset(prevLayout, {
   };
 }
 
+export function createWorkspacePanelActions(
+  dispatchLayoutUpdater,
+  getViewport = () => ({ width: 1440, height: 920 }),
+) {
+  return {
+    open(panelId, options) {
+      dispatchLayoutUpdater((prev) => openWorkspacePanel(prev, panelId, options));
+    },
+    close(panelId) {
+      dispatchLayoutUpdater((prev) => closeWorkspacePanel(prev, panelId));
+    },
+    toggle(panelId) {
+      dispatchLayoutUpdater((prev) => toggleWorkspacePanel(prev, panelId));
+    },
+    moveToZone(panelId, targetZone, options) {
+      dispatchLayoutUpdater((prev) => moveWorkspacePanelToZone(prev, panelId, targetZone, options));
+    },
+    setDockActiveTab(zone, panelId) {
+      dispatchLayoutUpdater((prev) => setWorkspaceDockActiveTab(prev, zone, panelId));
+    },
+    updateFloatingRect(panelId, nextRectOrUpdater, viewportOverride = null) {
+      const vp = viewportOverride || getViewport?.() || { width: 1440, height: 920 };
+      dispatchLayoutUpdater((prev) => updateWorkspaceFloatingPanelRect(prev, panelId, nextRectOrUpdater, vp));
+    },
+    toggleFloatingMinimized(panelId, forceValue = undefined) {
+      dispatchLayoutUpdater((prev) => toggleWorkspaceFloatingPanelMinimized(prev, panelId, forceValue));
+    },
+    bringToFront(panelId) {
+      dispatchLayoutUpdater((prev) => bringWorkspaceFloatingPanelToFront(prev, panelId));
+    },
+  };
+}
+
 /**
  * Unified workspace layout, mode-aware panel/dock, modal, and toast controller.
  * Input:  optional { setEditingGroupId, setActiveTool, onClosePopovers }
@@ -1656,6 +1689,17 @@ export function useWorkspaceLayout(options = {}) {
     return () => window.removeEventListener('hashchange', handleAppHashChange);
   }, [setShowWelcomeScreen]);
 
+  const viewportSizeRef = useRef({ width: 1440, height: 920 });
+  viewportSizeRef.current = {
+    width: viewportSize.viewportWidth,
+    height: viewportSize.viewportHeight,
+  };
+
+  const panelActions = useMemo(
+    () => createWorkspacePanelActions(setLayout, () => viewportSizeRef.current),
+    []
+  );
+
   const rawActiveSlice = getActiveModeLayoutSlice(layout);
   const activeSlice = useMemo(
     () => clampModeLayoutToViewport(rawActiveSlice, viewportSize),
@@ -1669,6 +1713,13 @@ export function useWorkspaceLayout(options = {}) {
     activeMode: layout.activeMode,
     currentModeConfig,
     layoutsByMode: layout.layoutsByMode,
+    activeModeLayout: activeSlice,
+    leftDockTabs: activeSlice.leftDrawer.tabs,
+    rightDockTabs: activeSlice.rightDock.tabs,
+    rightDockActiveTab: activeSlice.rightDock.activeTab,
+    panelZones: activeSlice.panelZones,
+    floatingPanels: activeSlice.floatingPanels,
+    panelActions,
     setStudioMode,
     effectiveActivePanels,
     showWelcomeScreen: layout.showWelcomeScreen,
