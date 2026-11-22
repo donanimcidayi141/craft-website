@@ -13,8 +13,17 @@ import {
 } from '../data/studioModesRegistry.js';
 import {
   DEFAULT_WORKSPACE_PRESET_ID,
+  MOVABLE_PANEL_ZONES,
   isValidWorkspacePreset,
   resolvePresetModeLayout,
+  getPanelConfig,
+  resolveCanonicalPanelId,
+  isPanelAllowedInMode,
+  isPanelAllowedInZone,
+  getDefaultRightPanelIdForMode,
+  createDefaultPanelZonesForMode,
+  createDefaultFloatingPanelState,
+  createDefaultFloatingPanelsForMode,
 } from '../data/panelRegistry.js';
 import {
   getWorkspaceLayoutsByMode,
@@ -22,6 +31,7 @@ import {
   sanitizeWorkspaceLayoutsByMode,
   clampModeLayoutToViewport,
 } from '../settings/settingsStore.js';
+import { clampFloatingRect } from '../utils/propertySearch.js';
 
 export const INITIAL_FUNCTION_EDITOR_STATE = {
   isOpen: false,
@@ -40,54 +50,115 @@ export function resolveEffectiveLeftDrawerWidth(activeTab, rawWidth = DEFAULT_LE
   return activeTab === 'ai' ? Math.max(clamped, MIN_AI_LEFT_DRAWER_WIDTH) : clamped;
 }
 
-export function createModeLayoutsMap(overrides = {}) {
-  const designDefault = STUDIO_MODES.design.defaultLayout;
-  const backendDefault = STUDIO_MODES.backend.defaultLayout;
+function buildNormalizedModeLayoutSlice(modeId, override = {}) {
+  const resolvedMode = modeId === 'backend' ? 'backend' : 'design';
+  const modeDefault = STUDIO_MODES[resolvedMode].defaultLayout;
+  const defaultRightPanelId = getDefaultRightPanelIdForMode(resolvedMode);
+  const defaultLeftWidth = modeDefault.leftDrawer.width || (resolvedMode === 'backend' ? 256 : DEFAULT_LEFT_DRAWER_WIDTH);
+
+  const panelZones = createDefaultPanelZonesForMode(resolvedMode);
+  if (override?.panelZones && typeof override.panelZones === 'object' && !Array.isArray(override.panelZones)) {
+    for (const [rawId, rawZone] of Object.entries(override.panelZones)) {
+      const canonicalId = resolveCanonicalPanelId(rawId, resolvedMode);
+      if (canonicalId && isPanelAllowedInZone(canonicalId, rawZone)) {
+        panelZones[canonicalId] = rawZone;
+      }
+    }
+  }
+
+  const leftActiveTab = override?.leftDrawer?.activeTab !== undefined
+    ? override.leftDrawer.activeTab
+    : modeDefault.leftDrawer.activeTab;
+
+  let leftTabs = [];
+  if (Array.isArray(override?.leftDrawer?.tabs)) {
+    for (const t of override.leftDrawer.tabs) {
+      const canonicalId = resolveCanonicalPanelId(t, resolvedMode);
+      if (canonicalId && panelZones[canonicalId] === 'left' && !leftTabs.includes(canonicalId)) {
+        leftTabs.push(canonicalId);
+      }
+    }
+  }
+  if (leftActiveTab && !leftTabs.includes(leftActiveTab)) {
+    leftTabs.push(leftActiveTab);
+  }
+  if (!leftActiveTab && !Array.isArray(override?.leftDrawer?.tabs)) {
+    leftTabs = [];
+  }
+
+  const rightIsOpen = Boolean(override?.rightDock?.isOpen ?? modeDefault.rightDock.isOpen);
+  let rightTabs = [];
+  if (Array.isArray(override?.rightDock?.tabs)) {
+    for (const t of override.rightDock.tabs) {
+      const canonicalId = resolveCanonicalPanelId(t, resolvedMode);
+      if (canonicalId && panelZones[canonicalId] === 'right' && !rightTabs.includes(canonicalId)) {
+        rightTabs.push(canonicalId);
+      }
+    }
+  }
+  if (rightTabs.length === 0 && panelZones[defaultRightPanelId] === 'right') {
+    rightTabs = [defaultRightPanelId];
+  }
+  const requestedRightActive = resolveCanonicalPanelId(override?.rightDock?.activeTab, resolvedMode);
+  const rightActiveTab =
+    requestedRightActive && rightTabs.includes(requestedRightActive)
+      ? requestedRightActive
+      : rightTabs[0] || null;
+
+  const floatingPanels = createDefaultFloatingPanelsForMode(resolvedMode);
+  if (override?.floatingPanels && typeof override.floatingPanels === 'object' && !Array.isArray(override.floatingPanels)) {
+    for (const [rawId, rawState] of Object.entries(override.floatingPanels)) {
+      const canonicalId = resolveCanonicalPanelId(rawId, resolvedMode);
+      if (!canonicalId || !floatingPanels[canonicalId] || !rawState || typeof rawState !== 'object') continue;
+      const baseFloat = floatingPanels[canonicalId];
+      const panelCfg = getPanelConfig(canonicalId);
+      const nextRect = rawState.rect && typeof rawState.rect === 'object'
+        ? clampFloatingRect(
+            rawState.rect,
+            { width: 1440, height: 920 },
+            {
+              minWidth: panelCfg?.sizeLimits?.minWidth || 220,
+              minHeight: panelCfg?.sizeLimits?.minHeight || 260,
+            },
+          )
+        : baseFloat.rect;
+      floatingPanels[canonicalId] = {
+        isOpen: typeof rawState.isOpen === 'boolean' ? rawState.isOpen : baseFloat.isOpen,
+        isMinimized: typeof rawState.isMinimized === 'boolean' ? rawState.isMinimized : baseFloat.isMinimized,
+        rect: nextRect,
+        zIndex: Number.isFinite(Number(rawState.zIndex)) ? Math.max(40, Math.round(Number(rawState.zIndex))) : baseFloat.zIndex,
+      };
+    }
+  }
+
   return {
-    design: {
-      presetId: isValidWorkspacePreset(overrides.design?.presetId) || overrides.design?.presetId === 'custom'
-        ? overrides.design.presetId
-        : DEFAULT_WORKSPACE_PRESET_ID,
-      leftDrawer: {
-        activeTab: overrides.design?.leftDrawer?.activeTab !== undefined
-          ? overrides.design.leftDrawer.activeTab
-          : designDefault.leftDrawer.activeTab,
-        width: clampLeftDrawerWidth(
-          overrides.design?.leftDrawer?.width,
-          designDefault.leftDrawer.width || DEFAULT_LEFT_DRAWER_WIDTH
-        ),
-      },
-      rightDock: {
-        isOpen: overrides.design?.rightDock?.isOpen ?? designDefault.rightDock.isOpen,
-        propertiesTab: overrides.design?.rightDock?.propertiesTab || designDefault.rightDock.propertiesTab,
-        width: overrides.design?.rightDock?.width || DEFAULT_RIGHT_DOCK_WIDTH,
-      },
-      aiDock: {
-        isMinimized: Boolean(overrides.design?.aiDock?.isMinimized ?? designDefault.aiDock?.isMinimized),
-      },
+    presetId: isValidWorkspacePreset(override?.presetId) || override?.presetId === 'custom'
+      ? override.presetId
+      : DEFAULT_WORKSPACE_PRESET_ID,
+    panelZones,
+    leftDrawer: {
+      activeTab: leftActiveTab,
+      tabs: leftTabs,
+      width: clampLeftDrawerWidth(override?.leftDrawer?.width, defaultLeftWidth),
     },
-    backend: {
-      presetId: isValidWorkspacePreset(overrides.backend?.presetId) || overrides.backend?.presetId === 'custom'
-        ? overrides.backend.presetId
-        : DEFAULT_WORKSPACE_PRESET_ID,
-      leftDrawer: {
-        activeTab: overrides.backend?.leftDrawer?.activeTab !== undefined
-          ? overrides.backend.leftDrawer.activeTab
-          : backendDefault.leftDrawer.activeTab,
-        width: clampLeftDrawerWidth(
-          overrides.backend?.leftDrawer?.width,
-          backendDefault.leftDrawer.width || 256
-        ),
-      },
-      rightDock: {
-        isOpen: overrides.backend?.rightDock?.isOpen ?? backendDefault.rightDock.isOpen,
-        propertiesTab: overrides.backend?.rightDock?.propertiesTab || backendDefault.rightDock.propertiesTab,
-        width: overrides.backend?.rightDock?.width || DEFAULT_RIGHT_DOCK_WIDTH,
-      },
-      aiDock: {
-        isMinimized: Boolean(overrides.backend?.aiDock?.isMinimized ?? backendDefault.aiDock?.isMinimized),
-      },
+    rightDock: {
+      isOpen: rightIsOpen,
+      activeTab: rightActiveTab,
+      tabs: rightTabs,
+      propertiesTab: override?.rightDock?.propertiesTab || modeDefault.rightDock.propertiesTab,
+      width: override?.rightDock?.width || DEFAULT_RIGHT_DOCK_WIDTH,
     },
+    floatingPanels,
+    aiDock: {
+      isMinimized: Boolean(override?.aiDock?.isMinimized ?? modeDefault.aiDock?.isMinimized),
+    },
+  };
+}
+
+export function createModeLayoutsMap(overrides = {}) {
+  return {
+    design: buildNormalizedModeLayoutSlice('design', overrides?.design),
+    backend: buildNormalizedModeLayoutSlice('backend', overrides?.backend),
   };
 }
 
@@ -142,6 +213,66 @@ export function getActiveModeLayoutSlice(layout) {
   return layout?.layoutsByMode?.[modeId] || INITIAL_WORKSPACE_LAYOUT.layoutsByMode[modeId];
 }
 
+function getMaxFloatingZIndex(floatingPanels = {}) {
+  let maxZ = 49;
+  for (const state of Object.values(floatingPanels || {})) {
+    const z = Number(state?.zIndex);
+    if (Number.isFinite(z) && z > maxZ) {
+      maxZ = z;
+    }
+  }
+  return maxZ;
+}
+
+export function getWorkspacePanelZone(layout, panelName) {
+  const modeId = isValidStudioMode(layout?.activeMode) ? layout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return null;
+  const curSlice = getActiveModeLayoutSlice(layout);
+  return curSlice.panelZones?.[canonicalId] || getPanelConfig(canonicalId)?.defaultZone || null;
+}
+
+export function isWorkspacePanelOpen(layout, panelName) {
+  const modeId = isValidStudioMode(layout?.activeMode) ? layout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return false;
+  if (canonicalId === 'aiAgent') {
+    return !layout?.aiDock?.isMinimized;
+  }
+
+  const curSlice = getActiveModeLayoutSlice(layout);
+  const panelCfg = getPanelConfig(canonicalId);
+  const zone = curSlice.panelZones?.[canonicalId] || panelCfg?.defaultZone;
+
+  if (zone === 'left') {
+    const matchTabs = Array.isArray(panelCfg?.target?.activeMatchTabs) && panelCfg.target.activeMatchTabs.length > 0
+      ? panelCfg.target.activeMatchTabs
+      : [canonicalId];
+    const activeTab = curSlice.leftDrawer?.activeTab;
+    const openTabs = Array.isArray(curSlice.leftDrawer?.tabs) ? curSlice.leftDrawer.tabs : [];
+    if (!activeTab && openTabs.length === 0) return false;
+    return matchTabs.includes(activeTab) || (Boolean(activeTab) && openTabs.some((t) => matchTabs.includes(t)));
+  }
+
+  if (zone === 'right') {
+    if (!curSlice.rightDock?.isOpen) return false;
+    const openTabs = Array.isArray(curSlice.rightDock?.tabs) && curSlice.rightDock.tabs.length > 0
+      ? curSlice.rightDock.tabs
+      : [getDefaultRightPanelIdForMode(modeId)];
+    return curSlice.rightDock.activeTab === canonicalId || openTabs.includes(canonicalId);
+  }
+
+  if (zone === 'floating') {
+    const floatOpen = Boolean(curSlice.floatingPanels?.[canonicalId]?.isOpen);
+    if (canonicalId === 'attributesAndCss') {
+      return floatOpen || Boolean(layout?.modals?.attributesInspector);
+    }
+    return floatOpen;
+  }
+
+  return false;
+}
+
 export function updateActiveModeLeftDrawerTab(prevLayout, nextOrUpdater) {
   const modeId = isValidStudioMode(prevLayout.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
   const curSlice = getActiveModeLayoutSlice(prevLayout);
@@ -149,9 +280,24 @@ export function updateActiveModeLeftDrawerTab(prevLayout, nextOrUpdater) {
     ? nextOrUpdater(curSlice.leftDrawer.activeTab)
     : nextOrUpdater;
   if (nextTab === curSlice.leftDrawer.activeTab) return prevLayout;
+
+  const curTabs = Array.isArray(curSlice.leftDrawer.tabs) ? curSlice.leftDrawer.tabs : [];
+  let nextTabs = curTabs;
+  if (!nextTab) {
+    nextTabs = [];
+  } else if (curTabs.length <= 1) {
+    nextTabs = [nextTab];
+  } else if (!curTabs.includes(nextTab)) {
+    nextTabs = [...curTabs, nextTab];
+  }
+
   return syncActiveModeSlice(prevLayout, modeId, {
     ...curSlice,
-    leftDrawer: { ...curSlice.leftDrawer, activeTab: nextTab },
+    leftDrawer: {
+      ...curSlice.leftDrawer,
+      activeTab: nextTab,
+      tabs: nextTabs,
+    },
   });
 }
 
@@ -177,8 +323,10 @@ export function updateActiveModeRightDock(prevLayout, updaterOrPartial) {
   const nextDock = { ...curDock, ...patch };
   if (
     nextDock.isOpen === curDock.isOpen &&
+    nextDock.activeTab === curDock.activeTab &&
     nextDock.propertiesTab === curDock.propertiesTab &&
-    nextDock.width === curDock.width
+    nextDock.width === curDock.width &&
+    nextDock.tabs === curDock.tabs
   ) {
     return prevLayout;
   }
@@ -192,6 +340,8 @@ export function applyRightDockTargetSelection(prevLayout, _moduleName, subTab = 
   const modeId = isValidStudioMode(prevLayout.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
   const curSlice = getActiveModeLayoutSlice(prevLayout);
   const curDock = curSlice.rightDock;
+  const defaultRightId = getDefaultRightPanelIdForMode(modeId);
+  const curTabs = Array.isArray(curDock.tabs) && curDock.tabs.length > 0 ? curDock.tabs : [defaultRightId];
 
   if (!curDock.isOpen) {
     return syncActiveModeSlice(prevLayout, modeId, {
@@ -199,6 +349,8 @@ export function applyRightDockTargetSelection(prevLayout, _moduleName, subTab = 
       rightDock: {
         ...curDock,
         isOpen: true,
+        tabs: curTabs,
+        activeTab: curDock.activeTab || curTabs[0] || defaultRightId,
         propertiesTab: subTab || curDock.propertiesTab,
       },
     });
@@ -221,63 +373,524 @@ export function applyRightDockTargetSelection(prevLayout, _moduleName, subTab = 
   });
 }
 
+export function openWorkspacePanel(
+  prevLayout,
+  panelName,
+  { additive = true, subTab = null } = {},
+) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return prevLayout;
+
+  if (canonicalId === 'aiAgent') {
+    const wasMinimized = Boolean(prevLayout.aiDock?.isMinimized);
+    return {
+      ...prevLayout,
+      layoutsByMode: {
+        ...prevLayout.layoutsByMode,
+        [modeId]: {
+          ...getActiveModeLayoutSlice(prevLayout),
+          aiDock: { isMinimized: false },
+        },
+      },
+      aiDock: {
+        isMinimized: false,
+        focusSignal: wasMinimized ? (prevLayout.aiDock?.focusSignal || 0) + 1 : (prevLayout.aiDock?.focusSignal || 0),
+      },
+    };
+  }
+
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const panelCfg = getPanelConfig(canonicalId);
+  const zone = curSlice.panelZones?.[canonicalId] || panelCfg?.defaultZone;
+
+  if (zone === 'left') {
+    const curTabs = Array.isArray(curSlice.leftDrawer.tabs) ? curSlice.leftDrawer.tabs : [];
+    const nextTabs = additive
+      ? (curTabs.includes(canonicalId) ? curTabs : [...curTabs, canonicalId])
+      : [canonicalId];
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      leftDrawer: {
+        ...curSlice.leftDrawer,
+        activeTab: canonicalId,
+        tabs: nextTabs,
+      },
+    });
+  }
+
+  if (zone === 'right') {
+    const curTabs = Array.isArray(curSlice.rightDock.tabs) ? curSlice.rightDock.tabs : [];
+    const nextTabs = additive
+      ? (curTabs.includes(canonicalId) ? curTabs : [...curTabs, canonicalId])
+      : [canonicalId];
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      rightDock: {
+        ...curSlice.rightDock,
+        isOpen: true,
+        activeTab: canonicalId,
+        tabs: nextTabs,
+        propertiesTab: subTab || curSlice.rightDock.propertiesTab,
+      },
+    });
+  }
+
+  if (zone === 'floating') {
+    const curFloatMap = curSlice.floatingPanels || {};
+    const curFloat = curFloatMap[canonicalId] || createDefaultFloatingPanelState(canonicalId);
+    const nextZ = getMaxFloatingZIndex(curFloatMap) + 1;
+    const synced = syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      floatingPanels: {
+        ...curFloatMap,
+        [canonicalId]: {
+          ...curFloat,
+          isOpen: true,
+          isMinimized: false,
+          zIndex: nextZ,
+        },
+      },
+    });
+    if (canonicalId === 'attributesAndCss') {
+      return {
+        ...synced,
+        modals: {
+          ...synced.modals,
+          attributesInspector: true,
+        },
+      };
+    }
+    return synced;
+  }
+
+  return prevLayout;
+}
+
+export function closeWorkspacePanel(prevLayout, panelName) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return prevLayout;
+
+  if (canonicalId === 'aiAgent') {
+    return {
+      ...prevLayout,
+      layoutsByMode: {
+        ...prevLayout.layoutsByMode,
+        [modeId]: {
+          ...getActiveModeLayoutSlice(prevLayout),
+          aiDock: { isMinimized: true },
+        },
+      },
+      aiDock: {
+        ...prevLayout.aiDock,
+        isMinimized: true,
+      },
+    };
+  }
+
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const panelCfg = getPanelConfig(canonicalId);
+  const zone = curSlice.panelZones?.[canonicalId] || panelCfg?.defaultZone;
+
+  if (zone === 'left') {
+    const curTabs = Array.isArray(curSlice.leftDrawer.tabs) ? curSlice.leftDrawer.tabs : [];
+    const nextTabs = curTabs.filter((t) => t !== canonicalId);
+    const nextActiveTab =
+      curSlice.leftDrawer.activeTab === canonicalId
+        ? (nextTabs[nextTabs.length - 1] || null)
+        : (nextTabs.includes(curSlice.leftDrawer.activeTab) ? curSlice.leftDrawer.activeTab : (nextTabs[0] || null));
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      leftDrawer: {
+        ...curSlice.leftDrawer,
+        activeTab: nextActiveTab,
+        tabs: nextTabs,
+      },
+    });
+  }
+
+  if (zone === 'right') {
+    const defaultRightId = getDefaultRightPanelIdForMode(modeId);
+    const curTabs = Array.isArray(curSlice.rightDock.tabs) && curSlice.rightDock.tabs.length > 0
+      ? curSlice.rightDock.tabs
+      : [defaultRightId];
+    if (curTabs.length <= 1 && (curTabs[0] === canonicalId || curSlice.rightDock.activeTab === canonicalId)) {
+      return syncActiveModeSlice(prevLayout, modeId, {
+        ...curSlice,
+        rightDock: {
+          ...curSlice.rightDock,
+          isOpen: false,
+        },
+      });
+    }
+    const nextTabs = curTabs.filter((t) => t !== canonicalId);
+    const nextActiveTab =
+      curSlice.rightDock.activeTab === canonicalId
+        ? (nextTabs[nextTabs.length - 1] || null)
+        : (nextTabs.includes(curSlice.rightDock.activeTab) ? curSlice.rightDock.activeTab : (nextTabs[0] || null));
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      rightDock: {
+        ...curSlice.rightDock,
+        isOpen: nextTabs.length > 0,
+        activeTab: nextActiveTab,
+        tabs: nextTabs.length > 0 ? nextTabs : [defaultRightId],
+      },
+    });
+  }
+
+  if (zone === 'floating') {
+    const curFloatMap = curSlice.floatingPanels || {};
+    const curFloat = curFloatMap[canonicalId] || createDefaultFloatingPanelState(canonicalId);
+    const synced = syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      floatingPanels: {
+        ...curFloatMap,
+        [canonicalId]: {
+          ...curFloat,
+          isOpen: false,
+        },
+      },
+    });
+    if (canonicalId === 'attributesAndCss') {
+      return {
+        ...synced,
+        modals: {
+          ...synced.modals,
+          attributesInspector: false,
+        },
+      };
+    }
+    return synced;
+  }
+
+  return prevLayout;
+}
+
+export function toggleWorkspacePanel(prevLayout, panelName) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return prevLayout;
+
+  if (canonicalId === 'aiAgent') {
+    return prevLayout.aiDock?.isMinimized
+      ? openWorkspacePanel(prevLayout, canonicalId)
+      : closeWorkspacePanel(prevLayout, canonicalId);
+  }
+
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const panelCfg = getPanelConfig(canonicalId);
+  const zone = curSlice.panelZones?.[canonicalId] || panelCfg?.defaultZone;
+
+  if (zone === 'left') {
+    if (curSlice.leftDrawer.activeTab === canonicalId) {
+      return closeWorkspacePanel(prevLayout, canonicalId);
+    }
+    // Single-tab left drawer toggle switches activeTab when only 1 default tab was active;
+    // when multiple tabs are already pinned in leftDrawer.tabs, activates or adds canonicalId.
+    const curTabs = Array.isArray(curSlice.leftDrawer.tabs) ? curSlice.leftDrawer.tabs : [];
+    return openWorkspacePanel(prevLayout, canonicalId, { additive: curTabs.length > 1 });
+  }
+
+  if (zone === 'right') {
+    if (curSlice.rightDock.isOpen && curSlice.rightDock.activeTab === canonicalId) {
+      return closeWorkspacePanel(prevLayout, canonicalId);
+    }
+    return openWorkspacePanel(prevLayout, canonicalId, { additive: true });
+  }
+
+  if (zone === 'floating') {
+    return isWorkspacePanelOpen(prevLayout, canonicalId)
+      ? closeWorkspacePanel(prevLayout, canonicalId)
+      : openWorkspacePanel(prevLayout, canonicalId);
+  }
+
+  return prevLayout;
+}
+
+export function moveWorkspacePanelToZone(
+  prevLayout,
+  panelName,
+  targetZone,
+  { floatingRect = null } = {},
+) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId || !MOVABLE_PANEL_ZONES.includes(targetZone)) return prevLayout;
+  if (!isPanelAllowedInMode(canonicalId, modeId) || !isPanelAllowedInZone(canonicalId, targetZone)) {
+    return prevLayout;
+  }
+
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const panelCfg = getPanelConfig(canonicalId);
+  const prevZone = curSlice.panelZones?.[canonicalId] || panelCfg?.defaultZone;
+
+  // 1. Remove from previous zone
+  let nextLeftTabs = (Array.isArray(curSlice.leftDrawer.tabs) ? curSlice.leftDrawer.tabs : []).filter(
+    (t) => t !== canonicalId,
+  );
+  let nextLeftActiveTab =
+    curSlice.leftDrawer.activeTab === canonicalId
+      ? (nextLeftTabs[nextLeftTabs.length - 1] || null)
+      : curSlice.leftDrawer.activeTab;
+
+  let nextRightTabs = (Array.isArray(curSlice.rightDock.tabs) ? curSlice.rightDock.tabs : []).filter(
+    (t) => t !== canonicalId,
+  );
+  let nextRightActiveTab =
+    curSlice.rightDock.activeTab === canonicalId
+      ? (nextRightTabs[nextRightTabs.length - 1] || null)
+      : curSlice.rightDock.activeTab;
+  let nextRightIsOpen = prevZone === 'right' ? nextRightTabs.length > 0 : curSlice.rightDock.isOpen;
+
+  const curFloatMap = curSlice.floatingPanels || {};
+  const curFloat = curFloatMap[canonicalId] || createDefaultFloatingPanelState(canonicalId);
+  let nextFloatMap = {
+    ...curFloatMap,
+    [canonicalId]: {
+      ...curFloat,
+      isOpen: false,
+    },
+  };
+
+  // 2. Assign new zone & open in targetZone
+  const nextPanelZones = {
+    ...(curSlice.panelZones || createDefaultPanelZonesForMode(modeId)),
+    [canonicalId]: targetZone,
+  };
+
+  if (targetZone === 'left') {
+    if (!nextLeftTabs.includes(canonicalId)) {
+      nextLeftTabs = [...nextLeftTabs, canonicalId];
+    }
+    nextLeftActiveTab = canonicalId;
+  } else if (targetZone === 'right') {
+    if (!nextRightTabs.includes(canonicalId)) {
+      nextRightTabs = [...nextRightTabs, canonicalId];
+    }
+    nextRightActiveTab = canonicalId;
+    nextRightIsOpen = true;
+  } else if (targetZone === 'floating') {
+    const nextZ = getMaxFloatingZIndex(curFloatMap) + 1;
+    const clampedRect = floatingRect && typeof floatingRect === 'object'
+      ? clampFloatingRect(
+          floatingRect,
+          { width: 1440, height: 920 },
+          {
+            minWidth: panelCfg?.sizeLimits?.minWidth || 220,
+            minHeight: panelCfg?.sizeLimits?.minHeight || 260,
+          },
+        )
+      : curFloat.rect;
+    nextFloatMap = {
+      ...curFloatMap,
+      [canonicalId]: {
+        ...curFloat,
+        isOpen: true,
+        isMinimized: false,
+        rect: clampedRect,
+        zIndex: nextZ,
+      },
+    };
+  }
+
+  const nextModeSlice = {
+    ...curSlice,
+    presetId: 'custom',
+    panelZones: nextPanelZones,
+    leftDrawer: {
+      ...curSlice.leftDrawer,
+      activeTab: nextLeftActiveTab,
+      tabs: nextLeftTabs,
+    },
+    rightDock: {
+      ...curSlice.rightDock,
+      isOpen: nextRightIsOpen,
+      activeTab: nextRightActiveTab,
+      tabs: nextRightTabs,
+    },
+    floatingPanels: nextFloatMap,
+  };
+
+  const synced = syncActiveModeSlice(prevLayout, modeId, nextModeSlice);
+  if (canonicalId === 'attributesAndCss') {
+    return {
+      ...synced,
+      modals: {
+        ...synced.modals,
+        attributesInspector: targetZone === 'floating',
+      },
+    };
+  }
+  return synced;
+}
+
+export function setWorkspaceDockActiveTab(prevLayout, zone, panelName) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+
+  if (zone === 'left') {
+    if (panelName === null) {
+      return syncActiveModeSlice(prevLayout, modeId, {
+        ...curSlice,
+        leftDrawer: {
+          ...curSlice.leftDrawer,
+          activeTab: null,
+          tabs: [],
+        },
+      });
+    }
+    const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+    if (!canonicalId || (curSlice.panelZones?.[canonicalId] || getPanelConfig(canonicalId)?.defaultZone) !== 'left') {
+      return prevLayout;
+    }
+    const curTabs = Array.isArray(curSlice.leftDrawer.tabs) ? curSlice.leftDrawer.tabs : [];
+    const nextTabs = curTabs.includes(canonicalId) ? curTabs : [...curTabs, canonicalId];
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      leftDrawer: {
+        ...curSlice.leftDrawer,
+        activeTab: canonicalId,
+        tabs: nextTabs,
+      },
+    });
+  }
+
+  if (zone === 'right') {
+    if (panelName === null) {
+      return syncActiveModeSlice(prevLayout, modeId, {
+        ...curSlice,
+        rightDock: {
+          ...curSlice.rightDock,
+          isOpen: false,
+        },
+      });
+    }
+    const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+    if (!canonicalId || (curSlice.panelZones?.[canonicalId] || getPanelConfig(canonicalId)?.defaultZone) !== 'right') {
+      return prevLayout;
+    }
+    const curTabs = Array.isArray(curSlice.rightDock.tabs) ? curSlice.rightDock.tabs : [];
+    const nextTabs = curTabs.includes(canonicalId) ? curTabs : [...curTabs, canonicalId];
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      rightDock: {
+        ...curSlice.rightDock,
+        isOpen: true,
+        activeTab: canonicalId,
+        tabs: nextTabs,
+      },
+    });
+  }
+
+  return prevLayout;
+}
+
+export function updateWorkspaceFloatingPanelRect(
+  prevLayout,
+  panelName,
+  nextRectOrUpdater,
+  viewport = { width: 1440, height: 920 },
+) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return prevLayout;
+  const panelCfg = getPanelConfig(canonicalId);
+  if (!panelCfg?.canFloat) return prevLayout;
+
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const curFloatMap = curSlice.floatingPanels || {};
+  const curFloat = curFloatMap[canonicalId] || createDefaultFloatingPanelState(canonicalId);
+  const rawRect = typeof nextRectOrUpdater === 'function'
+    ? nextRectOrUpdater(curFloat.rect)
+    : nextRectOrUpdater;
+  if (!rawRect || typeof rawRect !== 'object') return prevLayout;
+
+  const clampedRect = clampFloatingRect(
+    { ...curFloat.rect, ...rawRect },
+    {
+      width: Number(viewport?.width) > 0 ? Number(viewport.width) : 1440,
+      height: Number(viewport?.height) > 0 ? Number(viewport.height) : 920,
+    },
+    {
+      minWidth: panelCfg.sizeLimits?.minWidth || 220,
+      minHeight: panelCfg.sizeLimits?.minHeight || 260,
+    },
+  );
+
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    floatingPanels: {
+      ...curFloatMap,
+      [canonicalId]: {
+        ...curFloat,
+        rect: clampedRect,
+      },
+    },
+  });
+}
+
+export function toggleWorkspaceFloatingPanelMinimized(prevLayout, panelName, forceValue = undefined) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return prevLayout;
+  const panelCfg = getPanelConfig(canonicalId);
+  if (!panelCfg?.canFloat) return prevLayout;
+
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const curFloatMap = curSlice.floatingPanels || {};
+  const curFloat = curFloatMap[canonicalId] || createDefaultFloatingPanelState(canonicalId);
+  const nextMinimized = typeof forceValue === 'boolean' ? forceValue : !curFloat.isMinimized;
+
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    floatingPanels: {
+      ...curFloatMap,
+      [canonicalId]: {
+        ...curFloat,
+        isMinimized: nextMinimized,
+      },
+    },
+  });
+}
+
+export function bringWorkspaceFloatingPanelToFront(prevLayout, panelName) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const canonicalId = resolveCanonicalPanelId(panelName, modeId);
+  if (!canonicalId) return prevLayout;
+  const panelCfg = getPanelConfig(canonicalId);
+  if (!panelCfg?.canFloat) return prevLayout;
+
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const curFloatMap = curSlice.floatingPanels || {};
+  const curFloat = curFloatMap[canonicalId] || createDefaultFloatingPanelState(canonicalId);
+  const nextZ = getMaxFloatingZIndex(curFloatMap) + 1;
+
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    floatingPanels: {
+      ...curFloatMap,
+      [canonicalId]: {
+        ...curFloat,
+        zIndex: nextZ,
+      },
+    },
+  });
+}
+
 export function computeEffectiveActivePanels(layout) {
   const modeConfig = getStudioModeConfig(layout?.activeMode);
-  const curSlice = getActiveModeLayoutSlice(layout);
   const panels = {};
 
   for (const item of modeConfig.menuPanels || []) {
-    const target = item.target || {};
-    if (target.area === 'rightDock') {
-      panels[item.id] = Boolean(curSlice.rightDock.isOpen);
-    } else if (target.area === 'leftDrawer') {
-      const matchTabs = Array.isArray(target.activeMatchTabs) && target.activeMatchTabs.length > 0
-        ? target.activeMatchTabs
-        : [target.tabId];
-      panels[item.id] = matchTabs.includes(curSlice.leftDrawer.activeTab);
-    } else if (target.area === 'aiDock') {
-      panels[item.id] = !layout.aiDock.isMinimized;
-    } else if (target.area === 'modal') {
-      panels[item.id] = Boolean(layout.modals?.[target.modalKey]);
-    }
+    panels[item.id] = isWorkspacePanelOpen(layout, item.id);
   }
   return panels;
 }
 
 export function applyWorkspacePanelToggle(prevLayout, panelName) {
-  const modeConfig = getStudioModeConfig(prevLayout?.activeMode);
-  const panelDef = (modeConfig.menuPanels || []).find((p) => p.id === panelName);
-  if (!panelDef || !panelDef.target) return prevLayout;
-
-  const { target } = panelDef;
-  if (target.area === 'rightDock') {
-    return applyRightDockTargetSelection(prevLayout, 'properties', null);
-  }
-  if (target.area === 'leftDrawer') {
-    const curSlice = getActiveModeLayoutSlice(prevLayout);
-    const nextTab = curSlice.leftDrawer.activeTab === target.tabId ? null : target.tabId;
-    return updateActiveModeLeftDrawerTab(prevLayout, nextTab);
-  }
-  if (target.area === 'modal' && target.modalKey) {
-    return {
-      ...prevLayout,
-      modals: {
-        ...prevLayout.modals,
-        [target.modalKey]: !prevLayout.modals[target.modalKey],
-      },
-    };
-  }
-  if (target.area === 'aiDock') {
-    const nextMinimized = !prevLayout.aiDock.isMinimized;
-    return {
-      ...prevLayout,
-      aiDock: {
-        isMinimized: nextMinimized,
-        focusSignal: !nextMinimized ? prevLayout.aiDock.focusSignal + 1 : prevLayout.aiDock.focusSignal,
-      },
-    };
-  }
-  return prevLayout;
+  return toggleWorkspacePanel(prevLayout, panelName);
 }
 
 /**
@@ -330,12 +943,14 @@ export function applyWorkspacePresetToLayout(
   if (!isValidWorkspacePreset(presetId)) return prevLayout;
   const resolvedMode = isValidStudioMode(modeId) ? modeId : DEFAULT_STUDIO_MODE;
   const presetSlice = resolvePresetModeLayout(presetId, resolvedMode);
-  const nextModeSlice = {
+  const nextModeSlice = buildNormalizedModeLayoutSlice(resolvedMode, {
     presetId,
-    leftDrawer: { ...presetSlice.leftDrawer },
-    rightDock: { ...presetSlice.rightDock },
-    aiDock: { isMinimized: Boolean(presetSlice.aiDock?.isMinimized) },
-  };
+    panelZones: presetSlice.panelZones,
+    leftDrawer: presetSlice.leftDrawer,
+    rightDock: presetSlice.rightDock,
+    floatingPanels: presetSlice.floatingPanels,
+    aiDock: presetSlice.aiDock,
+  });
   const synced = syncActiveModeSlice(prevLayout, resolvedMode, nextModeSlice);
   const isCurrentMode = resolvedMode === synced.activeMode;
   return {

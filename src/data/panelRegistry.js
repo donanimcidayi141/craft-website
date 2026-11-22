@@ -476,6 +476,15 @@ export function getPanelConfig(panelId) {
   return PANEL_LIST.find((p) => p.menuPanelId === panelId) || null;
 }
 
+export function resolveCanonicalPanelId(panelIdOrMenuId, modeId = null) {
+  const panel = getPanelConfig(panelIdOrMenuId);
+  if (!panel) return null;
+  if (modeId && (!Array.isArray(panel.modes) || !panel.modes.includes(modeId))) {
+    return null;
+  }
+  return panel.id;
+}
+
 export function isPanelAllowedInMode(panelId, modeId) {
   const panel = getPanelConfig(panelId);
   if (!panel || !modeId) return false;
@@ -490,6 +499,49 @@ export function isPanelAllowedInZone(panelId, zone) {
 
 export function getPanelsForMode(modeId = 'design') {
   return PANEL_LIST.filter((panel) => Array.isArray(panel.modes) && panel.modes.includes(modeId));
+}
+
+export function getDefaultRightPanelIdForMode(modeId = 'design') {
+  return modeId === 'backend' ? 'backendInspector' : 'properties';
+}
+
+export function createDefaultPanelZonesForMode(modeId = 'design') {
+  const resolvedMode = modeId === 'backend' ? 'backend' : 'design';
+  const zones = {};
+  for (const panel of getPanelsForMode(resolvedMode)) {
+    zones[panel.id] = panel.defaultZone;
+  }
+  return zones;
+}
+
+export function createDefaultFloatingPanelState(panelId, index = 0) {
+  const panel = getPanelConfig(panelId);
+  const defaultW = panel?.sizeLimits?.defaultWidth || 320;
+  const defaultH = panel?.sizeLimits?.defaultHeight || 480;
+  const offset = (index % 5) * 24;
+  return {
+    isOpen: false,
+    isMinimized: false,
+    rect: {
+      x: panel?.id === 'attributesAndCss' ? 560 : 420 + offset,
+      y: 72 + offset,
+      width: defaultW,
+      height: defaultH,
+    },
+    zIndex: 50 + index,
+  };
+}
+
+export function createDefaultFloatingPanelsForMode(modeId = 'design') {
+  const resolvedMode = modeId === 'backend' ? 'backend' : 'design';
+  const map = {};
+  const floatablePanels = getPanelsForMode(resolvedMode).filter(
+    (panel) => panel.canFloat || (Array.isArray(panel.allowedZones) && panel.allowedZones.includes('floating')),
+  );
+  floatablePanels.forEach((panel, index) => {
+    map[panel.id] = createDefaultFloatingPanelState(panel.id, index);
+  });
+  return map;
 }
 
 export function getLeftPanelsForMode(modeId = 'design') {
@@ -550,9 +602,21 @@ export function resolvePresetModeLayout(presetId = DEFAULT_WORKSPACE_PRESET_ID, 
   const preset = getWorkspacePreset(presetId);
   const resolvedMode = modeId === 'backend' ? 'backend' : 'design';
   const modeTemplate = preset.modes[resolvedMode] || WORKSPACE_PRESETS.standard.modes[resolvedMode];
+  const defaultRightPanelId = getDefaultRightPanelIdForMode(resolvedMode);
+  const leftActiveTab = modeTemplate.leftDrawer?.activeTab ?? null;
+  const rightIsOpen = Boolean(modeTemplate.rightDock?.isOpen);
   return {
-    leftDrawer: { ...modeTemplate.leftDrawer },
-    rightDock: { ...modeTemplate.rightDock },
+    panelZones: createDefaultPanelZonesForMode(resolvedMode),
+    leftDrawer: {
+      ...modeTemplate.leftDrawer,
+      tabs: leftActiveTab ? [leftActiveTab] : [],
+    },
+    rightDock: {
+      ...modeTemplate.rightDock,
+      tabs: [defaultRightPanelId],
+      activeTab: rightIsOpen ? defaultRightPanelId : defaultRightPanelId,
+    },
+    floatingPanels: createDefaultFloatingPanelsForMode(resolvedMode),
     aiDock: { ...modeTemplate.aiDock },
     modals: { ...(modeTemplate.modals || { attributesInspector: false }) },
   };

@@ -104,6 +104,16 @@ import {
   clampLeftDrawerWidth,
   resolveEffectiveLeftDrawerWidth,
   updateActiveModeRightDock,
+  getWorkspacePanelZone,
+  isWorkspacePanelOpen,
+  openWorkspacePanel,
+  closeWorkspacePanel,
+  toggleWorkspacePanel,
+  moveWorkspacePanelToZone,
+  setWorkspaceDockActiveTab,
+  updateWorkspaceFloatingPanelRect,
+  toggleWorkspaceFloatingPanelMinimized,
+  bringWorkspaceFloatingPanelToFront,
   computeEffectiveActivePanels,
   applyWorkspacePanelToggle,
   applyStudioModeTransition,
@@ -3885,12 +3895,14 @@ test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken J
   dualModified = applyStudioModeTransition(dualModified, 'design').layout;
 
   const afterDesignOnlyReset = resetModeWorkspaceLayout(dualModified, 'design');
-  assert.deepEqual(afterDesignOnlyReset.layoutsByMode.design, {
-    presetId: 'standard',
-    leftDrawer: { activeTab: null, width: 248 },
-    rightDock: { isOpen: true, propertiesTab: 'layout', width: 336 },
-    aiDock: { isMinimized: false },
-  });
+  assert.deepEqual(afterDesignOnlyReset.layoutsByMode.design, createInitialWorkspaceLayout().layoutsByMode.design);
+  assert.equal(afterDesignOnlyReset.layoutsByMode.design.presetId, 'standard');
+  assert.equal(afterDesignOnlyReset.layoutsByMode.design.leftDrawer.activeTab, null);
+  assert.equal(afterDesignOnlyReset.layoutsByMode.design.leftDrawer.width, 248);
+  assert.equal(afterDesignOnlyReset.layoutsByMode.design.rightDock.isOpen, true);
+  assert.equal(afterDesignOnlyReset.layoutsByMode.design.rightDock.propertiesTab, 'layout');
+  assert.equal(afterDesignOnlyReset.layoutsByMode.design.rightDock.width, 336);
+  assert.equal(afterDesignOnlyReset.layoutsByMode.design.aiDock.isMinimized, false);
   assert.equal(afterDesignOnlyReset.layoutsByMode.backend.leftDrawer.activeTab, 'dataModels');
   assert.equal(afterDesignOnlyReset.layoutsByMode.backend.leftDrawer.width, 316);
   assert.equal(afterDesignOnlyReset.layoutsByMode.backend.rightDock.isOpen, false);
@@ -3924,6 +3936,119 @@ test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken J
   });
   assert.equal(restoredWide.leftDrawer.width, 400);
   assert.equal(restoredWide.rightDock.width, 480);
+});
+
+test('useWorkspaceLayout multi-zone tabbed panel engine supports multi-tab docks, cross-zone movement, floating rect clamping, z-index ordering, and preset reset', () => {
+  let state = createInitialWorkspaceLayout();
+  assert.equal(getWorkspacePanelZone(state, 'layers'), 'left');
+  assert.equal(getWorkspacePanelZone(state, 'assets'), 'left');
+  assert.equal(getWorkspacePanelZone(state, 'properties'), 'right');
+  assert.equal(getWorkspacePanelZone(state, 'attributesAndCss'), 'floating');
+  assert.equal(getWorkspacePanelZone(state, 'aiAgent'), 'bottomCenter');
+  assert.deepEqual(state.layoutsByMode.design.leftDrawer.tabs, []);
+  assert.deepEqual(state.layoutsByMode.design.rightDock.tabs, ['properties']);
+
+  // 1. Multi-panel tabbed group in leftDrawer: open 'layers', then open 'templates' ('assets')
+  state = openWorkspacePanel(state, 'layers');
+  assert.deepEqual(state.layoutsByMode.design.leftDrawer.tabs, ['layers']);
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.equal(isWorkspacePanelOpen(state, 'layers'), true);
+
+  state = openWorkspacePanel(state, 'assets');
+  assert.deepEqual(state.layoutsByMode.design.leftDrawer.tabs, ['layers', 'templates']);
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'templates');
+  assert.equal(isWorkspacePanelOpen(state, 'layers'), true);
+  assert.equal(isWorkspacePanelOpen(state, 'assets'), true);
+  assert.equal(computeEffectiveActivePanels(state).layers, true);
+  assert.equal(computeEffectiveActivePanels(state).assets, true);
+
+  // Switch active tab in left dock back to 'layers' without closing 'templates'
+  state = setWorkspaceDockActiveTab(state, 'left', 'layers');
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.deepEqual(state.layoutsByMode.design.leftDrawer.tabs, ['layers', 'templates']);
+
+  // Close active tab 'layers' -> falls back to remaining open tab 'templates'
+  state = closeWorkspacePanel(state, 'layers');
+  assert.deepEqual(state.layoutsByMode.design.leftDrawer.tabs, ['templates']);
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'templates');
+  assert.equal(isWorkspacePanelOpen(state, 'layers'), false);
+  assert.equal(isWorkspacePanelOpen(state, 'assets'), true);
+
+  // 2. Move 'layers' to 'right' dock -> tabbed with 'properties'
+  state = moveWorkspacePanelToZone(state, 'layers', 'right');
+  assert.equal(getWorkspacePanelZone(state, 'layers'), 'right');
+  assert.deepEqual(state.layoutsByMode.design.rightDock.tabs, ['properties', 'layers']);
+  assert.equal(state.layoutsByMode.design.rightDock.activeTab, 'layers');
+  assert.equal(state.layoutsByMode.design.rightDock.isOpen, true);
+  assert.equal(computeEffectiveActivePanels(state).layers, true);
+  assert.equal(computeEffectiveActivePanels(state).properties, true);
+
+  // Close 'layers' in right dock -> falls back to 'properties', rightDock stays open
+  state = closeWorkspacePanel(state, 'layers');
+  assert.deepEqual(state.layoutsByMode.design.rightDock.tabs, ['properties']);
+  assert.equal(state.layoutsByMode.design.rightDock.activeTab, 'properties');
+  assert.equal(state.layoutsByMode.design.rightDock.isOpen, true);
+  assert.equal(computeEffectiveActivePanels(state).layers, false);
+
+  // 3. Move 'templates' ('assets') from 'left' to 'floating' -> left drawer closes automatically since no tabs remain
+  state = moveWorkspacePanelToZone(state, 'assets', 'floating', {
+    floatingRect: { x: 400, y: 120, width: 320, height: 500 },
+  });
+  assert.equal(getWorkspacePanelZone(state, 'templates'), 'floating');
+  assert.deepEqual(state.layoutsByMode.design.leftDrawer.tabs, []);
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, null);
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isOpen, true);
+  assert.equal(computeEffectiveActivePanels(state).assets, true);
+
+  // 4. Open 'attributesAndCss' as floating, test z-index ordering, minimize/unminimize, and rect clamping
+  state = toggleWorkspacePanel(state, 'attributesAndCss');
+  assert.equal(state.layoutsByMode.design.floatingPanels.attributesAndCss.isOpen, true);
+  assert.equal(state.modals.attributesInspector, true);
+  assert.ok(
+    state.layoutsByMode.design.floatingPanels.attributesAndCss.zIndex >
+      state.layoutsByMode.design.floatingPanels.templates.zIndex
+  );
+
+  state = bringWorkspaceFloatingPanelToFront(state, 'templates');
+  assert.ok(
+    state.layoutsByMode.design.floatingPanels.templates.zIndex >
+      state.layoutsByMode.design.floatingPanels.attributesAndCss.zIndex
+  );
+
+  state = toggleWorkspaceFloatingPanelMinimized(state, 'templates');
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isMinimized, true);
+  state = toggleWorkspaceFloatingPanelMinimized(state, 'templates');
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isMinimized, false);
+
+  state = updateWorkspaceFloatingPanelRect(
+    state,
+    'templates',
+    { x: 99999, y: -500, width: 100, height: 100 },
+    { width: 1280, height: 800 }
+  );
+  const clampedTplRect = state.layoutsByMode.design.floatingPanels.templates.rect;
+  assert.ok(clampedTplRect.width >= 220);
+  assert.ok(clampedTplRect.height >= 320);
+  assert.ok(clampedTplRect.x + clampedTplRect.width <= 1280);
+  assert.ok(clampedTplRect.y >= 0);
+
+  // 5. Reject invalid zone transitions (aiAgent is pinned to bottomCenter; flows is backend-only; 'top' is invalid)
+  const beforeInvalid = state;
+  assert.equal(moveWorkspacePanelToZone(state, 'aiAgent', 'left'), beforeInvalid);
+  assert.equal(moveWorkspacePanelToZone(state, 'flows', 'right'), beforeInvalid);
+  assert.equal(moveWorkspacePanelToZone(state, 'layers', 'top'), beforeInvalid);
+
+  // 6. Resetting mode layout restores all panelZones, tabs, and floatingPanels to standard factory defaults
+  state = resetModeWorkspaceLayout(state, 'design');
+  assert.equal(getWorkspacePanelZone(state, 'layers'), 'left');
+  assert.equal(getWorkspacePanelZone(state, 'templates'), 'left');
+  assert.equal(getWorkspacePanelZone(state, 'properties'), 'right');
+  assert.equal(getWorkspacePanelZone(state, 'attributesAndCss'), 'floating');
+  assert.deepEqual(state.layoutsByMode.design.leftDrawer.tabs, []);
+  assert.deepEqual(state.layoutsByMode.design.rightDock.tabs, ['properties']);
+  assert.equal(state.layoutsByMode.design.floatingPanels.templates.isOpen, false);
+  assert.equal(state.layoutsByMode.design.floatingPanels.attributesAndCss.isOpen, false);
+  assert.equal(state.modals.attributesInspector, false);
 });
 
 // -----------------------------------------------------------------------------
