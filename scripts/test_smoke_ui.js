@@ -2113,15 +2113,47 @@ async function main() {
       '"Tasarım Odaklı" hazır düzeni Katmanlar ve Sağ Özellikler panellerini açmadı!'
     );
 
-    // Tekrar genişliği 328px yapıp "Düzeni sıfırla"ya bas -> Standart düzene (sol çekmece kapalı, açıldığında 248px, sağ dock açık 336px) dönmeli
-    const splBeforeReset = await cdp.evaluate(`
-      (() => {
+    // 60 pointermove hareketiyle splitter sürüklenirken settingsStore'a (craftstudio_settings_v1)
+    // her harekette değil, yalnızca bırakınca (pointerup) 1 kez yazıldığını doğrula
+    const dragWriteResult = await cdp.evaluate(`
+      new Promise((resolve) => {
         const s = document.querySelector('[data-left-drawer-splitter="true"]');
         const r = s?.getBoundingClientRect();
-        return r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
-      })()
+        if (!s || !r) return resolve({ ok: false, writes: -1 });
+        const startX = Math.round(r.left + r.width / 2);
+        const startY = Math.round(r.top + r.height / 2);
+        let settingsWrites = 0;
+        const origSetItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function(key, val) {
+          if (key === 'craftstudio_settings_v1') settingsWrites += 1;
+          return origSetItem.call(this, key, val);
+        };
+        s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: startX, clientY: startY }));
+        requestAnimationFrame(() => {
+          for (let i = 1; i <= 60; i++) {
+            const dx = Math.round((80 * i) / 60);
+            window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: startX + dx, clientY: startY }));
+          }
+          requestAnimationFrame(() => {
+            const writesDuringMove = settingsWrites;
+            window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: startX + 80, clientY: startY }));
+            Storage.prototype.setItem = origSetItem;
+            resolve({ ok: true, writesDuringMove, totalWritesAfterUp: settingsWrites });
+          });
+        });
+      })
     `);
-    await dragOnScreen(cdp, splBeforeReset.x, splBeforeReset.y, 80, 0);
+    assert.equal(dragWriteResult.ok, true, 'Splitter 60 hareket testi başlatılamadı.');
+    assert.equal(
+      dragWriteResult.writesDuringMove,
+      0,
+      `Splitter sürüklenirken 60 pointermove sırasında localStorage'a yazılmamalıydı (yazılan: ${dragWriteResult.writesDuringMove}).`
+    );
+    assert.equal(
+      dragWriteResult.totalWritesAfterUp,
+      1,
+      `60 pointermove + 1 pointerup sonunda settingsStore'a tam 1 kez yazılmalıydı (yazılan: ${dragWriteResult.totalWritesAfterUp}).`
+    );
     assert.ok(
       await waitFor(
         cdp,
@@ -2149,12 +2181,27 @@ async function main() {
       '"Düzeni sıfırla" sonrası sol çekmece genişliği 248px varsayılanına dönmedi!'
     );
     await cdp.evaluate(`document.querySelector('button[title="Sol paneli gizle"]')?.click()`);
+
+    // Tasarım modunda "Düzeni sıfırla" yapıldıktan sonra Backend moduna geçildiğinde Backend düzeninin (316px) korunduğunu doğrula
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Math.round(document.querySelector('[data-left-drawer-container="true"]')?.getBoundingClientRect().width || 0) === 316`
+      ),
+      'Tasarım modunda "Düzeni sıfırla" çağrıldığında Backend modunun özel genişliği (316px) sıfırlandı (yalnızca aktif mod sıfırlanmalı)!'
+    );
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="design"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Backend kontrolü sonrası Tasarım moduna dönülemedi.'
+    );
     assert.equal(
       await cdp.evaluate(`document.body.innerText.includes('✓ Kaydedildi')`),
       true,
       'Hazır düzen veya Düzeni sıfırla işlemi "● Kaydedilmedi" rozetini tetikledi!'
     );
-    console.log('  ✓ Adım 2b: Moda göre düzenin settingsStore kaydı, sayfa yenilemede korunması, Hazır Düzenler, Düzeni sıfırla ve Kaydedilmedi rozeti izolasyonu doğrulandı');
+    console.log('  ✓ Adım 2b: Moda göre düzenin settingsStore kaydı (60 hareket -> 1 yazma), sayfa yenilemede korunması, Hazır Düzenler, aktif mod Düzeni sıfırla ve Kaydedilmedi rozeti izolasyonu doğrulandı');
 
     // 16. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
     await cdp.evaluate(`

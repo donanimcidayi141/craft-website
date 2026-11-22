@@ -20,6 +20,7 @@ import {
   getWorkspaceLayoutsByMode,
   saveWorkspaceLayoutsByMode,
   sanitizeWorkspaceLayoutsByMode,
+  clampModeLayoutToViewport,
 } from '../settings/settingsStore.js';
 
 export const INITIAL_FUNCTION_EDITOR_STATE = {
@@ -425,11 +426,33 @@ export function useWorkspaceLayout(options = {}) {
   const [layout, setLayout] = useState(() =>
     createInitialWorkspaceLayout({ usePersistedSettings: true })
   );
+  const [viewportSize, setViewportSize] = useState(() => ({
+    viewportWidth: typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1440,
+    viewportHeight: typeof window !== 'undefined' && window.innerHeight > 0 ? window.innerHeight : 920,
+  }));
   const [previewToast, setPreviewToast] = useState(null);
   const previewToastTimerRef = useRef(null);
+  const pendingPersistPayloadRef = useRef(null);
+  const persistDebounceTimerRef = useRef(null);
+  const lastPersistedNonWidthKeyRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleResize = () => {
+      setViewportSize({
+        viewportWidth: window.innerWidth > 0 ? window.innerWidth : 1440,
+        viewportHeight: window.innerHeight > 0 ? window.innerHeight : 920,
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Persist per-mode workspace layouts (design & backend) to settingsStore (`craftstudio_settings_v1`).
-  // Never touches `.craft.json` or `hasUnsavedChanges`.
+  // - Discrete panel/tab/preset/reset transitions write immediately (1 write).
+  // - Continuous splitter width drags are debounced (180ms) and flushed once on pointerup/mouseup/beforeunload
+  //   so 60 pointermove events during a drag produce only 1 storage write instead of 60.
+  // - Always persists the user's intrinsic (unclamped) widths so shrinking & re-expanding the window restores original widths.
   useEffect(() => {
     const modeId = isValidStudioMode(layout.activeMode) ? layout.activeMode : DEFAULT_STUDIO_MODE;
     const activeModeSlice = layout.layoutsByMode?.[modeId];
@@ -440,8 +463,73 @@ export function useWorkspaceLayout(options = {}) {
         aiDock: { isMinimized: Boolean(layout.aiDock?.isMinimized) },
       },
     };
-    saveWorkspaceLayoutsByMode(toPersist);
+    const nonWidthKey = JSON.stringify({
+      activeMode: modeId,
+      designTab: toPersist.design?.leftDrawer?.activeTab ?? null,
+      designOpen: Boolean(toPersist.design?.rightDock?.isOpen),
+      designPropTab: toPersist.design?.rightDock?.propertiesTab ?? 'layout',
+      designPreset: toPersist.design?.presetId ?? 'standard',
+      designAiMin: Boolean(toPersist.design?.aiDock?.isMinimized),
+      backendTab: toPersist.backend?.leftDrawer?.activeTab ?? null,
+      backendOpen: Boolean(toPersist.backend?.rightDock?.isOpen),
+      backendPropTab: toPersist.backend?.rightDock?.propertiesTab ?? 'stepConfig',
+      backendPreset: toPersist.backend?.presetId ?? 'standard',
+      backendAiMin: Boolean(toPersist.backend?.aiDock?.isMinimized),
+    });
+
+    const isWidthOnlyChange =
+      lastPersistedNonWidthKeyRef.current !== null &&
+      lastPersistedNonWidthKeyRef.current === nonWidthKey;
+    lastPersistedNonWidthKeyRef.current = nonWidthKey;
+
+    if (!isWidthOnlyChange) {
+      if (persistDebounceTimerRef.current) {
+        clearTimeout(persistDebounceTimerRef.current);
+        persistDebounceTimerRef.current = null;
+      }
+      pendingPersistPayloadRef.current = null;
+      saveWorkspaceLayoutsByMode(toPersist);
+      return undefined;
+    }
+
+    pendingPersistPayloadRef.current = toPersist;
+    if (persistDebounceTimerRef.current) {
+      clearTimeout(persistDebounceTimerRef.current);
+    }
+    persistDebounceTimerRef.current = setTimeout(() => {
+      persistDebounceTimerRef.current = null;
+      if (pendingPersistPayloadRef.current) {
+        const payload = pendingPersistPayloadRef.current;
+        pendingPersistPayloadRef.current = null;
+        saveWorkspaceLayoutsByMode(payload);
+      }
+    }, 180);
+    return undefined;
   }, [layout.layoutsByMode, layout.activeMode, layout.aiDock?.isMinimized]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const flushPendingLayoutPersist = () => {
+      if (persistDebounceTimerRef.current) {
+        clearTimeout(persistDebounceTimerRef.current);
+        persistDebounceTimerRef.current = null;
+      }
+      if (pendingPersistPayloadRef.current) {
+        const payload = pendingPersistPayloadRef.current;
+        pendingPersistPayloadRef.current = null;
+        saveWorkspaceLayoutsByMode(payload);
+      }
+    };
+    window.addEventListener('pointerup', flushPendingLayoutPersist);
+    window.addEventListener('mouseup', flushPendingLayoutPersist);
+    window.addEventListener('beforeunload', flushPendingLayoutPersist);
+    return () => {
+      flushPendingLayoutPersist();
+      window.removeEventListener('pointerup', flushPendingLayoutPersist);
+      window.removeEventListener('mouseup', flushPendingLayoutPersist);
+      window.removeEventListener('beforeunload', flushPendingLayoutPersist);
+    };
+  }, []);
 
   useEffect(() => () => {
     if (previewToastTimerRef.current) {
@@ -661,7 +749,11 @@ export function useWorkspaceLayout(options = {}) {
     return () => window.removeEventListener('hashchange', handleAppHashChange);
   }, [setShowWelcomeScreen]);
 
-  const activeSlice = getActiveModeLayoutSlice(layout);
+  const rawActiveSlice = getActiveModeLayoutSlice(layout);
+  const activeSlice = useMemo(
+    () => clampModeLayoutToViewport(rawActiveSlice, viewportSize),
+    [rawActiveSlice, viewportSize]
+  );
   const currentModeConfig = getStudioModeConfig(layout.activeMode);
 
   return {

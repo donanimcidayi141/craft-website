@@ -116,6 +116,7 @@ import {
   SETTINGS_SCHEMA_VERSION,
   DEFAULT_SETTINGS,
   DEFAULT_WORKSPACE_LAYOUTS_BY_MODE,
+  clampModeLayoutToViewport,
   sanitizeModeWorkspaceLayout,
   sanitizeWorkspaceLayoutsByMode,
   migrateSettings,
@@ -3871,6 +3872,58 @@ test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken J
   const serializedProject = buildSerializableProjectSchema({ id: 'proj-no-layout', name: 'Temiz Şema' });
   assert.equal(Object.prototype.hasOwnProperty.call(serializedProject, 'workspaceLayoutsByMode'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(serializedProject, 'layoutsByMode'), false);
+
+  // 7. Resetting layout in design mode ONLY resets design mode; backend mode's custom layout stays intact
+  let dualModified = createInitialWorkspaceLayout();
+  dualModified = updateActiveModeLeftDrawerTab(dualModified, 'layers');
+  dualModified = updateActiveModeLeftDrawerWidth(dualModified, 340);
+  dualModified = updateActiveModeRightDock(dualModified, { isOpen: false, propertiesTab: 'style', width: 410 });
+  dualModified = applyStudioModeTransition(dualModified, 'backend').layout;
+  dualModified = updateActiveModeLeftDrawerTab(dualModified, 'dataModels');
+  dualModified = updateActiveModeLeftDrawerWidth(dualModified, 316);
+  dualModified = updateActiveModeRightDock(dualModified, { isOpen: false, propertiesTab: 'dataBinding', width: 390 });
+  dualModified = applyStudioModeTransition(dualModified, 'design').layout;
+
+  const afterDesignOnlyReset = resetModeWorkspaceLayout(dualModified, 'design');
+  assert.deepEqual(afterDesignOnlyReset.layoutsByMode.design, {
+    presetId: 'standard',
+    leftDrawer: { activeTab: null, width: 248 },
+    rightDock: { isOpen: true, propertiesTab: 'layout', width: 336 },
+    aiDock: { isMinimized: false },
+  });
+  assert.equal(afterDesignOnlyReset.layoutsByMode.backend.leftDrawer.activeTab, 'dataModels');
+  assert.equal(afterDesignOnlyReset.layoutsByMode.backend.leftDrawer.width, 316);
+  assert.equal(afterDesignOnlyReset.layoutsByMode.backend.rightDock.isOpen, false);
+  assert.equal(afterDesignOnlyReset.layoutsByMode.backend.rightDock.propertiesTab, 'dataBinding');
+  assert.equal(afterDesignOnlyReset.layoutsByMode.backend.rightDock.width, 390);
+
+  // 8. Narrow viewport clamping happens ONLY at read/render time and never overwrites saved intrinsic widths in storage
+  saveWorkspaceLayoutsByMode(
+    {
+      design: {
+        presetId: 'custom',
+        leftDrawer: { activeTab: 'layers', width: 400 },
+        rightDock: { isOpen: true, propertiesTab: 'style', width: 480 },
+        aiDock: { isMinimized: false },
+      },
+    },
+    memStore
+  );
+  // Stored value in memStore remains 400 & 480
+  const rawStored = getWorkspaceLayoutsByMode(memStore);
+  assert.equal(rawStored.design.leftDrawer.width, 400);
+  assert.equal(rawStored.design.rightDock.width, 480);
+
+  // On a narrow 1000px screen, read-time clamping shrinks effective widths so center >= 360px
+  const clampedNarrow = clampModeLayoutToViewport(rawStored.design, { viewportWidth: 1000, viewportHeight: 720 });
+  assert.ok(clampedNarrow.leftDrawer.width + clampedNarrow.rightDock.width <= 1000 - 52 - 40 - 360);
+  // Storage STILL holds 400 & 480; when screen expands back to 1600px, original 400 & 480 return
+  const restoredWide = clampModeLayoutToViewport(getWorkspaceLayoutsByMode(memStore).design, {
+    viewportWidth: 1600,
+    viewportHeight: 960,
+  });
+  assert.equal(restoredWide.leftDrawer.width, 400);
+  assert.equal(restoredWide.rightDock.width, 480);
 });
 
 // -----------------------------------------------------------------------------

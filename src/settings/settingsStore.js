@@ -86,9 +86,86 @@ function getAllowedRightTabsForMode(modeId) {
 }
 
 /**
+ * Clamps a mode's layout slice to fit within a specific viewport/screen size at read/render time
+ * WITHOUT mutating the user's saved intrinsic preferences in storage.
+ * Ensures at least `MIN_CENTER_WORKSPACE_WIDTH` (360px) remains for the center workspace.
+ */
+export function clampModeLayoutToViewport(
+  modeSlice,
+  { viewportWidth = null, viewportHeight = null } = {},
+) {
+  if (!modeSlice || typeof modeSlice !== 'object') return modeSlice;
+  const effectiveViewportW =
+    Number(viewportWidth) > 0
+      ? Number(viewportWidth)
+      : typeof window !== 'undefined' && Number(window.innerWidth) > 0
+        ? Number(window.innerWidth)
+        : 1440;
+  const effectiveViewportH =
+    Number(viewportHeight) > 0
+      ? Number(viewportHeight)
+      : typeof window !== 'undefined' && Number(window.innerHeight) > 0
+        ? Number(window.innerHeight)
+        : 920;
+
+  let leftWidth = Number(modeSlice.leftDrawer?.width) || DEFAULT_LEFT_DRAWER_WIDTH;
+  let rightWidth = Number(modeSlice.rightDock?.width) || DEFAULT_RIGHT_DOCK_WIDTH;
+
+  const maxRightForScreen = Math.max(
+    MIN_RIGHT_DOCK_WIDTH,
+    Math.min(MAX_RIGHT_DOCK_WIDTH, Math.floor(effectiveViewportW * 0.48)),
+  );
+  const maxLeftForScreen = Math.max(
+    MIN_LEFT_DRAWER_WIDTH,
+    Math.min(MAX_LEFT_DRAWER_WIDTH, Math.floor(effectiveViewportW * 0.45)),
+  );
+  rightWidth = Math.min(rightWidth, maxRightForScreen);
+  leftWidth = Math.min(leftWidth, maxLeftForScreen);
+
+  const maxCombinedDocksW = Math.max(
+    MIN_LEFT_DRAWER_WIDTH + MIN_RIGHT_DOCK_WIDTH,
+    effectiveViewportW - LEFT_RAIL_WIDTH - RIGHT_RAIL_WIDTH - MIN_CENTER_WORKSPACE_WIDTH,
+  );
+  if (leftWidth + rightWidth > maxCombinedDocksW) {
+    let overflow = leftWidth + rightWidth - maxCombinedDocksW;
+    const shrinkRight = Math.min(overflow, Math.max(0, rightWidth - MIN_RIGHT_DOCK_WIDTH));
+    rightWidth -= shrinkRight;
+    overflow -= shrinkRight;
+    if (overflow > 0) {
+      const shrinkLeft = Math.min(overflow, Math.max(0, leftWidth - MIN_LEFT_DRAWER_WIDTH));
+      leftWidth -= shrinkLeft;
+    }
+  }
+
+  const out = {
+    ...modeSlice,
+    leftDrawer: {
+      ...modeSlice.leftDrawer,
+      width: leftWidth,
+    },
+    rightDock: {
+      ...modeSlice.rightDock,
+      width: rightWidth,
+    },
+  };
+
+  if (modeSlice.floatingRect && typeof modeSlice.floatingRect === 'object') {
+    out.floatingRect = clampFloatingRect(
+      modeSlice.floatingRect,
+      { width: effectiveViewportW, height: effectiveViewportH },
+      { minWidth: 440, minHeight: 360 },
+    );
+  }
+
+  return out;
+}
+
+/**
  * Sanitizes a single mode's workspace layout slice ('design' | 'backend').
- * Silently replaces unknown panel IDs, invalid types, or out-of-bounds/off-screen dimensions
- * with safe defaults so app startup never crashes on corrupt or legacy storage.
+ * Silently replaces unknown panel IDs, invalid types, or out-of-bounds dimensions
+ * with safe intrinsic defaults ([220..440] for leftDrawer, [296..540] for rightDock).
+ * If `viewportWidth` or `viewportHeight` is explicitly passed in options, also applies
+ * read-time viewport clamping via `clampModeLayoutToViewport`.
  */
 export function sanitizeModeWorkspaceLayout(
   modeId,
@@ -134,57 +211,18 @@ export function sanitizeModeWorkspaceLayout(
       ? rawRightObj.propertiesTab
       : baseDefault.rightDock.propertiesTab;
 
-  // Validate & clamp leftDrawer.width and rightDock.width within panel limits and viewport width
+  // Validate & clamp intrinsic panel limits ([220..440] and [296..540]) without shrinking by current window.innerWidth
   const rawLeftW = Number(rawLeftObj?.width);
-  let leftWidth =
+  const leftWidth =
     Number.isFinite(rawLeftW) && rawLeftW > 0
       ? Math.max(MIN_LEFT_DRAWER_WIDTH, Math.min(MAX_LEFT_DRAWER_WIDTH, Math.round(rawLeftW)))
       : baseDefault.leftDrawer.width;
 
   const rawRightW = Number(rawRightObj?.width);
-  let rightWidth =
+  const rightWidth =
     Number.isFinite(rawRightW) && rawRightW > 0
       ? Math.max(MIN_RIGHT_DOCK_WIDTH, Math.min(MAX_RIGHT_DOCK_WIDTH, Math.round(rawRightW)))
       : baseDefault.rightDock.width;
-
-  const effectiveViewportW =
-    Number(viewportWidth) > 0
-      ? Number(viewportWidth)
-      : typeof window !== 'undefined' && Number(window.innerWidth) > 0
-        ? Number(window.innerWidth)
-        : 1440;
-  const effectiveViewportH =
-    Number(viewportHeight) > 0
-      ? Number(viewportHeight)
-      : typeof window !== 'undefined' && Number(window.innerHeight) > 0
-        ? Number(window.innerHeight)
-        : 920;
-
-  const maxRightForScreen = Math.max(
-    MIN_RIGHT_DOCK_WIDTH,
-    Math.min(MAX_RIGHT_DOCK_WIDTH, Math.floor(effectiveViewportW * 0.48)),
-  );
-  const maxLeftForScreen = Math.max(
-    MIN_LEFT_DRAWER_WIDTH,
-    Math.min(MAX_LEFT_DRAWER_WIDTH, Math.floor(effectiveViewportW * 0.45)),
-  );
-  rightWidth = Math.min(rightWidth, maxRightForScreen);
-  leftWidth = Math.min(leftWidth, maxLeftForScreen);
-
-  const maxCombinedDocksW = Math.max(
-    MIN_LEFT_DRAWER_WIDTH + MIN_RIGHT_DOCK_WIDTH,
-    effectiveViewportW - LEFT_RAIL_WIDTH - RIGHT_RAIL_WIDTH - MIN_CENTER_WORKSPACE_WIDTH,
-  );
-  if (leftWidth + rightWidth > maxCombinedDocksW) {
-    let overflow = leftWidth + rightWidth - maxCombinedDocksW;
-    const shrinkRight = Math.min(overflow, Math.max(0, rightWidth - MIN_RIGHT_DOCK_WIDTH));
-    rightWidth -= shrinkRight;
-    overflow -= shrinkRight;
-    if (overflow > 0) {
-      const shrinkLeft = Math.min(overflow, Math.max(0, leftWidth - MIN_LEFT_DRAWER_WIDTH));
-      leftWidth -= shrinkLeft;
-    }
-  }
 
   const rawAiObj =
     src.aiDock && typeof src.aiDock === 'object' && !Array.isArray(src.aiDock) ? src.aiDock : null;
@@ -210,11 +248,17 @@ export function sanitizeModeWorkspaceLayout(
   };
 
   if (src.floatingRect && typeof src.floatingRect === 'object' && !Array.isArray(src.floatingRect)) {
+    const fallbackVpW = Number(viewportWidth) > 0 ? Number(viewportWidth) : 1440;
+    const fallbackVpH = Number(viewportHeight) > 0 ? Number(viewportHeight) : 920;
     sanitized.floatingRect = clampFloatingRect(
       src.floatingRect,
-      { width: effectiveViewportW, height: effectiveViewportH },
+      { width: fallbackVpW, height: fallbackVpH },
       { minWidth: 440, minHeight: 360 },
     );
+  }
+
+  if (Number(viewportWidth) > 0 || Number(viewportHeight) > 0) {
+    return clampModeLayoutToViewport(sanitized, { viewportWidth, viewportHeight });
   }
 
   return sanitized;
