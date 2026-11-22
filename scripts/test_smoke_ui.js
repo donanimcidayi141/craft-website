@@ -1227,8 +1227,25 @@ async function main() {
       { isHandActive: true, hasSelection: true },
       `Sağ tık menüsü açıkken Escape aktif aracı veya seçimi değiştirdi: ${JSON.stringify(afterCtxEscState)}`
     );
-    await sendSingleKey(cdp, 'v', 'KeyV', 86);
-    console.log('  ✓ Sağ tık menüsü açıkken Escape tuşunun yalnızca menüyü kapattığı (araç/seçim değiştirmediği) doğrulandı');
+
+    // Sağ tık menüsü kapandıktan sonra Escape dinleyicisi kalkmış olmalı:
+    // 2. Escape -> El (hand) aracından Seçim (select) aracına dönmeli (seçim korunmalı)
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')) && document.body.innerText.includes('1 seçili')`
+      ),
+      'Sağ tık menüsü kapandıktan sonraki 2. Escape aktif aracı select yapmadı (Escape yutuldu!).'
+    );
+
+    // 3. Escape -> Seçim aracındayken seçimi üst kapsama çıkarmalı / temizlemeli ("1 seçili" kalkmalı)
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    assert.ok(
+      await waitFor(cdp, `!document.body.innerText.includes('seçili')`),
+      'Sağ tık menüsü kapandıktan sonraki 3. Escape seçimi üst kapsama çıkarmadı (Escape yutuldu!).'
+    );
+    console.log('  ✓ Sağ tık menüsü açıkken Escape yalnızca menüyü kapattı; menü kapalıyken Escape araç ve seçim zincirini çalıştırdı');
 
     // 14. .craft.json dosyasını tarayıcı file-input yoluyla içe aktar (cdp.setFileInputFiles)
     const craftJsonFixturePath = path.join(ROOT_DIR, 'scripts', 'fixtures', 'import', 'project.craft.json');
