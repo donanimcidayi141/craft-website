@@ -49,9 +49,11 @@ async function clickWindowMenuItem(cdp, itemSubstring) {
   assert.ok(clickedItem, `Pencere > ${itemSubstring} menü öğesi bulunamadı.`);
 }
 
-async function sendCtrlShortcut(cdp, keyChar, keyCode, virtualKeyCode) {
-  await cdp.evaluate(`document.activeElement?.blur?.()`);
-  await new Promise((r) => setTimeout(r, 40));
+async function sendCtrlShortcut(cdp, keyChar, keyCode, virtualKeyCode, { blurFirst = true } = {}) {
+  if (blurFirst) {
+    await cdp.evaluate(`document.activeElement?.blur?.()`);
+    await new Promise((r) => setTimeout(r, 40));
+  }
   await cdp.send('Input.dispatchKeyEvent', {
     type: 'rawKeyDown',
     modifiers: 2, // Ctrl
@@ -546,6 +548,69 @@ async function main() {
       ),
       'Yüzen CSS penceresi açıkken Ctrl+A ile tekrar eleman seçildiğinde pencere içeriği güncellenmedi!'
     );
+
+    // 4c-(a): Odak yüzen CSS penceresinin DOM'u içindeyken (bir sekme butonuna odaklanılmış, input değil)
+    // Delete, Backspace, ok tuşları, Ctrl+D ve Ctrl+X tuvale gitmemeli; V/R gibi araç tuşları çalışmaya devam etmeli
+    const focusedFloatingBtn = await cdp.evaluate(`
+      (() => {
+        const inspector = document.querySelector('[data-floating-css-inspector="true"]');
+        const tabBtn = Array.from(inspector?.querySelectorAll('button') || []).find(
+          (b) => b.textContent && b.textContent.includes('HTML Öznitelikleri')
+        );
+        if (!tabBtn) return false;
+        tabBtn.focus();
+        return inspector.contains(document.activeElement) && document.activeElement.tagName === 'BUTTON';
+      })()
+    `);
+    assert.ok(focusedFloatingBtn, 'Yüzen CSS penceresi içindeki sekme butonuna odaklanılamadı.');
+
+    const beforeFloatingFocusKeys = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${dragTarget.id}"]');
+        return {
+          count: document.querySelectorAll('#artboard-canvas [data-element-id]').length,
+          left: el?.style?.left || '',
+          top: el?.style?.top || '',
+        };
+      })()
+    `);
+
+    await sendSingleKey(cdp, 'Delete', 'Delete', 46, { blurFirst: false });
+    await sendSingleKey(cdp, 'Backspace', 'Backspace', 8, { blurFirst: false });
+    await sendSingleKey(cdp, 'ArrowRight', 'ArrowRight', 39, { blurFirst: false });
+    await sendSingleKey(cdp, 'ArrowDown', 'ArrowDown', 40, { blurFirst: false });
+    await sendCtrlShortcut(cdp, 'd', 'KeyD', 68, { blurFirst: false });
+    await sendCtrlShortcut(cdp, 'x', 'KeyX', 88, { blurFirst: false });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const afterFloatingFocusKeys = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${dragTarget.id}"]');
+        return {
+          count: document.querySelectorAll('#artboard-canvas [data-element-id]').length,
+          left: el?.style?.left || '',
+          top: el?.style?.top || '',
+        };
+      })()
+    `);
+    assert.deepEqual(
+      afterFloatingFocusKeys,
+      beforeFloatingFocusKeys,
+      `Odak yüzen CSS penceresi içindeyken basılan Delete/Backspace/Oklar/Ctrl+D/Ctrl+X tuvali etkiledi: ${JSON.stringify({ beforeFloatingFocusKeys, afterFloatingFocusKeys })}`
+    );
+
+    // Aynı odak durumunda R ve V araç tuşları mevcut davranışta çalışmaya devam etmeli
+    await sendSingleKey(cdp, 'r', 'KeyR', 82, { blurFirst: false });
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="rectangle"][aria-pressed="true"]'))`),
+      'Odak yüzen CSS penceresi butonundayken R araç tuşu çalışmadı.'
+    );
+    await sendSingleKey(cdp, 'v', 'KeyV', 86, { blurFirst: false });
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]'))`),
+      'Odak yüzen CSS penceresi butonundayken V araç tuşu çalışmadı.'
+    );
+    console.log('  ✓ Odak yüzen CSS penceresi içindeyken Delete/Backspace/Oklar/Ctrl+D/Ctrl+X tuvale gitmedi, V/R araç tuşları çalıştı');
 
     await cdp.evaluate(`document.querySelector('button[title="Yüzen CSS & Nitelik Penceresi"]')?.click()`);
     assert.ok(

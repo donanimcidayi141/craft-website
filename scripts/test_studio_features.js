@@ -3541,6 +3541,66 @@ test('useShortcuts keeps canvas shortcuts and Escape active when floating CSS in
     ),
     null
   );
+
+  // When a non-input element (e.g., button) inside the floating CSS window is focused:
+  // Delete, Backspace, Arrow keys, Ctrl+D, and Ctrl+X must NOT reach the canvas,
+  // while Ctrl+Z/Y and tool keys (V/R) continue to work.
+  const floatingBtnFocus = {
+    tagName: 'BUTTON',
+    isContentEditable: false,
+    closest: (sel) => (sel.includes('data-floating-css-inspector') ? {} : null),
+  };
+  const focusCalls = [];
+  const focusActions = {
+    ...actions,
+    handleDeleteSelected: () => focusCalls.push('delete'),
+    handleDuplicateSelected: () => focusCalls.push('duplicate'),
+    handleCut: () => focusCalls.push('cut'),
+    updateElementsWithHistory: () => focusCalls.push('nudge'),
+    handleUndo: () => focusCalls.push('undo'),
+    handleRedo: () => focusCalls.push('redo'),
+    setActiveTool: (t) => focusCalls.push(`tool:${t}`),
+  };
+  for (const blockedEvt of [
+    { key: 'Delete' },
+    { key: 'Backspace' },
+    { key: 'ArrowRight' },
+    { key: 'ArrowDown' },
+    { key: 'd', ctrlKey: true },
+    { key: 'x', ctrlKey: true },
+  ]) {
+    assert.equal(
+      dispatchStudioShortcut(
+        { ...blockedEvt, preventDefault: () => {} },
+        { state, actions: focusActions, activeElement: floatingBtnFocus }
+      ),
+      null
+    );
+  }
+  assert.deepEqual(focusCalls, []);
+
+  assert.equal(
+    dispatchStudioShortcut(
+      { key: 'z', ctrlKey: true, preventDefault: () => {} },
+      { state, actions: focusActions, activeElement: floatingBtnFocus }
+    ),
+    'undo'
+  );
+  assert.equal(
+    dispatchStudioShortcut(
+      { key: 'y', ctrlKey: true, preventDefault: () => {} },
+      { state, actions: focusActions, activeElement: floatingBtnFocus }
+    ),
+    'redo'
+  );
+  assert.equal(
+    dispatchStudioShortcut(
+      { key: 'r', preventDefault: () => {} },
+      { state, actions: focusActions, activeElement: floatingBtnFocus }
+    ),
+    'tool:rectangle'
+  );
+  assert.deepEqual(focusCalls, ['undo', 'redo', 'tool:rectangle']);
 });
 
 // -----------------------------------------------------------------------------

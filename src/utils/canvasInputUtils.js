@@ -47,6 +47,31 @@ export function isEditableElementTarget(el) {
 }
 
 /**
+ * Returns true if the target or focused element is inside the floating CSS & Attributes inspector
+ * (or any floating studio panel), even when the focused node is a button or container rather than an input.
+ */
+export function isInsideFloatingInspector(el) {
+  if (!el || typeof el !== 'object') return false;
+  if (el.dataset?.floatingCssInspector === 'true' || el.dataset?.floatingPanel === 'true') {
+    return true;
+  }
+  if (typeof el.getAttribute === 'function') {
+    if (
+      el.getAttribute('data-floating-css-inspector') === 'true' ||
+      el.getAttribute('data-floating-panel') === 'true'
+    ) {
+      return true;
+    }
+  }
+  if (typeof el.closest === 'function') {
+    if (el.closest('[data-floating-css-inspector="true"], [data-floating-panel="true"]')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Determines whether the global canvas keyboard listener should process an event.
  */
 export function shouldHandleGlobalCanvasShortcut({

@@ -3,6 +3,7 @@ import { findNodeAndParent } from '../utils/treeUtils.js';
 import { applyMultipleUpdatesForViewport } from '../utils/responsiveUtils.js';
 import {
   shouldHandleGlobalCanvasShortcut,
+  isInsideFloatingInspector,
   resolveSingleKeyToolShortcut,
   clampCanvasZoom,
 } from '../utils/canvasInputUtils.js';
@@ -18,7 +19,10 @@ import {
  *   Ctrl+N, Ctrl+Shift+N, Enter, Ctrl+=/+/-/0.
  * In 'backend' mode, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y is a no-op and never touches design history.
  */
-export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}, actions = {}, activeElement } = {}) {
+export function dispatchStudioShortcut(
+  e,
+  { activeMode: topLevelMode, state = {}, actions = {}, activeElement, isFloatingInspectorFocused } = {}
+) {
   const {
     activeMode: stateMode,
     showWelcomeScreen = false,
@@ -110,6 +114,11 @@ export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}
     return null;
   }
 
+  const floatingInspectorFocused =
+    typeof isFloatingInspectorFocused === 'boolean'
+      ? isFloatingInspectorFocused
+      : isInsideFloatingInspector(resolvedActiveElement) || isInsideFloatingInspector(e.target);
+
   // Universal: Save Project (Ctrl+Shift+S -> Save As, Ctrl+S -> Save)
   if (isCtrl && e.shiftKey && keyLower === 's') {
     e.preventDefault?.();
@@ -190,8 +199,9 @@ export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}
     return 'copy';
   }
 
-  // 3. Ctrl+X -> Cut
+  // 3. Ctrl+X -> Cut (blocked when focus is inside floating inspector DOM)
   if (isCtrl && keyLower === 'x') {
+    if (floatingInspectorFocused) return null;
     e.preventDefault?.();
     handleCut?.();
     return 'cut';
@@ -209,8 +219,9 @@ export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}
     return 'paste';
   }
 
-  // Ctrl+D -> Duplicate Selected
+  // Ctrl+D -> Duplicate Selected (blocked when focus is inside floating inspector DOM)
   if (isCtrl && !e.shiftKey && keyLower === 'd') {
+    if (floatingInspectorFocused) return null;
     e.preventDefault?.();
     handleDuplicateSelected?.();
     return 'duplicate';
@@ -267,6 +278,7 @@ export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}
     return 'redo';
   }
   if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (floatingInspectorFocused) return null;
     if (selectedIds.length > 0) {
       e.preventDefault?.();
       handleDeleteSelected?.();
@@ -275,6 +287,7 @@ export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}
     return null;
   }
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(keyLower)) {
+    if (floatingInspectorFocused) return null;
     if (selectedIds.length > 0) {
       e.preventDefault?.();
       const step = e.shiftKey ? 10 : 1;
