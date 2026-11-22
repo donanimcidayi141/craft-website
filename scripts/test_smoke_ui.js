@@ -2329,6 +2329,225 @@ async function main() {
     await new Promise((r) => setTimeout(r, 120));
     console.log('  ✓ Adım 3b: settingsStore v3, panelActions ve useCanvasView (yüzen panel tuvali kaydırmadı, sağ docka taşıma tuvali daraltıp ortaladı, Kaydedilmedi yanmadı) doğrulandı');
 
+    // 15d. Adım 4a: GERÇEK CDP fare sürüklemesi ile panel taşıma (eşik altı <6px tıklama, Escape iptal, sol->yüzen, yüzen->sağ) + klavyeyle erişilebilir konum seçici + Backend izolasyonu
+    // Önce tuvalde 1 eleman seç ve Katmanlar panelini sol dock'ta aç
+    await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id]');
+        if (el) el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      })()
+    `);
+    await clickWindowMenuItem(cdp, 'Katmanlar (Layers)');
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('[data-left-drawer-container="true"] [data-panel-drag-handle="layers"]'))`),
+      'Adım 4a testi için sol çekmecede Katmanlar sürükleme başlığı görünmedi.'
+    );
+
+    const beforeDragState = await cdp.evaluate(`
+      (() => {
+        const handle = document.querySelector('[data-left-drawer-container="true"] [data-panel-drag-handle="layers"]');
+        const r = handle.getBoundingClientRect();
+        const activeToolBtn = document.querySelector('button[data-tool-id][aria-pressed="true"]');
+        return {
+          startX: Math.round(r.left + 44),
+          startY: Math.round(r.top + r.height / 2),
+          activeTool: activeToolBtn?.getAttribute('data-tool-id') || null,
+          selectionCount: document.querySelectorAll('#artboard-canvas [data-selected="true"]').length,
+        };
+      })()
+    `);
+
+    // 1) 6px eşiği altında hareket (dx=3, dy=2 -> ~3.6px < 6px): tıklama sayılır, panel TAŞINMAMALI
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: beforeDragState.startX,
+      y: beforeDragState.startY,
+      button: 'left',
+      clickCount: 1,
+    });
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: beforeDragState.startX + 3,
+      y: beforeDragState.startY + 2,
+      button: 'left',
+      buttons: 1,
+    });
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: beforeDragState.startX + 3,
+      y: beforeDragState.startY + 2,
+      button: 'left',
+      clickCount: 1,
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    const afterSubThreshold = await cdp.evaluate(`
+      ({
+        zone: window.__craftStudioTestHook.getWorkspaceLayoutState().activeModeLayout?.panelZones?.layers,
+        floatingExists: Boolean(document.querySelector('[data-floating-panel-id="layers"]')),
+        guidesVisible: Boolean(document.querySelector('[data-dock-drop-guides="true"]')),
+      })
+    `);
+    assert.equal(afterSubThreshold.zone, 'left', '6px altı fare hareketi Katmanlar panelini taşıdı!');
+    assert.equal(afterSubThreshold.floatingExists, false, '6px altı hareket yüzen pencere açtı!');
+    assert.equal(afterSubThreshold.guidesVisible, false, '6px altı hareket bırakma rehberlerini açık bıraktı!');
+
+    // 2) Sürükleme sırasında Escape iptali: bırakma rehberleri açılır, Escape basınca iptal olur ve panel solda kalır
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: beforeDragState.startX,
+      y: beforeDragState.startY,
+      button: 'left',
+      clickCount: 1,
+    });
+    for (let step = 1; step <= 8; step++) {
+      const mx = Math.round(beforeDragState.startX + ((540 - beforeDragState.startX) * step) / 8);
+      const my = Math.round(beforeDragState.startY + ((220 - beforeDragState.startY) * step) / 8);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: mx, y: my, button: 'left', buttons: 1 });
+    }
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('[data-dock-drop-guides="true"]'))`),
+      '6px üstü sürüklemede bırakma rehberleri (DockDropGuides) görünmedi.'
+    );
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 540, y: 220, button: 'left', clickCount: 1 });
+    assert.ok(
+      await waitFor(cdp, `!document.querySelector('[data-dock-drop-guides="true"]')`),
+      'Escape sürüklemeyi iptal edip bırakma rehberlerini kapatmadı.'
+    );
+    const afterEscCancel = await cdp.evaluate(`
+      ({
+        zone: window.__craftStudioTestHook.getWorkspaceLayoutState().activeModeLayout?.panelZones?.layers,
+        floatingExists: Boolean(document.querySelector('[data-floating-panel-id="layers"]')),
+        activeTool: document.querySelector('button[data-tool-id][aria-pressed="true"]')?.getAttribute('data-tool-id') || null,
+      })
+    `);
+    assert.equal(afterEscCancel.zone, 'left', 'Escape ile iptal edilen sürükleme yine de paneli taşıdı!');
+    assert.equal(afterEscCancel.floatingExists, false, 'Escape ile iptal sonrası yüzen pencere açıldı!');
+    assert.equal(afterEscCancel.activeTool, beforeDragState.activeTool, 'Escape ile sürükleme iptali tuval aracını değiştirdi!');
+
+    // 3) GERÇEK CDP fare sürüklemesi: Sol Dock -> Yüzen Pencere (merkez alana bırak)
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: beforeDragState.startX,
+      y: beforeDragState.startY,
+      button: 'left',
+      clickCount: 1,
+    });
+    for (let step = 1; step <= 10; step++) {
+      const mx = Math.round(beforeDragState.startX + ((540 - beforeDragState.startX) * step) / 10);
+      const my = Math.round(beforeDragState.startY + ((220 - beforeDragState.startY) * step) / 10);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: mx, y: my, button: 'left', buttons: 1 });
+    }
+    assert.ok(
+      await waitFor(cdp, `document.querySelector('[data-drop-zone-guide="floating"]')?.getAttribute('data-drop-zone-active') === 'true'`),
+      'Merkez sürüklemede yüzen pencere bırakma hedefi aktifleşmedi.'
+    );
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 540, y: 220, button: 'left', clickCount: 1 });
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('[data-floating-panel="true"][data-floating-panel-id="layers"]'))`),
+      'Sol -> Yüzen fare sürüklemesi Katmanlar yüzen penceresini açmadı!'
+    );
+
+    const floatingCheck = await cdp.evaluate(`
+      (() => {
+        const frame = document.querySelector('[data-floating-panel="true"][data-floating-panel-id="layers"]');
+        const r = frame.getBoundingClientRect();
+        const handle = frame.querySelector('[data-panel-drag-handle="layers"]');
+        const hr = handle.getBoundingClientRect();
+        return {
+          zone: window.__craftStudioTestHook.getWorkspaceLayoutState().activeModeLayout?.panelZones?.layers,
+          left: r.left,
+          top: r.top,
+          right: r.right,
+          bottom: r.bottom,
+          vw: window.innerWidth,
+          vh: window.innerHeight,
+          handleX: Math.round(hr.left + 48),
+          handleY: Math.round(hr.top + hr.height / 2),
+          activeTool: document.querySelector('button[data-tool-id][aria-pressed="true"]')?.getAttribute('data-tool-id') || null,
+        };
+      })()
+    `);
+    assert.equal(floatingCheck.zone, 'floating');
+    assert.ok(
+      floatingCheck.left >= 10 && floatingCheck.top >= 44 && floatingCheck.right <= floatingCheck.vw - 10 && floatingCheck.bottom <= floatingCheck.vh - 10,
+      `Yüzen pencere ekran sınırlarının dışına taştı: ${JSON.stringify(floatingCheck)}`
+    );
+    assert.equal(floatingCheck.activeTool, beforeDragState.activeTool, 'Sol->Yüzen sürüklemesi tuval aracını değiştirdi!');
+
+    // 4) GERÇEK CDP fare sürüklemesi: Yüzen Pencere -> Sağ Dock (sağ kenar bırakma hedefine sürükle)
+    const rightDropX = floatingCheck.vw - 48;
+    const rightDropY = 260;
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: floatingCheck.handleX,
+      y: floatingCheck.handleY,
+      button: 'left',
+      clickCount: 1,
+    });
+    for (let step = 1; step <= 12; step++) {
+      const mx = Math.round(floatingCheck.handleX + ((rightDropX - floatingCheck.handleX) * step) / 12);
+      const my = Math.round(floatingCheck.handleY + ((rightDropY - floatingCheck.handleY) * step) / 12);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: mx, y: my, button: 'left', buttons: 1 });
+    }
+    assert.ok(
+      await waitFor(cdp, `document.querySelector('[data-drop-zone-guide="right"]')?.getAttribute('data-drop-zone-active') === 'true'`),
+      'Sağ kenara sürüklemede sağ bırakma hedefi aktifleşmedi.'
+    );
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rightDropX, y: rightDropY, button: 'left', clickCount: 1 });
+    assert.ok(
+      await waitFor(
+        cdp,
+        `!document.querySelector('[data-floating-panel-id="layers"]') && Boolean(document.querySelector('[data-dock-tab-strip="right"] [data-dock-tab-id="layers"]')) && Boolean(document.querySelector('[data-right-dock-panel="layers"]'))`
+      ),
+      'Yüzen -> Sağ fare sürüklemesi Katmanlar panelini sağ dock sekmeli grubuna taşımadı!'
+    );
+
+    // 5) Klavyeyle erişilebilir konum seçici (Pencere menüsü) + Backend modunda yalnızca backend panellerinin görünmesi
+    await cdp.evaluate(`
+      (() => {
+        const menuBtn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Pencere');
+        menuBtn?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('[data-window-panel-zone-btn="layers:left"]'))`),
+      'Pencere menüsünde klavyeyle erişilebilir layers:left konum düğmesi bulunamadı.'
+    );
+    await cdp.evaluate(`document.querySelector('[data-window-panel-zone-btn="layers:left"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `window.__craftStudioTestHook.getWorkspaceLayoutState().activeModeLayout?.panelZones?.layers === 'left'`),
+      'Pencere menüsü konum seçicisi Katmanlar panelini sol docka geri taşımadı.'
+    );
+
+    // Backend modunda konum seçicide YALNIZCA backend panelleri görünmeli
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="backend"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('[data-backend-workspace]'))`),
+      'Backend konum seçici testi için Backend moduna geçilemedi.'
+    );
+    await cdp.evaluate(`
+      (() => {
+        const menuBtn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Pencere');
+        menuBtn?.click();
+      })()
+    `);
+    const backendZoneGroups = await cdp.evaluate(`
+      Array.from(document.querySelectorAll('[data-window-panel-zones]')).map((el) => el.getAttribute('data-window-panel-zones'))
+    `);
+    assert.deepEqual(
+      backendZoneGroups,
+      ['backendInspector', 'flows', 'dataModels'],
+      `Backend modunda konum seçicide yalnızca backend panelleri görünmeliydi (gelen: ${JSON.stringify(backendZoneGroups)}).`
+    );
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    await cdp.evaluate(`document.querySelector('button[data-studio-mode="design"]')?.click()`);
+    assert.ok(await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`));
+    await clickWindowMenuItem(cdp, 'Düzeni sıfırla');
+    await sendCtrlShortcut(cdp, '0', 'Digit0', 48);
+    await new Promise((r) => setTimeout(r, 100));
+    console.log('  ✓ Adım 4a: Gerçek CDP fare sürüklemesi (<6px eşik koruması, Escape iptal, sol->yüzen, yüzen->sağ), klavyeyle erişilebilir konum seçici ve Backend izolasyonu doğrulandı');
+
     // 16. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
     await cdp.evaluate(`
       (() => {

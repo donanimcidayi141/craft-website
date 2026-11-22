@@ -148,6 +148,13 @@ import {
   computeCanvasOccupiedWidths,
 } from '../src/hooks/useCanvasView.js';
 import {
+  PANEL_DRAG_THRESHOLD_PX,
+  hasExceededPanelDragThreshold,
+  resolvePanelDropZone,
+  computeFloatingDropRect,
+  FLOATING_MIN_TOP_Y,
+} from '../src/utils/panelDragUtils.js';
+import {
   applyProjectBackendUpdate,
   resolveResetProjectBackend,
 } from '../src/hooks/useProjectState.js';
@@ -4363,6 +4370,36 @@ test('useCanvasView excludes zone === floating panels from canvas width and incl
     }),
     40
   );
+});
+
+test('panelDragUtils enforces 6px drag threshold, resolves left/right/floating drop zones, and clamps floating drop rects inside viewport', () => {
+  assert.equal(PANEL_DRAG_THRESHOLD_PX, 6);
+  // Strictly below 6px counts as click, not drag
+  assert.equal(hasExceededPanelDragThreshold(100, 100, 100, 100), false);
+  assert.equal(hasExceededPanelDragThreshold(100, 100, 103, 104), false); // 5px < 6px
+  assert.equal(hasExceededPanelDragThreshold(100, 100, 105, 100), false);
+  // >= 6px crosses threshold
+  assert.equal(hasExceededPanelDragThreshold(100, 100, 106, 100), true);
+  assert.equal(hasExceededPanelDragThreshold(100, 100, 105, 104), true); // ~6.4px >= 6px
+
+  // Drop zone resolution
+  assert.equal(resolvePanelDropZone(80, 1440, ['left', 'right', 'floating']), 'left');
+  assert.equal(resolvePanelDropZone(1390, 1440, ['left', 'right', 'floating']), 'right');
+  assert.equal(resolvePanelDropZone(640, 1440, ['left', 'right', 'floating']), 'floating');
+  // Respects restricted allowedZones
+  assert.equal(resolvePanelDropZone(80, 1440, ['right', 'floating']), 'floating');
+  assert.equal(resolvePanelDropZone(1390, 1440, ['left', 'floating']), 'floating');
+
+  // Floating drop rect always stays below TopMenuBar and inside viewport
+  const topEdgeRect = computeFloatingDropRect('layers', 50, -200, { width: 1280, height: 800 });
+  assert.ok(topEdgeRect.x >= 12);
+  assert.ok(topEdgeRect.y >= FLOATING_MIN_TOP_Y);
+  assert.ok(topEdgeRect.x + topEdgeRect.width <= 1280 - 12);
+  assert.ok(topEdgeRect.y + topEdgeRect.height <= 800 - 12);
+
+  const farRightRect = computeFloatingDropRect('layers', 5000, 3000, { width: 1280, height: 800 });
+  assert.ok(farRightRect.x >= 12 && farRightRect.x + farRightRect.width <= 1280 - 12);
+  assert.ok(farRightRect.y >= FLOATING_MIN_TOP_Y && farRightRect.y + farRightRect.height <= 800 - 12);
 });
 
 // -----------------------------------------------------------------------------

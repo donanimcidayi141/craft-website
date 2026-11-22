@@ -9,11 +9,16 @@ import {
   ExternalLink,
   PanelRightClose,
   PanelRightOpen,
+  PanelLeft,
   ChevronsRight,
   Database,
   Play,
+  GripHorizontal,
+  Square,
+  X,
 } from 'lucide-react';
 import { getStudioModeConfig } from '../data/studioModesRegistry';
+import { getPanelConfig } from '../data/panelRegistry';
 
 const RIGHT_TAB_ICON_MAP = {
   LayoutGrid,
@@ -48,11 +53,26 @@ export default function StudioRightDock({
   propertiesContent,
   activeMode = 'design',
   modeConfig = null,
+  dockTabs = [],
+  activePanelId = null,
+  panelActions = null,
+  onStartHeaderDrag = null,
+  renderMovedPanelContent = null,
 }) {
   const resolvedModeConfig = modeConfig || getStudioModeConfig(activeMode);
   const isBackendMode = activeMode === 'backend';
-  const showFloatingInspectorButton = resolvedModeConfig.supportsFloatingAttributesInspector !== false;
-  const headerTitle = resolvedModeConfig.rightDockHeaderTitle || 'Özellikler & Tasarım';
+  const defaultRightPanelId = isBackendMode ? 'backendInspector' : 'properties';
+  const resolvedActivePanelId = activePanelId || defaultRightPanelId;
+  const activePanelCfg = getPanelConfig(resolvedActivePanelId);
+  const isNativePropertiesPanel =
+    resolvedActivePanelId === 'properties' || resolvedActivePanelId === 'backendInspector';
+  const showFloatingInspectorButton =
+    resolvedModeConfig.supportsFloatingAttributesInspector !== false && isNativePropertiesPanel;
+  const headerTitle = isNativePropertiesPanel
+    ? (resolvedModeConfig.rightDockHeaderTitle || 'Özellikler & Tasarım')
+    : (activePanelCfg?.title || resolvedActivePanelId);
+  const resolvedDockTabs = Array.isArray(dockTabs) ? dockTabs : [];
+  const showMultiTabStrip = resolvedDockTabs.length > 1;
   const [isResizing, setIsResizing] = useState(false);
   const resizeStateRef = useRef(null);
 
@@ -124,14 +144,104 @@ export default function StudioRightDock({
             }`} />
           </div>
 
+          {/* Multi-Panel Tab Strip (visible only when 2+ panels are docked on the right) */}
+          {showMultiTabStrip && (
+            <div
+              data-dock-tab-strip="right"
+              role="tablist"
+              aria-label="Sağ panel sekmeleri"
+              className="flex items-center gap-1 px-2 py-1 bg-[#111115] border-b border-[#27272d] overflow-x-auto shrink-0"
+            >
+              {resolvedDockTabs.map((tabId) => {
+                const tabCfg = getPanelConfig(tabId);
+                const tabTitle = tabCfg?.title || tabId;
+                const isTabActive = resolvedActivePanelId === tabId;
+                return (
+                  <div
+                    key={tabId}
+                    data-dock-tab-id={tabId}
+                    className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] border shrink-0 transition-colors ${
+                      isTabActive
+                        ? 'bg-[#22222b] border-[#0d99ff]/50 text-white font-medium'
+                        : 'bg-transparent border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={isTabActive}
+                      onPointerDown={(e) => {
+                        onStartHeaderDrag?.(e, {
+                          panelId: tabId,
+                          title: tabTitle,
+                          sourceZone: 'right',
+                          allowedZones: tabCfg?.allowedZones,
+                        });
+                      }}
+                      onClick={() => panelActions?.setDockActiveTab('right', tabId)}
+                      className="truncate max-w-[120px] text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8] rounded cursor-grab active:cursor-grabbing"
+                    >
+                      {tabTitle}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${tabTitle} sekmesini kapat`}
+                      title="Sekmeyi kapat"
+                      onClick={() => panelActions?.close(tabId)}
+                      className="p-0.5 rounded text-zinc-500 hover:text-rose-300 hover:bg-rose-500/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-rose-400"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Studio Panel Header Bar */}
-          <div className="flex items-center justify-between px-3 py-1.5 bg-[#141417] border-b border-[#27272d] shrink-0 gap-1.5">
+          <div
+            data-panel-drag-handle={resolvedActivePanelId}
+            onPointerDown={(e) => {
+              onStartHeaderDrag?.(e, {
+                panelId: resolvedActivePanelId,
+                title: headerTitle,
+                sourceZone: 'right',
+                allowedZones: activePanelCfg?.allowedZones,
+              });
+            }}
+            className="flex items-center justify-between px-2.5 py-1.5 bg-[#141417] border-b border-[#27272d] shrink-0 gap-1.5 cursor-grab active:cursor-grabbing"
+          >
             <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-200 min-w-0">
+              <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
               <Sliders size={12} className={isBackendMode ? 'text-emerald-400 shrink-0' : 'text-[#38bdf8] shrink-0'} />
               <span className="truncate">{headerTitle}</span>
             </div>
 
             <div className="flex items-center gap-0.5 shrink-0">
+              {panelActions && (
+                <>
+                  <button
+                    type="button"
+                    data-panel-zone-action={`${resolvedActivePanelId}:left`}
+                    aria-label={`${headerTitle} panelini sola sabitle`}
+                    title="Sola Sabitle"
+                    onClick={() => panelActions.moveToZone(resolvedActivePanelId, 'left')}
+                    className="p-1 rounded text-zinc-500 hover:text-white hover:bg-white/[0.06] focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8] transition-colors"
+                  >
+                    <PanelLeft size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    data-panel-zone-action={`${resolvedActivePanelId}:floating`}
+                    aria-label={`${headerTitle} panelini yüzen pencere yap`}
+                    title="Yüzen Pencere Yap"
+                    onClick={() => panelActions.moveToZone(resolvedActivePanelId, 'floating')}
+                    className="p-1 rounded text-zinc-500 hover:text-white hover:bg-white/[0.06] focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8] transition-colors"
+                  >
+                    <Square size={10} />
+                  </button>
+                </>
+              )}
               {showFloatingInspectorButton && (
                 <button
                   type="button"
@@ -158,8 +268,10 @@ export default function StudioRightDock({
           </div>
 
           {/* Active Module Body */}
-          <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
-            {isBackendMode ? (
+          <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden" data-right-dock-panel={resolvedActivePanelId}>
+            {!isNativePropertiesPanel && renderMovedPanelContent ? (
+              renderMovedPanelContent(resolvedActivePanelId, 'right')
+            ) : isBackendMode ? (
               <div className="flex-1 p-4 text-xs text-zinc-400 space-y-3 overflow-y-auto" data-backend-right-dock={propertiesTab}>
                 <div className="flex items-center gap-1.5 border-b border-[#27272d] pb-2">
                   {(resolvedModeConfig.rightTabs || []).map((tab) => (

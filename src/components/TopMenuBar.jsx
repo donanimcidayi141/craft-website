@@ -33,6 +33,8 @@ export default function TopMenuBar({
   onRedo,
   activePanels,
   togglePanel,
+  panelActions = null,
+  panelZones = null,
   tabs,
   activeTabId,
   setActiveTabId,
@@ -325,35 +327,88 @@ export default function TopMenuBar({
                 <ChevronDown size={11} className={`text-zinc-500 transition-transform ${openMenu === 'pencere' ? 'rotate-180 text-[#38bdf8]' : ''}`} />
               </button>
               {openMenu === 'pencere' && (
-                <div className="absolute top-full left-0 mt-1 w-64 bg-[#18181b] border border-[#2f2f38] shadow-2xl rounded-md p-1 z-50 space-y-0.5">
+                <div className="absolute top-full left-0 mt-1 w-80 bg-[#18181b] border border-[#2f2f38] shadow-2xl rounded-md p-1 z-50 space-y-0.5">
                   <div className="px-2.5 py-1 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">
                     Çalışma Alanı Panelleri
                   </div>
                   {resolvedMenuPanels.map((panel) => {
                     const PanelIcon = MENU_PANEL_ICON_MAP[panel.icon] || Sliders;
                     const isPanelActive = Boolean(activePanels?.[panel.id]);
+                    const canonicalId = panel.panelId || panel.id;
+                    const allowedZones = Array.isArray(panel.allowedZones) ? panel.allowedZones : [];
+                    const isMovable = allowedZones.length > 1 && Boolean(panelActions);
+                    const currentZone = panelZones?.[canonicalId] || panel.defaultZone;
                     return (
                       <React.Fragment key={panel.id}>
                         {panel.dividerBefore && <div className="h-px bg-[#27272d] my-1 mx-1" />}
-                        <button
-                          type="button"
-                          data-window-menu-panel={panel.id}
-                          onClick={() => { togglePanel(panel.id); setOpenMenu(null); }}
-                          className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
-                        >
-                          <span className="flex items-center gap-2">
-                            <PanelIcon size={12} className="text-zinc-300" />
-                            <span>{panel.label}</span>
-                          </span>
-                          {panel.shortcutHint ? (
-                            <span className="flex items-center gap-1.5">
-                              <kbd className="text-[9.5px] font-mono text-zinc-500">{panel.shortcutHint}</kbd>
-                              {isPanelActive && <Check size={12} className="text-[#0d99ff]" />}
+                        <div className="flex items-center justify-between gap-1 rounded hover:bg-[#23232a] px-1 py-0.5 transition-colors">
+                          <button
+                            type="button"
+                            data-window-menu-panel={panel.id}
+                            onClick={() => {
+                              if (panelActions) {
+                                panelActions.toggle(panel.id);
+                              } else {
+                                togglePanel(panel.id);
+                              }
+                              setOpenMenu(null);
+                            }}
+                            className="flex-1 min-w-0 text-left px-1.5 py-1 rounded flex items-center justify-between gap-1.5 text-zinc-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8]"
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <PanelIcon size={12} className="text-zinc-300 shrink-0" />
+                              <span className="truncate">{panel.label}</span>
                             </span>
-                          ) : (
-                            isPanelActive && <Check size={12} className="text-[#0d99ff]" />
+                            {panel.shortcutHint ? (
+                              <span className="flex items-center gap-1.5 shrink-0">
+                                <kbd className="text-[9.5px] font-mono text-zinc-500">{panel.shortcutHint}</kbd>
+                                {isPanelActive && <Check size={12} className="text-[#0d99ff]" />}
+                              </span>
+                            ) : (
+                              isPanelActive && <Check size={12} className="text-[#0d99ff] shrink-0" />
+                            )}
+                          </button>
+
+                          {isMovable && (
+                            <div
+                              role="group"
+                              aria-label={`${panel.label} konum seçici`}
+                              data-window-panel-zones={canonicalId}
+                              className="flex items-center gap-0.5 bg-[#111115] border border-[#2a2a33] rounded p-0.5 shrink-0"
+                            >
+                              {[
+                                { zone: 'left', shortLabel: 'Sol', fullLabel: 'Sola Sabitle' },
+                                { zone: 'right', shortLabel: 'Sağ', fullLabel: 'Sağa Sabitle' },
+                                { zone: 'floating', shortLabel: 'Yüzen', fullLabel: 'Yüzen Pencere' },
+                              ]
+                                .filter((opt) => allowedZones.includes(opt.zone))
+                                .map((opt) => {
+                                  const isCurrent = currentZone === opt.zone;
+                                  return (
+                                    <button
+                                      key={opt.zone}
+                                      type="button"
+                                      data-window-panel-zone-btn={`${canonicalId}:${opt.zone}`}
+                                      aria-pressed={isCurrent}
+                                      aria-label={`${panel.label} — ${opt.fullLabel}`}
+                                      title={opt.fullLabel}
+                                      onClick={() => {
+                                        panelActions.moveToZone(canonicalId, opt.zone);
+                                        setOpenMenu(null);
+                                      }}
+                                      className={`px-1.5 py-0.5 rounded text-[9.5px] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8] ${
+                                        isCurrent
+                                          ? 'bg-[#0d99ff]/25 text-[#7dd3fc]'
+                                          : 'text-zinc-400 hover:text-white hover:bg-white/[0.06]'
+                                      }`}
+                                    >
+                                      {opt.shortLabel}
+                                    </button>
+                                  );
+                                })}
+                            </div>
                           )}
-                        </button>
+                        </div>
                       </React.Fragment>
                     );
                   })}

@@ -9,12 +9,14 @@ import {
   Circle, Minus, Frame, Pipette, Paintbrush, TextCursorInput, CheckSquare,
   ListCollapse, Video, SeparatorHorizontal, Grid3x3, Ruler, Maximize2,
   SlidersHorizontal, CopyPlus, ArrowUpToLine, ArrowDownToLine,
-  AlignCenterHorizontal, AlignCenterVertical, Workflow, Database, Zap
+  AlignCenterHorizontal, AlignCenterVertical, Workflow, Database, Zap,
+  GripHorizontal, PanelRight
 } from 'lucide-react';
 import { canHaveChildren, isExplicitContainer } from '../utils/treeUtils.js';
 import { PRESET_ASSETS } from '../constants.js';
 import { elementToHtml, styleObjectToCss } from '../utils/codeSync.js';
 import { getStudioModeConfig } from '../data/studioModesRegistry.js';
+import { getPanelConfig } from '../data/panelRegistry.js';
 import PresetThumbnail from './PresetThumbnail.jsx';
 import LeftAiChatPanel from './LeftAiChatPanel.jsx';
 
@@ -107,9 +109,15 @@ export default function StudioLeftSidebar({
   projectBackend = null,
   drawerWidth: controlledDrawerWidth = null,
   onChangeDrawerWidth = null,
+  dockTabs = [],
+  panelActions = null,
+  onStartHeaderDrag = null,
+  renderMovedPanelContent = null,
 }) {
   const resolvedModeConfig = modeConfig || getStudioModeConfig(activeMode);
   const isBackendMode = activeMode === 'backend';
+  const resolvedDockTabs = Array.isArray(dockTabs) ? dockTabs : [];
+  const showMultiTabStrip = resolvedDockTabs.length > 1;
   const [collapsedMap, setCollapsedMap] = useState({});
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState('');
@@ -541,6 +549,96 @@ export default function StudioLeftSidebar({
     { id: 'code', title: 'Canlı Kod (JSX & CSS)', icon: Code2 },
   ];
 
+  const renderLeftZoneActions = (panelId, panelTitle) => {
+    if (!panelActions || !panelId) return null;
+    const panelCfg = getPanelConfig(panelId);
+    const allowedZones = panelCfg?.allowedZones || ['left', 'right', 'floating'];
+    return (
+      <>
+        {allowedZones.includes('right') && (
+          <button
+            type="button"
+            data-panel-zone-action={`${panelId}:right`}
+            aria-label={`${panelTitle} panelini sağa sabitle`}
+            title="Sağa Sabitle"
+            onClick={() => panelActions.moveToZone(panelId, 'right')}
+            className="p-1 text-zinc-500 hover:text-white rounded hover:bg-white/[0.06] focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8] transition-colors"
+          >
+            <PanelRight size={11} />
+          </button>
+        )}
+        {allowedZones.includes('floating') && (
+          <button
+            type="button"
+            data-panel-zone-action={`${panelId}:floating`}
+            aria-label={`${panelTitle} panelini yüzen pencere yap`}
+            title="Yüzen Pencere Yap"
+            onClick={() => panelActions.moveToZone(panelId, 'floating')}
+            className="p-1 text-zinc-500 hover:text-white rounded hover:bg-white/[0.06] focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8] transition-colors"
+          >
+            <Square size={10} />
+          </button>
+        )}
+      </>
+    );
+  };
+
+  const renderLeftTabStrip = () => {
+    if (!showMultiTabStrip) return null;
+    return (
+      <div
+        data-dock-tab-strip="left"
+        role="tablist"
+        aria-label="Sol panel sekmeleri"
+        className="flex items-center gap-1 px-2 py-1 bg-[#111115] border-b border-[#27272d] overflow-x-auto shrink-0"
+      >
+        {resolvedDockTabs.map((tabId) => {
+          const tabCfg = getPanelConfig(tabId);
+          const tabTitle = tabCfg?.title || tabId;
+          const isTabActive = activeTab === tabId;
+          return (
+            <div
+              key={tabId}
+              data-dock-tab-id={tabId}
+              className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] border shrink-0 transition-colors ${
+                isTabActive
+                  ? 'bg-[#22222b] border-[#0d99ff]/50 text-white font-medium'
+                  : 'bg-transparent border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]'
+              }`}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isTabActive}
+                onPointerDown={(e) => {
+                  onStartHeaderDrag?.(e, {
+                    panelId: tabId,
+                    title: tabTitle,
+                    sourceZone: 'left',
+                    allowedZones: tabCfg?.allowedZones,
+                  });
+                }}
+                onClick={() => panelActions?.setDockActiveTab('left', tabId)}
+                className="truncate max-w-[112px] text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8] rounded cursor-grab active:cursor-grabbing"
+              >
+                {tabTitle}
+              </button>
+              <button
+                type="button"
+                aria-label={`${tabTitle} sekmesini kapat`}
+                title="Sekmeyi kapat"
+                onClick={() => panelActions?.close(tabId)}
+                className="p-0.5 rounded text-zinc-500 hover:text-rose-300 hover:bg-rose-500/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-rose-400"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   if (isBackendMode) {
     const backendLeftPanels = resolvedModeConfig.leftPanels || [];
     const activeBackendPanel = backendLeftPanels.find((p) => p.id === activeTab) || null;
@@ -624,6 +722,7 @@ export default function StudioLeftSidebar({
             style={{ width: `${activeTab === 'ai' ? Math.max(drawerWidth, 296) : drawerWidth}px` }}
             className="relative bg-[#18181b] flex flex-col h-full text-xs text-zinc-300 min-w-0"
           >
+            {renderLeftTabStrip()}
             {activeTab === 'ai' ? (
               <LeftAiChatPanel
                 aiChat={aiChat}
@@ -631,23 +730,37 @@ export default function StudioLeftSidebar({
               />
             ) : activeBackendPanel ? (
               <div className="flex flex-col h-full min-h-0" data-backend-left-drawer={activeBackendPanel.id}>
-                <div className="px-3 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between">
-                  <div className="flex items-center gap-2 min-w-0">
+                <div
+                  data-panel-drag-handle={activeBackendPanel.id}
+                  onPointerDown={(e) => {
+                    onStartHeaderDrag?.(e, {
+                      panelId: activeBackendPanel.id,
+                      title: activeBackendPanel.title,
+                      sourceZone: 'left',
+                    });
+                  }}
+                  className="px-2.5 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing"
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
                     <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">
                       {activeBackendPanel.title}
                     </span>
-                    <span className="text-[10px] font-mono tabular-nums text-emerald-300 bg-[#101013] border border-emerald-500/30 px-1.5 py-0.2 rounded">
+                    <span className="text-[10px] font-mono tabular-nums text-emerald-300 bg-[#101013] border border-emerald-500/30 px-1.5 py-0.2 rounded shrink-0">
                       {backendItems.length}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab(null)}
-                    title="Sol paneli gizle"
-                    className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
-                  >
-                    <ChevronsLeft size={13} />
-                  </button>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    {renderLeftZoneActions(activeBackendPanel.id, activeBackendPanel.title)}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab(null)}
+                      title="Sol paneli gizle"
+                      className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
+                    >
+                      <ChevronsLeft size={13} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -665,6 +778,43 @@ export default function StudioLeftSidebar({
                       </div>
                     ))
                   )}
+                </div>
+              </div>
+            ) : renderMovedPanelContent ? (
+              <div className="flex flex-col h-full min-h-0" data-left-dock-panel={activeTab}>
+                <div
+                  data-panel-drag-handle={activeTab}
+                  onPointerDown={(e) => {
+                    const cfg = getPanelConfig(activeTab);
+                    onStartHeaderDrag?.(e, {
+                      panelId: activeTab,
+                      title: cfg?.title || activeTab,
+                      sourceZone: 'left',
+                      allowedZones: cfg?.allowedZones,
+                    });
+                  }}
+                  className="px-2.5 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing"
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
+                    <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">
+                      {getPanelConfig(activeTab)?.title || activeTab}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    {renderLeftZoneActions(activeTab, getPanelConfig(activeTab)?.title || activeTab)}
+                    <button
+                      type="button"
+                      onClick={() => (panelActions ? panelActions.close(activeTab) : setActiveTab(null))}
+                      title="Sol paneli gizle"
+                      className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
+                    >
+                      <ChevronsLeft size={13} />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  {renderMovedPanelContent(activeTab, 'left')}
                 </div>
               </div>
             ) : null}
@@ -1125,19 +1275,31 @@ export default function StudioLeftSidebar({
           style={{ width: `${activeTab === 'ai' ? Math.max(drawerWidth, 296) : drawerWidth}px` }}
           className="relative bg-[#18181b] flex flex-col h-full text-xs text-zinc-300 min-w-0"
         >
+          {renderLeftTabStrip()}
           {/* TAB 1: LAYERS */}
           {activeTab === 'layers' && (
             <div className="flex flex-col h-full min-h-0">
-              <div className="px-3 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Layers size={13} className="text-[#38bdf8]" />
-                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider">Katmanlar</span>
-                  <span className="text-[10px] font-mono tabular-nums text-zinc-400 bg-[#101013] border border-[#27272d] px-1.5 py-0.2 rounded">
+              <div
+                data-panel-drag-handle="layers"
+                onPointerDown={(e) => {
+                  onStartHeaderDrag?.(e, {
+                    panelId: 'layers',
+                    title: 'Katmanlar & DOM Ağacı',
+                    sourceZone: 'left',
+                  });
+                }}
+                className="px-2.5 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
+                  <Layers size={13} className="text-[#38bdf8] shrink-0" />
+                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">Katmanlar</span>
+                  <span className="text-[10px] font-mono tabular-nums text-zinc-400 bg-[#101013] border border-[#27272d] px-1.5 py-0.2 rounded shrink-0">
                     {countAllNodes(elements)}
                   </span>
                 </div>
 
-                <div className="flex items-center gap-0.5">
+                <div className="flex items-center gap-0.5 shrink-0">
                   {selectedIds.length > 1 && (
                     <button
                       type="button"
@@ -1158,6 +1320,7 @@ export default function StudioLeftSidebar({
                       <Trash2 size={13} />
                     </button>
                   )}
+                  {renderLeftZoneActions('layers', 'Katmanlar')}
                   <button
                     type="button"
                     onClick={() => setActiveTab(null)}
@@ -1214,19 +1377,33 @@ export default function StudioLeftSidebar({
           {/* TAB 2: ELEMENTS & TOOLS */}
           {activeTab === 'elements' && (
             <div className="flex flex-col h-full min-h-0">
-              <div className="px-3 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <TagIcon size={13} className="text-[#38bdf8]" />
-                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider">HTML Etiketleri</span>
+              <div
+                data-panel-drag-handle="elements"
+                onPointerDown={(e) => {
+                  onStartHeaderDrag?.(e, {
+                    panelId: 'elements',
+                    title: 'HTML Etiketleri',
+                    sourceZone: 'left',
+                  });
+                }}
+                className="px-2.5 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
+                  <TagIcon size={13} className="text-[#38bdf8] shrink-0" />
+                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">HTML Etiketleri</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab(null)}
-                  title="Sol paneli gizle"
-                  className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
-                >
-                  <ChevronsLeft size={13} />
-                </button>
+                <div className="flex items-center gap-0.5 shrink-0">
+                  {renderLeftZoneActions('elements', 'HTML Etiketleri')}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab(null)}
+                    title="Sol paneli gizle"
+                    className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
+                  >
+                    <ChevronsLeft size={13} />
+                  </button>
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto p-3 space-y-4">
@@ -1274,19 +1451,33 @@ export default function StudioLeftSidebar({
           {/* TAB 3: TEMPLATES & PRESETS */}
           {activeTab === 'templates' && (
             <div className="flex flex-col h-full min-h-0">
-              <div className="px-3 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <LayoutTemplate size={13} className="text-[#38bdf8]" />
-                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider">Şablonlar &amp; Bloklar</span>
+              <div
+                data-panel-drag-handle="templates"
+                onPointerDown={(e) => {
+                  onStartHeaderDrag?.(e, {
+                    panelId: 'templates',
+                    title: 'Şablonlar & Hazır Bloklar',
+                    sourceZone: 'left',
+                  });
+                }}
+                className="px-2.5 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
+                  <LayoutTemplate size={13} className="text-[#38bdf8] shrink-0" />
+                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">Şablonlar &amp; Bloklar</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab(null)}
-                  title="Sol paneli gizle"
-                  className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
-                >
-                  <ChevronsLeft size={13} />
-                </button>
+                <div className="flex items-center gap-0.5 shrink-0">
+                  {renderLeftZoneActions('templates', 'Şablonlar & Bloklar')}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab(null)}
+                    title="Sol paneli gizle"
+                    className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
+                  >
+                    <ChevronsLeft size={13} />
+                  </button>
+                </div>
               </div>
 
               <div className="p-2.5 border-b border-[#24242a] space-y-2">
@@ -1368,17 +1559,29 @@ export default function StudioLeftSidebar({
           {/* TAB 4: LIVE CODE */}
           {activeTab === 'code' && (
             <div className="flex flex-col h-full min-h-0">
-              <div className="px-3 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Code2 size={13} className="text-emerald-400" />
-                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider">Canlı Kod İnceleyici</span>
+              <div
+                data-panel-drag-handle="code"
+                onPointerDown={(e) => {
+                  onStartHeaderDrag?.(e, {
+                    panelId: 'code',
+                    title: 'Canlı Kod (JSX & CSS)',
+                    sourceZone: 'left',
+                  });
+                }}
+                className="px-2.5 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
+                  <Code2 size={13} className="text-emerald-400 shrink-0" />
+                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">Canlı Kod İnceleyici</span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-0.5 shrink-0">
                   {selectedElement && (
                     <span className="text-[10px] font-mono text-[#7dd3fc] font-medium bg-[#101013] border border-[#27272d] px-1.5 py-0.5 rounded-sm">
                       &lt;{selectedElement.type}&gt;
                     </span>
                   )}
+                  {renderLeftZoneActions('code', 'Canlı Kod')}
                   <button
                     type="button"
                     onClick={() => setActiveTab(null)}
@@ -1447,6 +1650,46 @@ export default function StudioLeftSidebar({
               aiChat={aiChat}
               onClosePanel={() => setActiveTab(null)}
             />
+          )}
+
+          {/* MOVED PANEL FROM ANOTHER ZONE (e.g., properties or attributesAndCss docked left) */}
+          {!['layers', 'elements', 'templates', 'code', 'ai'].includes(activeTab) && renderMovedPanelContent && (
+            <div className="flex flex-col h-full min-h-0" data-left-dock-panel={activeTab}>
+              <div
+                data-panel-drag-handle={activeTab}
+                onPointerDown={(e) => {
+                  const cfg = getPanelConfig(activeTab);
+                  onStartHeaderDrag?.(e, {
+                    panelId: activeTab,
+                    title: cfg?.title || activeTab,
+                    sourceZone: 'left',
+                    allowedZones: cfg?.allowedZones,
+                  });
+                }}
+                className="px-2.5 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GripHorizontal size={12} className="text-zinc-600 shrink-0" />
+                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider truncate">
+                    {getPanelConfig(activeTab)?.title || activeTab}
+                  </span>
+                </div>
+                <div className="flex items-center gap-0.5 shrink-0">
+                  {renderLeftZoneActions(activeTab, getPanelConfig(activeTab)?.title || activeTab)}
+                  <button
+                    type="button"
+                    onClick={() => (panelActions ? panelActions.close(activeTab) : setActiveTab(null))}
+                    title="Sol paneli gizle"
+                    className="p-1 text-zinc-400 hover:text-white rounded hover:bg-white/[0.06]"
+                  >
+                    <ChevronsLeft size={13} />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                {renderMovedPanelContent(activeTab, 'left')}
+              </div>
+            </div>
           )}
 
           {/* Right-Edge Smooth Width Splitter */}

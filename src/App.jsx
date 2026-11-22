@@ -45,7 +45,17 @@ import AttributesCssInspectorModal from './components/AttributesCssInspectorModa
 import FunctionEditorModal from './components/FunctionEditorModal';
 import StudioRightDock from './components/StudioRightDock';
 import BackendWorkspaceSkeleton from './components/BackendWorkspaceSkeleton';
+import FloatingPanelFrame from './components/FloatingPanelFrame';
+import DockDropGuides from './components/DockDropGuides';
 import ProtoApp from './proto/ProtoApp';
+import { getPanelConfig } from './data/panelRegistry';
+import { clampFloatingRect } from './utils/propertySearch';
+import {
+  hasExceededPanelDragThreshold,
+  resolvePanelDropZone,
+  computeFloatingDropRect,
+  FLOATING_MIN_TOP_Y,
+} from './utils/panelDragUtils';
 import { useSelection } from './hooks/useSelection';
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
 import { useProjectState } from './hooks/useProjectState';
@@ -59,6 +69,11 @@ function CraftStudioApp() {
     activeMode,
     currentModeConfig,
     activeModeLayout,
+    leftDockTabs,
+    rightDockTabs,
+    rightDockActiveTab,
+    panelZones,
+    floatingPanels,
     panelActions,
     setStudioMode,
     effectiveActivePanels,
@@ -343,6 +358,194 @@ function CraftStudioApp() {
       setActiveTool,
     });
   }, [previewMode, setStudioMode, setEditingGroupId, triggerFit]);
+
+  const [activePanelDrag, setActivePanelDrag] = useState(null);
+  const panelDragSessionRef = useRef(null);
+
+  const handleStartPanelHeaderDrag = useCallback((e, dragMeta = {}) => {
+    if (!e || e.button !== 0 || !dragMeta.panelId) return;
+    if (e.target?.closest?.('button:not([role="tab"]), input, select, textarea, a')) {
+      return;
+    }
+
+    const panelCfg = getPanelConfig(dragMeta.panelId);
+    const allowedZones = Array.isArray(dragMeta.allowedZones)
+      ? dragMeta.allowedZones
+      : (panelCfg?.allowedZones || ['left', 'right', 'floating']);
+    if (allowedZones.length <= 1) return;
+
+    e.stopPropagation();
+    e.preventDefault();
+
+    const captureTarget = e.currentTarget;
+    try {
+      captureTarget?.setPointerCapture?.(e.pointerId);
+    } catch {
+      // Synthetic PointerEvent fallback
+    }
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const sourceZone = dragMeta.sourceZone || panelZones?.[dragMeta.panelId] || panelCfg?.defaultZone || 'left';
+    const initialRect = dragMeta.initialRect
+      ? { ...dragMeta.initialRect }
+      : (floatingPanels?.[dragMeta.panelId]?.rect ? { ...floatingPanels[dragMeta.panelId].rect } : null);
+
+    panelDragSessionRef.current = {
+      panelId: dragMeta.panelId,
+      title: dragMeta.title || panelCfg?.title || dragMeta.panelId,
+      sourceZone,
+      allowedZones,
+      startX,
+      startY,
+      pointerId: e.pointerId,
+      captureTarget,
+      initialRect,
+      hasExceededThreshold: false,
+      lastTargetZone: sourceZone,
+    };
+
+    const cleanup = () => {
+      const s = panelDragSessionRef.current;
+      if (s?.captureTarget) {
+        try {
+          s.captureTarget.releasePointerCapture?.(s.pointerId);
+        } catch {
+          // ignore
+        }
+      }
+      panelDragSessionRef.current = null;
+      setActivePanelDrag(null);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+
+    const onPointerMove = (moveEvt) => {
+      const s = panelDragSessionRef.current;
+      if (!s) return;
+      if (!s.hasExceededThreshold) {
+        if (!hasExceededPanelDragThreshold(s.startX, s.startY, moveEvt.clientX, moveEvt.clientY)) {
+          return;
+        }
+        s.hasExceededThreshold = true;
+      }
+
+      const vw = window.innerWidth || 1440;
+      const vh = window.innerHeight || 920;
+      const targetZone = resolvePanelDropZone(moveEvt.clientX, vw, s.allowedZones);
+      s.lastTargetZone = targetZone;
+
+      setActivePanelDrag({
+        panelId: s.panelId,
+        title: s.title,
+        sourceZone: s.sourceZone,
+        allowedZones: s.allowedZones,
+        targetZone,
+        clientX: moveEvt.clientX,
+        clientY: moveEvt.clientY,
+        hasExceededThreshold: true,
+      });
+
+      // Live move preview when repositioning a floating window within center area
+      if (s.sourceZone === 'floating' && s.initialRect && targetZone === 'floating') {
+        const dx = moveEvt.clientX - s.startX;
+        const dy = moveEvt.clientY - s.startY;
+        const minW = panelCfg?.sizeLimits?.minWidth || 240;
+        const minH = panelCfg?.sizeLimits?.minHeight || 280;
+        const clamped = clampFloatingRect(
+          {
+            ...s.initialRect,
+            x: s.initialRect.x + dx,
+            y: Math.max(FLOATING_MIN_TOP_Y, s.initialRect.y + dy),
+          },
+          { width: vw, height: vh },
+          { minWidth: minW, minHeight: minH },
+        );
+        panelActions.updateFloatingRect(s.panelId, {
+          ...clamped,
+          y: Math.max(FLOATING_MIN_TOP_Y, clamped.y),
+        });
+      }
+    };
+
+    const cancelDrag = () => {
+      const s = panelDragSessionRef.current;
+      if (s?.sourceZone === 'floating' && s.initialRect && s.hasExceededThreshold) {
+        panelActions.updateFloatingRect(s.panelId, s.initialRect);
+      }
+      cleanup();
+    };
+
+    const onKeyDown = (keyEvt) => {
+      if (keyEvt.key !== 'Escape') return;
+      keyEvt.preventDefault();
+      keyEvt.stopPropagation();
+      cancelDrag();
+    };
+
+    const onPointerCancel = () => {
+      cancelDrag();
+    };
+
+    const onPointerUp = (upEvt) => {
+      const s = panelDragSessionRef.current;
+      if (!s) return;
+      if (!s.hasExceededThreshold) {
+        cleanup();
+        return;
+      }
+
+      const vw = window.innerWidth || 1440;
+      const vh = window.innerHeight || 920;
+      const targetZone = resolvePanelDropZone(upEvt.clientX, vw, s.allowedZones);
+
+      if (targetZone === 'floating') {
+        if (s.sourceZone === 'floating' && s.initialRect) {
+          const dx = upEvt.clientX - s.startX;
+          const dy = upEvt.clientY - s.startY;
+          const minW = panelCfg?.sizeLimits?.minWidth || 240;
+          const minH = panelCfg?.sizeLimits?.minHeight || 280;
+          const clamped = clampFloatingRect(
+            {
+              ...s.initialRect,
+              x: s.initialRect.x + dx,
+              y: Math.max(FLOATING_MIN_TOP_Y, s.initialRect.y + dy),
+            },
+            { width: vw, height: vh },
+            { minWidth: minW, minHeight: minH },
+          );
+          panelActions.updateFloatingRect(s.panelId, {
+            ...clamped,
+            y: Math.max(FLOATING_MIN_TOP_Y, clamped.y),
+          });
+        } else {
+          const dropRect = computeFloatingDropRect(
+            s.panelId,
+            upEvt.clientX,
+            upEvt.clientY,
+            { width: vw, height: vh },
+            s.initialRect,
+          );
+          panelActions.moveToZone(s.panelId, 'floating', { floatingRect: dropRect });
+        }
+      } else if ((targetZone === 'left' || targetZone === 'right') && targetZone !== s.sourceZone) {
+        panelActions.moveToZone(s.panelId, targetZone);
+      }
+
+      cleanup();
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('keydown', onKeyDown, true);
+  }, [panelActions, panelZones, floatingPanels]);
+
+  useEffect(() => () => {
+    panelDragSessionRef.current = null;
+  }, []);
 
   const handleSelectWorkspacePreset = useCallback((presetId) => {
     applyWorkspacePreset(presetId);
@@ -1143,6 +1346,8 @@ function CraftStudioApp() {
             onRedo={handleRedoWithSelection}
             activePanels={effectiveActivePanels}
             togglePanel={togglePanel}
+            panelActions={panelActions}
+            panelZones={panelZones}
             tabs={tabs}
             activeTabId={activeTabId}
             setActiveTabId={(nextId) => {
@@ -1191,6 +1396,56 @@ function CraftStudioApp() {
                 setActiveTab={setLeftSidebarTab}
                 drawerWidth={leftSidebarWidth}
                 onChangeDrawerWidth={setLeftSidebarWidth}
+                dockTabs={leftDockTabs}
+                panelActions={panelActions}
+                onStartHeaderDrag={handleStartPanelHeaderDrag}
+                renderMovedPanelContent={(movedPanelId) => {
+                  if (movedPanelId === 'properties') {
+                    return (
+                      <PropertiesPanel
+                        selectedIds={selectedIds}
+                        elements={elements}
+                        rawElements={rawElements}
+                        onSelectElement={(id) => handleSelectElements([id])}
+                        onUpdateElement={handleUpdateElement}
+                        onUpdateElementDirect={handleUpdateElementDirect}
+                        onUpdateResolvedElements={(nextResolved) => {
+                          const synced = syncViewportTreeDiffs(rawElements, nextResolved, viewportMode);
+                          updateElementsWithHistory(synced);
+                        }}
+                        onUpdateMultipleElements={handleUpdateMultipleElements}
+                        onDeleteSelected={handleDeleteSelected}
+                        onDuplicateSelected={handleDuplicateSelected}
+                        onGroupSelected={handleGroupSelected}
+                        onUngroupSelected={handleUngroupSelected}
+                        onWrapSelected={handleWrapSelected}
+                        onUnwrapElement={handleUnwrapElement}
+                        canvasSettings={canvasSettings}
+                        onUpdateCanvasSettings={setCanvasSettings}
+                        onCommitHistory={handleCommitHistory}
+                        onClose={() => panelActions.close('properties')}
+                        onOpenAttributesInspector={() => panelActions.open('attributesAndCss')}
+                        viewportMode={viewportMode}
+                        onResetViewportFromDesktop={handleResetViewportFromDesktop}
+                        controlledTab={rightPropertiesTab}
+                        onTabChange={setRightPropertiesTab}
+                        tabs={tabs}
+                        projectFunctions={projectFunctions}
+                        onOpenFunctionEditor={handleOpenFunctionEditor}
+                        onDeleteProjectFunction={handleDeleteProjectFunction}
+                      />
+                    );
+                  }
+                  const movedCfg = getPanelConfig(movedPanelId);
+                  return (
+                    <div className="flex-1 overflow-y-auto p-3 text-[11px] text-zinc-400 space-y-2">
+                      <p className="text-zinc-200 font-medium">{movedCfg?.title || movedPanelId}</p>
+                      <p className="leading-relaxed">
+                        Bu panel sol kenar çekmecesine sabitlendi. Başlıktan sürükleyerek veya konum düğmeleriyle sağa/yüzen pencereye taşıyabilirsiniz.
+                      </p>
+                    </div>
+                  );
+                }}
                 activeMode={activeMode}
                 modeConfig={currentModeConfig}
                 projectBackend={projectBackend}
@@ -1335,6 +1590,52 @@ function CraftStudioApp() {
                 isFloatingInspectorOpen={showAttributesInspectorModal}
                 activeMode={activeMode}
                 modeConfig={currentModeConfig}
+                dockTabs={rightDockTabs}
+                activePanelId={rightDockActiveTab}
+                panelActions={panelActions}
+                onStartHeaderDrag={handleStartPanelHeaderDrag}
+                renderMovedPanelContent={(movedPanelId) => {
+                  if (movedPanelId === 'layers') {
+                    return (
+                      <div className="flex-1 overflow-y-auto p-2.5 space-y-1 text-[11px]" data-moved-panel-body="layers">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-500 px-1 pb-1">
+                          Katman Listesi ({elements.length} kök öğe)
+                        </div>
+                        {elements.length === 0 ? (
+                          <div className="p-4 text-center text-zinc-500">Tuvalde öğe yok.</div>
+                        ) : (
+                          elements.map((node) => {
+                            const isSel = selectedIds.includes(node.id);
+                            return (
+                              <button
+                                key={node.id}
+                                type="button"
+                                onClick={() => handleSelectElements([node.id])}
+                                className={`w-full text-left px-2 py-1.5 rounded border transition-colors flex items-center justify-between ${
+                                  isSel
+                                    ? 'bg-[#0d99ff]/20 border-[#0d99ff]/50 text-white'
+                                    : 'bg-[#141418] border-[#262630] text-zinc-300 hover:bg-[#1e1e26]'
+                                }`}
+                              >
+                                <span className="truncate">{node.name || node.type}</span>
+                                <span className="text-[9.5px] font-mono text-zinc-500 shrink-0">&lt;{node.type}&gt;</span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    );
+                  }
+                  const movedCfg = getPanelConfig(movedPanelId);
+                  return (
+                    <div className="flex-1 overflow-y-auto p-3 text-[11px] text-zinc-400 space-y-2" data-moved-panel-body={movedPanelId}>
+                      <p className="text-zinc-200 font-medium">{movedCfg?.title || movedPanelId}</p>
+                      <p className="leading-relaxed">
+                        Bu panel sağ kenar dock içine sabitlendi. Başlıktan sürükleyerek veya konum düğmeleriyle sola/yüzen pencereye taşıyabilirsiniz.
+                      </p>
+                    </div>
+                  );
+                }}
                 propertiesContent={(
                   <PropertiesPanel
                     selectedIds={selectedIds}
@@ -1371,6 +1672,97 @@ function CraftStudioApp() {
                 )}
               />
             )}
+            {/* Floating Panels Host (zone === 'floating', excluding legacy attributesAndCss modal until 4b) */}
+            {!previewMode &&
+              Object.entries(floatingPanels || {}).map(([floatPanelId, floatState]) => {
+                if (floatPanelId === 'attributesAndCss') return null;
+                if (panelZones?.[floatPanelId] !== 'floating' || !floatState?.isOpen) return null;
+                const panelCfg = getPanelConfig(floatPanelId);
+                return (
+                  <FloatingPanelFrame
+                    key={floatPanelId}
+                    panelId={floatPanelId}
+                    title={panelCfg?.title || floatPanelId}
+                    floatingState={floatState}
+                    panelActions={panelActions}
+                    onStartHeaderDrag={handleStartPanelHeaderDrag}
+                    isDragging={Boolean(activePanelDrag && activePanelDrag.panelId === floatPanelId)}
+                  >
+                    {floatPanelId === 'properties' ? (
+                      <PropertiesPanel
+                        selectedIds={selectedIds}
+                        elements={elements}
+                        rawElements={rawElements}
+                        onSelectElement={(id) => handleSelectElements([id])}
+                        onUpdateElement={handleUpdateElement}
+                        onUpdateElementDirect={handleUpdateElementDirect}
+                        onUpdateResolvedElements={(nextResolved) => {
+                          const synced = syncViewportTreeDiffs(rawElements, nextResolved, viewportMode);
+                          updateElementsWithHistory(synced);
+                        }}
+                        onUpdateMultipleElements={handleUpdateMultipleElements}
+                        onDeleteSelected={handleDeleteSelected}
+                        onDuplicateSelected={handleDuplicateSelected}
+                        onGroupSelected={handleGroupSelected}
+                        onUngroupSelected={handleUngroupSelected}
+                        onWrapSelected={handleWrapSelected}
+                        onUnwrapElement={handleUnwrapElement}
+                        canvasSettings={canvasSettings}
+                        onUpdateCanvasSettings={setCanvasSettings}
+                        onCommitHistory={handleCommitHistory}
+                        onClose={() => panelActions.close('properties')}
+                        onOpenAttributesInspector={() => panelActions.open('attributesAndCss')}
+                        viewportMode={viewportMode}
+                        onResetViewportFromDesktop={handleResetViewportFromDesktop}
+                        controlledTab={rightPropertiesTab}
+                        onTabChange={setRightPropertiesTab}
+                        tabs={tabs}
+                        projectFunctions={projectFunctions}
+                        onOpenFunctionEditor={handleOpenFunctionEditor}
+                        onDeleteProjectFunction={handleDeleteProjectFunction}
+                      />
+                    ) : floatPanelId === 'layers' ? (
+                      <div className="flex-1 overflow-y-auto p-2.5 space-y-1 text-[11px]" data-floating-panel-body="layers">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-500 px-1 pb-1">
+                          Katman Listesi ({elements.length} kök öğe)
+                        </div>
+                        {elements.length === 0 ? (
+                          <div className="p-4 text-center text-zinc-500">Tuvalde öğe yok.</div>
+                        ) : (
+                          elements.map((node) => {
+                            const isSel = selectedIds.includes(node.id);
+                            return (
+                              <button
+                                key={node.id}
+                                type="button"
+                                onClick={() => handleSelectElements([node.id])}
+                                className={`w-full text-left px-2 py-1.5 rounded border transition-colors flex items-center justify-between ${
+                                  isSel
+                                    ? 'bg-[#0d99ff]/20 border-[#0d99ff]/50 text-white'
+                                    : 'bg-[#141418] border-[#262630] text-zinc-300 hover:bg-[#1e1e26]'
+                                }`}
+                              >
+                                <span className="truncate">{node.name || node.type}</span>
+                                <span className="text-[9.5px] font-mono text-zinc-500 shrink-0">&lt;{node.type}&gt;</span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex-1 overflow-y-auto p-3 text-[11px] text-zinc-400 space-y-2" data-floating-panel-body={floatPanelId}>
+                        <p className="text-zinc-200 font-medium">{panelCfg?.title || floatPanelId}</p>
+                        <p className="leading-relaxed">
+                          Yüzen pencere tuvalin üzerinde serbestçe taşınabilir ve boyutlandırılabilir. Sola veya sağa sabitlemek için başlığı kenara sürükleyin ya da üstteki konum düğmelerini kullanın.
+                        </p>
+                      </div>
+                    )}
+                  </FloatingPanelFrame>
+                );
+              })}
+
+            {/* Visual Drop Target Guides while dragging any panel header (>= 6px) */}
+            <DockDropGuides activeDrag={activePanelDrag} />
           </div>
         </>
       )}
