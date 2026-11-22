@@ -252,6 +252,7 @@ Bölme sırasında en çok dikkat gerektiren çapraz okuma/yazma noktaları şun
 - `togglePanel` (L1231–1255), `handleSelectRightDockTarget` (L1212–1223), `handleDockFloatingInspector` (L1225–1229) ve `effectiveActivePanels` (L2457–2463) tek bir yapılandırılmış `workspaceLayout` state nesnesinde birleştirilecek:
   - Sol panel (`leftTab`, ileride genişletilebilir çekmece genişliği), Sağ dock (`rightOpen`, `rightTab`, `rightWidth`), Yüzen pencereler (`attributesInspector`, `tutorial`, `export`, `addTag`, `importReport`, `functionEditor`), AI dock (`minimized`, `focusSignal`), Tuval yardımcıları (`showLayoutGrid`, `showRulers`).
   - **Tahmini Değişim:** `useWorkspaceLayout.js` içinde ~180–220 satır, **Düşük-Orta** risk. İleride eklenecek `"Tasarım | Backend"` mod sistemi doğrudan `workspaceLayout.mode` (ve moda göre panel görünürlükleri) üstüne temiz şekilde oturacak.
+- **İleriye Dönük Not:** useWorkspaceLayout içindeki showWelcomeScreen, toast ve hash/title effect'leri ileride useAppShell hook'una ayrılacak.
 
 ### Aşama 5 *(Onayınla — İstenirse)* — `Canvas.jsx` & `PropertiesPanel.jsx` Bölünmesi
 - **`Canvas.jsx` (3.118 satır -> hedef ~450–600 satır kabuk):**
