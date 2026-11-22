@@ -897,6 +897,41 @@ function CraftStudioApp() {
     triggerFit();
   }, [switchViewportMode, triggerFit]);
 
+  // Reset selection & preview runtime overrides when the active tab is closed
+  const handleCloseTabWithReset = useCallback((tabId) => {
+    const wasActive = activeTabId === tabId;
+    const closed = handleCloseTab(tabId);
+    if (closed && wasActive) {
+      resetSelection();
+      setPreviewRuntimeOverrides({});
+    }
+    return closed;
+  }, [activeTabId, handleCloseTab, resetSelection]);
+
+  // Prune any selectedIds (and editingGroupId) that no longer exist in the restored tree after Undo/Redo
+  const pruneSelectionForTree = useCallback((tree) => {
+    setSelectedIds((prev) => {
+      if (prev.length === 0) return prev;
+      const valid = prev.filter((id) => Boolean(findNodeAndParent(tree, id)?.node));
+      return valid.length === prev.length ? prev : valid;
+    });
+    setEditingGroupId((prev) => (prev && !findNodeAndParent(tree, prev)?.node ? null : prev));
+  }, [setSelectedIds, setEditingGroupId]);
+
+  const handleUndoWithSelection = useCallback(() => {
+    const snap = handleUndo();
+    if (snap?.elements) {
+      pruneSelectionForTree(snap.elements);
+    }
+  }, [handleUndo, pruneSelectionForTree]);
+
+  const handleRedoWithSelection = useCallback(() => {
+    const snap = handleRedo();
+    if (snap?.elements) {
+      pruneSelectionForTree(snap.elements);
+    }
+  }, [handleRedo, pruneSelectionForTree]);
+
   useEffect(() => {
     if (showWelcomeScreen || !pendingWelcomeAiPrompt) return;
     const promptToSend = pendingWelcomeAiPrompt;
@@ -940,8 +975,8 @@ function CraftStudioApp() {
       handleAddTab,
       handleUngroupSelected,
       handleGroupSelected,
-      handleUndo,
-      handleRedo,
+      handleUndo: handleUndoWithSelection,
+      handleRedo: handleRedoWithSelection,
       handleDeleteSelected,
       updateElementsWithHistory,
       handleTogglePreviewMode,
@@ -1020,8 +1055,8 @@ function CraftStudioApp() {
             resetZoom={handleResetZoom}
             canUndo={historyIndex > 0}
             canRedo={historyIndex < history.length - 1}
-            onUndo={handleUndo}
-            onRedo={handleRedo}
+            onUndo={handleUndoWithSelection}
+            onRedo={handleRedoWithSelection}
             activePanels={effectiveActivePanels}
             togglePanel={togglePanel}
             tabs={tabs}
@@ -1032,7 +1067,7 @@ function CraftStudioApp() {
               setPreviewRuntimeOverrides({});
             }}
             onAddTab={handleAddTab}
-            onCloseTab={handleCloseTab}
+            onCloseTab={handleCloseTabWithReset}
             onRenameTab={handleRenameTab}
             previewMode={previewMode}
             setPreviewMode={handleTogglePreviewMode}

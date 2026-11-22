@@ -176,10 +176,15 @@ async function main() {
 
   const consoleErrors = [];
   const uncaughtExceptions = [];
+  const dialogEvents = [];
+  let nextDialogAccept = true;
 
-  cdp.on('Page.javascriptDialogOpening', async () => {
+  cdp.on('Page.javascriptDialogOpening', async (params) => {
+    dialogEvents.push({ type: params.type, message: params.message });
+    const accept = nextDialogAccept;
+    nextDialogAccept = true;
     try {
-      await cdp.send('Page.handleJavaScriptDialog', { accept: true });
+      await cdp.send('Page.handleJavaScriptDialog', { accept });
     } catch {}
   });
 
@@ -792,12 +797,59 @@ async function main() {
     );
     console.log('  ✓ Kaydet ve yeniden aç sonrası Tablet override korundu, Masaüstü değişmedi');
 
-    // 10. Sekme kapat, Ctrl+Z ile geri gelmediğini doğrula, yeniden sekme açıp Tablete geçişte doğru adapte olduğunu doğrula
+    // 10. Sekme kapatma onayı (dolu sekmede onay ister, iptalde kapanmaz, onayda kapanır; boş sekme onaysız kapanır) + yeniden açılan sekmenin Tablete adaptasyonu
     await cdp.evaluate(`document.querySelector('button[title^="Masaüstü Tasarımı"]')?.click()`);
     assert.ok(
       await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '1280px'`),
       'Sekme kapatma testi öncesi masaüstüne dönülemedi.'
     );
+
+    // 10a. Boş bir sekme aç (Sayfa-3.craft) ve onaysız kapandığını doğrula
+    await cdp.evaluate(`document.querySelector('button[title="Yeni Sayfa Sekmesi Ekle"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('div[title^="Sayfa-3.craft"]'))`),
+      'Boş test sekmesi (Sayfa-3.craft) açılamadı.'
+    );
+    const dialogCountBeforeEmptyClose = dialogEvents.length;
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-3.craft"] button')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `!document.querySelector('div[title^="Sayfa-3.craft"]')`),
+      'Boş sekme (Sayfa-3.craft) kapatılamadı.'
+    );
+    assert.equal(
+      dialogEvents.length,
+      dialogCountBeforeEmptyClose,
+      'Boş sekme kapatılırken onay diyaloğu açılmamalıydı.'
+    );
+
+    // 10b. Eleman içeren Sayfa-2.craft sekmesini kapatırken onay istemeli; İptal (accept=false) seçilince kapanmamalı
+    const dialogCountBeforeCancel = dialogEvents.length;
+    nextDialogAccept = false;
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-2.craft"] button')?.click()`);
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(dialogEvents.length, dialogCountBeforeCancel + 1, 'Dolu sekme kapatılırken confirm diyaloğu açılmadı.');
+    assert.equal(
+      dialogEvents[dialogEvents.length - 1].message,
+      'Bu sayfa silinecek, emin misin?',
+      'Sekme kapatma onay mesajı beklenen metinle eşleşmedi.'
+    );
+    assert.ok(
+      await cdp.evaluate(`Boolean(document.querySelector('div[title^="Sayfa-2.craft"]'))`),
+      'Onay reddedildiği halde dolu sekme kapandı!'
+    );
+
+    // 10c. Sayfa-2.craft aktifken bir eleman seç ("1 seçili"), ardından aktif sekmeyi kapat (accept=true) -> sekme kapanmalı ve seçim sıfırlanmalı
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-2.craft"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 150));
+    const activeTabElPt = await findVisiblePointForElement(cdp, tab2ElInitial.id);
+    assert.ok(activeTabElPt, 'Sayfa-2.craft üzerinde seçilecek eleman bulunamadı.');
+    await dragOnScreen(cdp, activeTabElPt.cx, activeTabElPt.cy, 0, 0);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('1 seçili')`),
+      'Aktif sekme kapatılmadan önce eleman seçilemedi.'
+    );
+
+    nextDialogAccept = true;
     const closedTabClicked = await cdp.evaluate(`
       (() => {
         const tabDiv = document.querySelector('div[title^="Sayfa-2.craft"]');
@@ -810,8 +862,14 @@ async function main() {
     assert.ok(closedTabClicked, 'Sayfa-2.craft sekme kapatma butonu bulunamadı.');
     assert.ok(
       await waitFor(cdp, `!document.querySelector('div[title^="Sayfa-2.craft"]')`),
-      'Sayfa-2.craft sekmesi kapatılamadı.'
+      'Sayfa-2.craft sekmesi onay sonrası kapatılamadı.'
     );
+    assert.ok(
+      await waitFor(cdp, `!document.body.innerText.includes('seçili')`),
+      'Aktif sekme kapatıldığında seçim (selectedIds) sıfırlanmadı!'
+    );
+    console.log('  ✓ Sekme kapatma onayı (boş sekme onaysız, dolu sekmede onay/iptal kontrolü) doğrulandı');
+    console.log('  ✓ Aktif sekme kapatıldığında seçimin (resetSelection) sıfırlandığı doğrulandı');
 
     // Ctrl+Z sekme kapatmayı geri almamalı (history sekme bazlı AST geçmişidir)
     await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
@@ -1095,6 +1153,25 @@ async function main() {
       'Ctrl+Y silme işlemini ileri almadı (beklenen=2).'
     );
 
+    // Madde 3: Ctrl+V ile yeni eleman yapıştır (sayı 3 olur ve yeni eleman "1 seçili" olur), ardından Ctrl+Z ile geri al -> ağaçtan silinen ID selectedIds'den ayıklanmalı
+    await sendCtrlShortcut(cdp, 'v', 'KeyV', 86);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 3 && document.body.innerText.includes('1 seçili')`
+      ),
+      'Undo seçim ayıklama testi öncesi Ctrl+V ile yeni eleman seçili olarak eklenemedi.'
+    );
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 2 && !document.body.innerText.includes('seçili')`
+      ),
+      'Undo (Ctrl+Z) sonrası ağaçtan silinen elemanın IDsi selectedIds içinden ayıklanmadı!'
+    );
+    console.log('  ✓ Undo/Redo sonrası ağaçta olmayan seçili eleman IDlerinin ayıklandığı doğrulandı');
+
     // Ctrl+S -> projeyi klavyeden kaydetmeli ("✓ Kaydedildi" rozeti görünmeli)
     await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
     assert.ok(
@@ -1102,6 +1179,73 @@ async function main() {
       'Ctrl+S klavye kısayolu projeyi kaydetmedi.'
     );
     console.log('  ✓ Klavye kısayolları (V/H/R/O/T, input koruması, Ctrl+C/V, Ctrl+D, Delete, Ctrl+Z/Y, Ctrl+S) doğrulandı');
+
+    // Madde 4: Sağ tık menüsü açıkken Escape yalnızca menüyü kapatmalı, aktif aracı veya seçimi değiştirmemeli
+    await sendSingleKey(cdp, 'h', 'KeyH', 72);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="hand"][aria-pressed="true"]'))`),
+      'Sağ tık Escape testi öncesi El (H) aracına geçilemedi.'
+    );
+    const openedCtxMenu = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id]');
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: Math.round(r.left + 20),
+          clientY: Math.round(r.top + 20),
+          button: 2,
+        }));
+        return true;
+      })()
+    `);
+    assert.ok(openedCtxMenu, 'Tuval elemanı üzerinde sağ tık olayı tetiklenemedi.');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('[data-canvas-context-menu]')) && document.body.innerText.includes('1 seçili')`
+      ),
+      'Sağ tık bağlam menüsü açılmadı veya hedef elemanı seçmedi.'
+    );
+
+    // Escape'e bas -> yalnızca sağ tık menüsü kapanmalı; El (hand) aracı ve "1 seçili" durumu korunmalı
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    assert.ok(
+      await waitFor(cdp, `!document.querySelector('[data-canvas-context-menu]')`),
+      'Escape tuşu sağ tık bağlam menüsünü kapatmadı.'
+    );
+    const afterCtxEscState = await cdp.evaluate(`
+      (() => ({
+        isHandActive: Boolean(document.querySelector('button[data-tool-id="hand"][aria-pressed="true"]')),
+        hasSelection: document.body.innerText.includes('1 seçili'),
+      }))()
+    `);
+    assert.deepEqual(
+      afterCtxEscState,
+      { isHandActive: true, hasSelection: true },
+      `Sağ tık menüsü açıkken Escape aktif aracı veya seçimi değiştirdi: ${JSON.stringify(afterCtxEscState)}`
+    );
+
+    // Sağ tık menüsü kapandıktan sonra Escape dinleyicisi kalkmış olmalı:
+    // 2. Escape -> El (hand) aracından Seçim (select) aracına dönmeli (seçim korunmalı)
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]')) && document.body.innerText.includes('1 seçili')`
+      ),
+      'Sağ tık menüsü kapandıktan sonraki 2. Escape aktif aracı select yapmadı (Escape yutuldu!).'
+    );
+
+    // 3. Escape -> Seçim aracındayken seçimi üst kapsama çıkarmalı / temizlemeli ("1 seçili" kalkmalı)
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    assert.ok(
+      await waitFor(cdp, `!document.body.innerText.includes('seçili')`),
+      'Sağ tık menüsü kapandıktan sonraki 3. Escape seçimi üst kapsama çıkarmadı (Escape yutuldu!).'
+    );
+    console.log('  ✓ Sağ tık menüsü açıkken Escape yalnızca menüyü kapattı; menü kapalıyken Escape araç ve seçim zincirini çalıştırdı');
 
     // 14. .craft.json dosyasını tarayıcı file-input yoluyla içe aktar (cdp.setFileInputFiles)
     const craftJsonFixturePath = path.join(ROOT_DIR, 'scripts', 'fixtures', 'import', 'project.craft.json');
