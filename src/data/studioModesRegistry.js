@@ -4,6 +4,7 @@
  */
 
 export const DEFAULT_STUDIO_MODE = 'design';
+export const DEFAULT_RIGHT_DOCK_WIDTH = 336;
 
 export const STUDIO_MODES = {
   design: {

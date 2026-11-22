@@ -1,57 +1,322 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { DEFAULT_RIGHT_DOCK_WIDTH } from '../components/StudioRightDock';
+import {
+  DEFAULT_STUDIO_MODE,
+  DEFAULT_RIGHT_DOCK_WIDTH,
+  STUDIO_MODES,
+  getStudioModeConfig,
+  isValidStudioMode,
+} from '../data/studioModesRegistry.js';
 
-const INITIAL_FUNCTION_EDITOR_STATE = {
+export const INITIAL_FUNCTION_EDITOR_STATE = {
   isOpen: false,
   fnObj: null,
   bindTargetElementId: null,
 };
 
-const INITIAL_WORKSPACE_LAYOUT = {
-  showWelcomeScreen: true,
-  leftDrawer: {
-    activeTab: null, // 'layers' | 'elements' | 'templates' | 'code' | 'ai' | null
-  },
-  rightDock: {
-    isOpen: true,
-    propertiesTab: 'layout', // 'block' | 'style' | 'layout' | 'props' | 'css' | 'code'
-    width: DEFAULT_RIGHT_DOCK_WIDTH,
-  },
-  aiDock: {
-    isMinimized: false,
-    focusSignal: 0,
-  },
-  modals: {
-    tutorial: false,
-    export: false,
-    addTag: false,
-    attributesInspector: false,
-    importReport: false,
-    importReportData: null,
-    functionEditor: INITIAL_FUNCTION_EDITOR_STATE,
-  },
-};
+export function createModeLayoutsMap(overrides = {}) {
+  const designDefault = STUDIO_MODES.design.defaultLayout;
+  const backendDefault = STUDIO_MODES.backend.defaultLayout;
+  return {
+    design: {
+      leftDrawer: {
+        activeTab: overrides.design?.leftDrawer?.activeTab !== undefined
+          ? overrides.design.leftDrawer.activeTab
+          : designDefault.leftDrawer.activeTab,
+      },
+      rightDock: {
+        isOpen: overrides.design?.rightDock?.isOpen ?? designDefault.rightDock.isOpen,
+        propertiesTab: overrides.design?.rightDock?.propertiesTab || designDefault.rightDock.propertiesTab,
+        width: overrides.design?.rightDock?.width || DEFAULT_RIGHT_DOCK_WIDTH,
+      },
+    },
+    backend: {
+      leftDrawer: {
+        activeTab: overrides.backend?.leftDrawer?.activeTab !== undefined
+          ? overrides.backend.leftDrawer.activeTab
+          : backendDefault.leftDrawer.activeTab,
+      },
+      rightDock: {
+        isOpen: overrides.backend?.rightDock?.isOpen ?? backendDefault.rightDock.isOpen,
+        propertiesTab: overrides.backend?.rightDock?.propertiesTab || backendDefault.rightDock.propertiesTab,
+        width: overrides.backend?.rightDock?.width || DEFAULT_RIGHT_DOCK_WIDTH,
+      },
+    },
+  };
+}
+
+export function createInitialWorkspaceLayout() {
+  const layoutsByMode = createModeLayoutsMap();
+  const activeMode = DEFAULT_STUDIO_MODE;
+  const currentSlice = layoutsByMode[activeMode];
+  return {
+    showWelcomeScreen: true,
+    activeMode,
+    activeTool: STUDIO_MODES[activeMode].tools?.defaultToolId || 'select',
+    openPopover: null,
+    layoutsByMode,
+    // Compatibility aliases synced with layoutsByMode[activeMode]
+    leftDrawer: currentSlice.leftDrawer,
+    rightDock: currentSlice.rightDock,
+    aiDock: {
+      isMinimized: false,
+      focusSignal: 0,
+    },
+    modals: {
+      tutorial: false,
+      export: false,
+      addTag: false,
+      attributesInspector: false,
+      importReport: false,
+      importReportData: null,
+      functionEditor: INITIAL_FUNCTION_EDITOR_STATE,
+    },
+  };
+}
+
+export const INITIAL_WORKSPACE_LAYOUT = createInitialWorkspaceLayout();
+
+function syncActiveModeSlice(nextLayout, modeId, nextModeSlice) {
+  const nextLayoutsByMode = {
+    ...nextLayout.layoutsByMode,
+    [modeId]: nextModeSlice,
+  };
+  const currentActiveSlice = nextLayoutsByMode[nextLayout.activeMode];
+  return {
+    ...nextLayout,
+    layoutsByMode: nextLayoutsByMode,
+    leftDrawer: currentActiveSlice.leftDrawer,
+    rightDock: currentActiveSlice.rightDock,
+  };
+}
+
+export function getActiveModeLayoutSlice(layout) {
+  const modeId = isValidStudioMode(layout?.activeMode) ? layout.activeMode : DEFAULT_STUDIO_MODE;
+  return layout?.layoutsByMode?.[modeId] || INITIAL_WORKSPACE_LAYOUT.layoutsByMode[modeId];
+}
+
+export function updateActiveModeLeftDrawerTab(prevLayout, nextOrUpdater) {
+  const modeId = isValidStudioMode(prevLayout.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const nextTab = typeof nextOrUpdater === 'function'
+    ? nextOrUpdater(curSlice.leftDrawer.activeTab)
+    : nextOrUpdater;
+  if (nextTab === curSlice.leftDrawer.activeTab) return prevLayout;
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    leftDrawer: { ...curSlice.leftDrawer, activeTab: nextTab },
+  });
+}
+
+export function updateActiveModeRightDock(prevLayout, updaterOrPartial) {
+  const modeId = isValidStudioMode(prevLayout.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const curDock = curSlice.rightDock;
+  const patch = typeof updaterOrPartial === 'function' ? updaterOrPartial(curDock) : updaterOrPartial;
+  if (!patch || typeof patch !== 'object') return prevLayout;
+  const nextDock = { ...curDock, ...patch };
+  if (
+    nextDock.isOpen === curDock.isOpen &&
+    nextDock.propertiesTab === curDock.propertiesTab &&
+    nextDock.width === curDock.width
+  ) {
+    return prevLayout;
+  }
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    rightDock: nextDock,
+  });
+}
+
+export function applyRightDockTargetSelection(prevLayout, _moduleName, subTab = null) {
+  const modeId = isValidStudioMode(prevLayout.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const curDock = curSlice.rightDock;
+
+  if (!curDock.isOpen) {
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      rightDock: {
+        ...curDock,
+        isOpen: true,
+        propertiesTab: subTab || curDock.propertiesTab,
+      },
+    });
+  }
+  if (subTab && curDock.propertiesTab !== subTab) {
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      rightDock: {
+        ...curDock,
+        propertiesTab: subTab,
+      },
+    });
+  }
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    rightDock: {
+      ...curDock,
+      isOpen: false,
+    },
+  });
+}
+
+export function computeEffectiveActivePanels(layout) {
+  const modeConfig = getStudioModeConfig(layout?.activeMode);
+  const curSlice = getActiveModeLayoutSlice(layout);
+  const panels = {};
+
+  for (const item of modeConfig.menuPanels || []) {
+    const target = item.target || {};
+    if (target.area === 'rightDock') {
+      panels[item.id] = Boolean(curSlice.rightDock.isOpen);
+    } else if (target.area === 'leftDrawer') {
+      const matchTabs = Array.isArray(target.activeMatchTabs) && target.activeMatchTabs.length > 0
+        ? target.activeMatchTabs
+        : [target.tabId];
+      panels[item.id] = matchTabs.includes(curSlice.leftDrawer.activeTab);
+    } else if (target.area === 'aiDock') {
+      panels[item.id] = !layout.aiDock.isMinimized;
+    } else if (target.area === 'modal') {
+      panels[item.id] = Boolean(layout.modals?.[target.modalKey]);
+    }
+  }
+  return panels;
+}
+
+export function applyWorkspacePanelToggle(prevLayout, panelName) {
+  const modeConfig = getStudioModeConfig(prevLayout?.activeMode);
+  const panelDef = (modeConfig.menuPanels || []).find((p) => p.id === panelName);
+  if (!panelDef || !panelDef.target) return prevLayout;
+
+  const { target } = panelDef;
+  if (target.area === 'rightDock') {
+    return applyRightDockTargetSelection(prevLayout, 'properties', null);
+  }
+  if (target.area === 'leftDrawer') {
+    const curSlice = getActiveModeLayoutSlice(prevLayout);
+    const nextTab = curSlice.leftDrawer.activeTab === target.tabId ? null : target.tabId;
+    return updateActiveModeLeftDrawerTab(prevLayout, nextTab);
+  }
+  if (target.area === 'modal' && target.modalKey) {
+    return {
+      ...prevLayout,
+      modals: {
+        ...prevLayout.modals,
+        [target.modalKey]: !prevLayout.modals[target.modalKey],
+      },
+    };
+  }
+  if (target.area === 'aiDock') {
+    const nextMinimized = !prevLayout.aiDock.isMinimized;
+    return {
+      ...prevLayout,
+      aiDock: {
+        isMinimized: nextMinimized,
+        focusSignal: !nextMinimized ? prevLayout.aiDock.focusSignal + 1 : prevLayout.aiDock.focusSignal,
+      },
+    };
+  }
+  return prevLayout;
+}
 
 /**
- * Unified workspace layout, panel/dock, modal, and toast controller.
- * Input:  none (title/hash sync lives at App orchestration layer until useAppShell)
- * Output: {
- *   layout, setLayout, effectiveActivePanels,
- *   showWelcomeScreen, setShowWelcomeScreen,
- *   leftSidebarTab, setLeftSidebarTab,
- *   rightDockOpen, setRightDockOpen, rightPropertiesTab, setRightPropertiesTab, rightDockWidth, setRightDockWidth,
- *   aiDockMinimized, setAiDockMinimized, aiFocusSignal, setAiFocusSignal,
- *   showTutorial, setShowTutorial, showExportModal, setShowExportModal, showAddTagModal, setShowAddTagModal,
- *   showAttributesInspectorModal, setShowAttributesInspectorModal,
- *   showImportReportModal, setShowImportReportModal, importReportData, setImportReportData,
- *   functionEditorState, setFunctionEditorState, handleOpenFunctionEditor,
- *   previewToast, showToastMessage,
- *   handleSelectRightDockTarget, handleDockFloatingInspector, togglePanel,
- *   reset,
- * }
+ * Pure state transition + side-effect orchestrator for switching studio modes ('design' | 'backend').
+ * - Validates modeId against STUDIO_MODES registry.
+ * - Preserves each mode's layout slice in `layoutsByMode` independently.
+ * - Closes design-specific modals (`addTag`, `attributesInspector`, `functionEditor`) and transient popovers.
+ * - Resets `editingGroupId` to `null` while leaving `selectedIds` intact.
+ * - Resets `activeTool` to the target mode's `tools.defaultToolId` ('select').
  */
-export function useWorkspaceLayout() {
-  const [layout, setLayout] = useState(INITIAL_WORKSPACE_LAYOUT);
+export function applyStudioModeTransition(prevLayout, nextModeId, callbacks = {}) {
+  if (!isValidStudioMode(nextModeId)) {
+    return { changed: false, layout: prevLayout, defaultToolId: prevLayout?.activeTool || 'select' };
+  }
+
+  const targetConfig = getStudioModeConfig(nextModeId);
+  const defaultToolId = targetConfig.tools?.defaultToolId || 'select';
+  const targetSlice = prevLayout.layoutsByMode?.[nextModeId]
+    || INITIAL_WORKSPACE_LAYOUT.layoutsByMode[nextModeId];
+
+  const nextLayout = {
+    ...prevLayout,
+    activeMode: nextModeId,
+    activeTool: defaultToolId,
+    openPopover: null,
+    leftDrawer: targetSlice.leftDrawer,
+    rightDock: targetSlice.rightDock,
+    modals: {
+      ...prevLayout.modals,
+      addTag: false,
+      attributesInspector: false,
+      functionEditor: INITIAL_FUNCTION_EDITOR_STATE,
+    },
+  };
+
+  callbacks.setEditingGroupId?.(null);
+  callbacks.onResetEditingGroup?.(null);
+  callbacks.setActiveTool?.(defaultToolId);
+  callbacks.onResetActiveTool?.(defaultToolId);
+  callbacks.onClosePopovers?.();
+
+  return { changed: true, layout: nextLayout, defaultToolId };
+}
+
+export function applyWorkspaceLayoutReset(prevLayout, {
+  showWelcomeScreen = false,
+  leftTab = null,
+  aiMinimized = false,
+} = {}) {
+  const prevDesignWidth = prevLayout?.layoutsByMode?.design?.rightDock?.width
+    || prevLayout?.rightDock?.width
+    || DEFAULT_RIGHT_DOCK_WIDTH;
+  const prevBackendWidth = prevLayout?.layoutsByMode?.backend?.rightDock?.width
+    || DEFAULT_RIGHT_DOCK_WIDTH;
+
+  const nextLayoutsByMode = createModeLayoutsMap({
+    design: {
+      leftDrawer: { activeTab: leftTab },
+      rightDock: {
+        ...STUDIO_MODES.design.defaultLayout.rightDock,
+        width: prevDesignWidth,
+      },
+    },
+    backend: {
+      leftDrawer: { ...STUDIO_MODES.backend.defaultLayout.leftDrawer },
+      rightDock: {
+        ...STUDIO_MODES.backend.defaultLayout.rightDock,
+        width: prevBackendWidth,
+      },
+    },
+  });
+
+  const activeMode = DEFAULT_STUDIO_MODE;
+  const activeSlice = nextLayoutsByMode[activeMode];
+
+  return {
+    ...INITIAL_WORKSPACE_LAYOUT,
+    showWelcomeScreen,
+    activeMode,
+    activeTool: STUDIO_MODES[activeMode].tools?.defaultToolId || 'select',
+    openPopover: null,
+    layoutsByMode: nextLayoutsByMode,
+    leftDrawer: activeSlice.leftDrawer,
+    rightDock: activeSlice.rightDock,
+    aiDock: {
+      isMinimized: aiMinimized,
+      focusSignal: prevLayout?.aiDock?.focusSignal || 0,
+    },
+  };
+}
+
+/**
+ * Unified workspace layout, mode-aware panel/dock, modal, and toast controller.
+ * Input:  optional { setEditingGroupId, setActiveTool, onClosePopovers }
+ */
+export function useWorkspaceLayout(options = {}) {
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  const [layout, setLayout] = useState(createInitialWorkspaceLayout);
   const [previewToast, setPreviewToast] = useState(null);
   const previewToastTimerRef = useRef(null);
 
@@ -79,40 +344,42 @@ export function useWorkspaceLayout() {
     });
   }, []);
 
+  const setStudioMode = useCallback((nextModeId, callCallbacks = {}) => {
+    if (!isValidStudioMode(nextModeId)) return false;
+    const mergedCallbacks = { ...(optionsRef.current || {}), ...(callCallbacks || {}) };
+    const targetConfig = getStudioModeConfig(nextModeId);
+    const defaultToolId = targetConfig.tools?.defaultToolId || 'select';
+
+    setLayout((prev) => applyStudioModeTransition(prev, nextModeId).layout);
+
+    mergedCallbacks.setEditingGroupId?.(null);
+    mergedCallbacks.onResetEditingGroup?.(null);
+    mergedCallbacks.setActiveTool?.(defaultToolId);
+    mergedCallbacks.onResetActiveTool?.(defaultToolId);
+    mergedCallbacks.onClosePopovers?.();
+    return true;
+  }, []);
+
   const setLeftSidebarTab = useCallback((nextOrUpdater) => {
-    setLayout((prev) => {
-      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev.leftDrawer.activeTab) : nextOrUpdater;
-      return next === prev.leftDrawer.activeTab
-        ? prev
-        : { ...prev, leftDrawer: { ...prev.leftDrawer, activeTab: next } };
-    });
+    setLayout((prev) => updateActiveModeLeftDrawerTab(prev, nextOrUpdater));
   }, []);
 
   const setRightDockOpen = useCallback((nextOrUpdater) => {
-    setLayout((prev) => {
-      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev.rightDock.isOpen) : nextOrUpdater;
-      return next === prev.rightDock.isOpen
-        ? prev
-        : { ...prev, rightDock: { ...prev.rightDock, isOpen: next } };
-    });
+    setLayout((prev) => updateActiveModeRightDock(prev, (dock) => ({
+      isOpen: typeof nextOrUpdater === 'function' ? nextOrUpdater(dock.isOpen) : nextOrUpdater,
+    })));
   }, []);
 
   const setRightPropertiesTab = useCallback((nextOrUpdater) => {
-    setLayout((prev) => {
-      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev.rightDock.propertiesTab) : nextOrUpdater;
-      return next === prev.rightDock.propertiesTab
-        ? prev
-        : { ...prev, rightDock: { ...prev.rightDock, propertiesTab: next } };
-    });
+    setLayout((prev) => updateActiveModeRightDock(prev, (dock) => ({
+      propertiesTab: typeof nextOrUpdater === 'function' ? nextOrUpdater(dock.propertiesTab) : nextOrUpdater,
+    })));
   }, []);
 
   const setRightDockWidth = useCallback((nextOrUpdater) => {
-    setLayout((prev) => {
-      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev.rightDock.width) : nextOrUpdater;
-      return next === prev.rightDock.width
-        ? prev
-        : { ...prev, rightDock: { ...prev.rightDock, width: next } };
-    });
+    setLayout((prev) => updateActiveModeRightDock(prev, (dock) => ({
+      width: typeof nextOrUpdater === 'function' ? nextOrUpdater(dock.width) : nextOrUpdater,
+    })));
   }, []);
 
   const setAiDockMinimized = useCallback((nextOrUpdater) => {
@@ -215,128 +482,37 @@ export function useWorkspaceLayout() {
     });
   }, [setFunctionEditorState]);
 
-  const handleSelectRightDockTarget = useCallback((_moduleName, subTab = null) => {
-    setLayout((prev) => {
-      if (!prev.rightDock.isOpen) {
-        return {
-          ...prev,
-          rightDock: {
-            ...prev.rightDock,
-            isOpen: true,
-            propertiesTab: subTab || prev.rightDock.propertiesTab,
-          },
-        };
-      }
-      if (subTab && prev.rightDock.propertiesTab !== subTab) {
-        return {
-          ...prev,
-          rightDock: {
-            ...prev.rightDock,
-            propertiesTab: subTab,
-          },
-        };
-      }
-      return {
-        ...prev,
-        rightDock: {
-          ...prev.rightDock,
-          isOpen: false,
-        },
-      };
-    });
+  const handleSelectRightDockTarget = useCallback((moduleName, subTab = null) => {
+    setLayout((prev) => applyRightDockTargetSelection(prev, moduleName, subTab));
   }, []);
 
   const handleDockFloatingInspector = useCallback((targetTab = 'css') => {
-    setLayout((prev) => ({
-      ...prev,
-      modals: {
-        ...prev.modals,
-        attributesInspector: false,
-      },
-      rightDock: {
-        ...prev.rightDock,
+    setLayout((prev) => {
+      const withClosedModal = {
+        ...prev,
+        modals: {
+          ...prev.modals,
+          attributesInspector: false,
+        },
+      };
+      return updateActiveModeRightDock(withClosedModal, {
         isOpen: true,
         propertiesTab: targetTab || 'css',
-      },
-    }));
+      });
+    });
   }, []);
 
   const togglePanel = useCallback((panelName) => {
-    if (panelName === 'properties') {
-      handleSelectRightDockTarget('properties');
-      return;
-    }
-    setLayout((prev) => {
-      if (panelName === 'layers') {
-        return {
-          ...prev,
-          leftDrawer: {
-            ...prev.leftDrawer,
-            activeTab: prev.leftDrawer.activeTab === 'layers' ? null : 'layers',
-          },
-        };
-      }
-      if (panelName === 'assets') {
-        return {
-          ...prev,
-          leftDrawer: {
-            ...prev.leftDrawer,
-            activeTab: prev.leftDrawer.activeTab === 'templates' ? null : 'templates',
-          },
-        };
-      }
-      if (panelName === 'attributesAndCss') {
-        return {
-          ...prev,
-          modals: {
-            ...prev.modals,
-            attributesInspector: !prev.modals.attributesInspector,
-          },
-        };
-      }
-      if (panelName === 'aiAgent') {
-        const nextMinimized = !prev.aiDock.isMinimized;
-        return {
-          ...prev,
-          aiDock: {
-            isMinimized: nextMinimized,
-            focusSignal: !nextMinimized ? prev.aiDock.focusSignal + 1 : prev.aiDock.focusSignal,
-          },
-        };
-      }
-      return prev;
-    });
-  }, [handleSelectRightDockTarget]);
+    setLayout((prev) => applyWorkspacePanelToggle(prev, panelName));
+  }, []);
 
-  const effectiveActivePanels = useMemo(() => ({
-    properties: layout.rightDock.isOpen,
-    aiAgent: !layout.aiDock.isMinimized,
-    layers: layout.leftDrawer.activeTab === 'layers',
-    assets: layout.leftDrawer.activeTab === 'templates' || layout.leftDrawer.activeTab === 'elements',
-    attributesAndCss: layout.modals.attributesInspector,
-  }), [
-    layout.rightDock.isOpen,
-    layout.aiDock.isMinimized,
-    layout.leftDrawer.activeTab,
-    layout.modals.attributesInspector,
-  ]);
+  const effectiveActivePanels = useMemo(
+    () => computeEffectiveActivePanels(layout),
+    [layout]
+  );
 
-  const reset = useCallback(({ showWelcomeScreen = false, leftTab = null, aiMinimized = false } = {}) => {
-    setLayout((prev) => ({
-      ...INITIAL_WORKSPACE_LAYOUT,
-      showWelcomeScreen,
-      leftDrawer: {
-        activeTab: leftTab,
-      },
-      rightDock: {
-        ...INITIAL_WORKSPACE_LAYOUT.rightDock,
-        width: prev.rightDock.width,
-      },
-      aiDock: {
-        isMinimized: aiMinimized,
-        focusSignal: prev.aiDock.focusSignal,
-      },
-    }));
+  const reset = useCallback((resetOptions = {}) => {
+    setLayout((prev) => applyWorkspaceLayoutReset(prev, resetOptions));
   }, []);
 
   useEffect(() => {
@@ -350,19 +526,26 @@ export function useWorkspaceLayout() {
     return () => window.removeEventListener('hashchange', handleAppHashChange);
   }, [setShowWelcomeScreen]);
 
+  const activeSlice = getActiveModeLayoutSlice(layout);
+  const currentModeConfig = getStudioModeConfig(layout.activeMode);
+
   return {
     layout,
     setLayout,
+    activeMode: layout.activeMode,
+    currentModeConfig,
+    layoutsByMode: layout.layoutsByMode,
+    setStudioMode,
     effectiveActivePanels,
     showWelcomeScreen: layout.showWelcomeScreen,
     setShowWelcomeScreen,
-    leftSidebarTab: layout.leftDrawer.activeTab,
+    leftSidebarTab: activeSlice.leftDrawer.activeTab,
     setLeftSidebarTab,
-    rightDockOpen: layout.rightDock.isOpen,
+    rightDockOpen: activeSlice.rightDock.isOpen,
     setRightDockOpen,
-    rightPropertiesTab: layout.rightDock.propertiesTab,
+    rightPropertiesTab: activeSlice.rightDock.propertiesTab,
     setRightPropertiesTab,
-    rightDockWidth: layout.rightDock.width,
+    rightDockWidth: activeSlice.rightDock.width,
     setRightDockWidth,
     aiDockMinimized: layout.aiDock.isMinimized,
     setAiDockMinimized,

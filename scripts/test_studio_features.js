@@ -78,6 +78,15 @@ import {
   getStudioModeConfig,
   isToolSupportedInMode,
 } from '../src/data/studioModesRegistry.js';
+import {
+  createInitialWorkspaceLayout,
+  updateActiveModeLeftDrawerTab,
+  updateActiveModeRightDock,
+  computeEffectiveActivePanels,
+  applyWorkspacePanelToggle,
+  applyStudioModeTransition,
+  applyWorkspaceLayoutReset,
+} from '../src/hooks/useWorkspaceLayout.js';
 import { DEFAULT_UNIVERSAL_PROJECT, PRESET_ASSETS } from '../src/constants.js';
 import { CONTENT_PACK_ASSETS } from '../src/data/contentPacks.js';
 import {
@@ -3095,6 +3104,110 @@ test('projectStorage normalizes backend section with backward-compatible empty d
   assert.deepEqual(roundTripped.backend, customBackend);
   assert.equal(roundTripped.projectFunctions.length, 1);
   assert.equal('activeMode' in roundTripped, false);
+});
+
+test('useWorkspaceLayout isolates layoutsByMode per mode, drives menuPanels from registry, and resets to design', () => {
+  let state = createInitialWorkspaceLayout();
+  assert.equal(state.activeMode, 'design');
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, null);
+  assert.equal(state.layoutsByMode.backend.leftDrawer.activeTab, 'flows');
+
+  // Verify registry-driven effectiveActivePanels & togglePanel in design mode match exact legacy keys
+  assert.deepEqual(computeEffectiveActivePanels(state), {
+    properties: true,
+    assets: false,
+    layers: false,
+    aiAgent: true,
+    attributesAndCss: false,
+  });
+
+  state = applyWorkspacePanelToggle(state, 'layers');
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.equal(computeEffectiveActivePanels(state).layers, true);
+
+  state = updateActiveModeRightDock(state, { isOpen: false, propertiesTab: 'css', width: 410 });
+  assert.equal(state.layoutsByMode.design.rightDock.isOpen, false);
+  assert.equal(state.layoutsByMode.design.rightDock.propertiesTab, 'css');
+  assert.equal(state.layoutsByMode.design.rightDock.width, 410);
+  // Backend layout remains untouched while editing design layout
+  assert.equal(state.layoutsByMode.backend.leftDrawer.activeTab, 'flows');
+  assert.equal(state.layoutsByMode.backend.rightDock.isOpen, true);
+  assert.equal(state.layoutsByMode.backend.rightDock.propertiesTab, 'stepConfig');
+
+  // Simulate open design modals, transient popover, activeTool='rectangle', editingGroupId='grp-1', selectedIds=['el-1']
+  state = {
+    ...state,
+    activeTool: 'rectangle',
+    openPopover: 'shapes',
+    modals: {
+      ...state.modals,
+      addTag: true,
+      attributesInspector: true,
+      functionEditor: { isOpen: true, fnObj: { id: 'fn-1' }, bindTargetElementId: 'el-1' },
+    },
+  };
+  let editingGroupId = 'grp-1';
+  const selectedIds = ['el-1'];
+  let activeTool = 'rectangle';
+  let popoversClosed = false;
+
+  // Invalid mode transition should be rejected
+  const invalidRes = applyStudioModeTransition(state, 'nonexistent');
+  assert.equal(invalidRes.changed, false);
+  assert.equal(invalidRes.layout.activeMode, 'design');
+
+  // Switch to backend mode
+  const toBackend = applyStudioModeTransition(state, 'backend', {
+    setEditingGroupId: (val) => { editingGroupId = val; },
+    setActiveTool: (tool) => { activeTool = tool; },
+    onClosePopovers: () => { popoversClosed = true; },
+  });
+  assert.equal(toBackend.changed, true);
+  state = toBackend.layout;
+  assert.equal(state.activeMode, 'backend');
+  assert.equal(editingGroupId, null);
+  assert.deepEqual(selectedIds, ['el-1']); // selectedIds preserved
+  assert.equal(activeTool, 'select');
+  assert.equal(state.activeTool, 'select');
+  assert.equal(state.openPopover, null);
+  assert.equal(popoversClosed, true);
+  assert.equal(state.modals.addTag, false);
+  assert.equal(state.modals.attributesInspector, false);
+  assert.equal(state.modals.functionEditor.isOpen, false);
+
+  // Modify backend layout & verify registry-driven backend menuPanels
+  assert.deepEqual(computeEffectiveActivePanels(state), {
+    backendInspector: true,
+    flows: true,
+    dataModels: false,
+    aiAgent: true,
+  });
+  state = applyWorkspacePanelToggle(state, 'dataModels');
+  assert.equal(state.layoutsByMode.backend.leftDrawer.activeTab, 'dataModels');
+  assert.equal(computeEffectiveActivePanels(state).dataModels, true);
+  // Design layout slice still remembers 'layers' & rightDock width 410
+  assert.equal(state.layoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.equal(state.layoutsByMode.design.rightDock.isOpen, false);
+  assert.equal(state.layoutsByMode.design.rightDock.width, 410);
+
+  // Switch back to design mode -> remembers design layout slice
+  state = applyStudioModeTransition(state, 'design').layout;
+  assert.equal(state.activeMode, 'design');
+  assert.equal(state.leftDrawer.activeTab, 'layers');
+  assert.equal(state.rightDock.isOpen, false);
+  assert.equal(state.rightDock.propertiesTab, 'css');
+  assert.equal(state.rightDock.width, 410);
+
+  // Switch to backend and call reset() -> returns activeMode to 'design' while preserving custom dock widths
+  state = applyStudioModeTransition(state, 'backend').layout;
+  assert.equal(state.activeMode, 'backend');
+  state = applyWorkspaceLayoutReset(state, { showWelcomeScreen: false });
+  assert.equal(state.activeMode, 'design');
+  assert.equal(state.showWelcomeScreen, false);
+  assert.equal(state.leftDrawer.activeTab, null);
+  assert.equal(state.rightDock.isOpen, true);
+  assert.equal(state.rightDock.propertiesTab, 'layout');
+  assert.equal(state.rightDock.width, 410);
 });
 
 // -----------------------------------------------------------------------------
