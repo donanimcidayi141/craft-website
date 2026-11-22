@@ -865,7 +865,6 @@ function CraftStudioApp() {
       ['nav', 'navbar', 'footer'].includes(elType)
     ) {
       setRightDockOpen(true);
-      setRightDockModule('properties');
       setRightPropertiesTab('block');
     }
   };
