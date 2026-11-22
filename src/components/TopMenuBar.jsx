@@ -5,9 +5,22 @@ import {
   Monitor, Smartphone, Tablet, Home, Sparkles,
   AlignHorizontalJustifyCenter, AlignVerticalJustifyCenter,
   FolderCheck, HelpCircle, Group, Ungroup, Tag as TagIcon, Save,
-  FolderOpen, FilePlus2, FileCode2, FileText, CopyPlus
+  FolderOpen, FilePlus2, FileCode2, FileText, CopyPlus,
+  Workflow, Database, Zap, Palette
 } from 'lucide-react';
 import { hasViewportOverrides } from '../utils/responsiveUtils';
+import { STUDIO_MODE_LIST, getStudioModeConfig } from '../data/studioModesRegistry';
+
+const MENU_PANEL_ICON_MAP = {
+  Sliders,
+  Box,
+  Layers,
+  Sparkles,
+  Tag: TagIcon,
+  Workflow,
+  Database,
+  Zap,
+};
 
 export default function TopMenuBar({
   zoom,
@@ -45,8 +58,15 @@ export default function TopMenuBar({
   onAlignHorizontalCenter,
   onAlignVerticalCenter,
   onGroupSelected,
-  onUngroupSelected
+  onUngroupSelected,
+  activeMode = 'design',
+  onSelectStudioMode = null,
+  modeConfig = null,
 }) {
+  const resolvedModeConfig = modeConfig || getStudioModeConfig(activeMode);
+  const resolvedMenuPanels = resolvedModeConfig.menuPanels || [];
+  const showViewportSwitcher = resolvedModeConfig.topBarConfig?.showViewportSwitcher !== false;
+  const showPageTabsBar = resolvedModeConfig.topBarConfig?.showPageTabsBar !== false;
   const [openMenu, setOpenMenu] = useState(null);
   const [editingTabId, setEditingTabId] = useState(null);
   const [editingTabName, setEditingTabName] = useState('');
@@ -305,65 +325,34 @@ export default function TopMenuBar({
                   <div className="px-2.5 py-1 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">
                     Çalışma Alanı Panelleri
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => { togglePanel('properties'); setOpenMenu(null); }}
-                    className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Sliders size={12} className="text-zinc-300" />
-                      <span>Özellikler &amp; Hizalama</span>
-                    </span>
-                    {activePanels.properties && <Check size={12} className="text-[#0d99ff]" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { togglePanel('assets'); setOpenMenu(null); }}
-                    className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Box size={12} className="text-zinc-300" />
-                      <span>Assetler &amp; Şablonlar</span>
-                    </span>
-                    {activePanels.assets && <Check size={12} className="text-[#0d99ff]" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { togglePanel('layers'); setOpenMenu(null); }}
-                    className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Layers size={12} className="text-zinc-300" />
-                      <span>Katmanlar (Layers)</span>
-                    </span>
-                    {activePanels.layers && <Check size={12} className="text-[#0d99ff]" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { togglePanel('aiAgent'); setOpenMenu(null); }}
-                    className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Sparkles size={12} className="text-zinc-300" />
-                      <span>AI Sohbet Çubuğu</span>
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <kbd className="text-[9.5px] font-mono text-zinc-500">Ctrl+K</kbd>
-                      {activePanels.aiAgent && <Check size={12} className="text-[#0d99ff]" />}
-                    </span>
-                  </button>
-                  <div className="h-px bg-[#27272d] my-1 mx-1" />
-                  <button
-                    type="button"
-                    onClick={() => { togglePanel('attributesAndCss'); setOpenMenu(null); }}
-                    className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
-                  >
-                    <span className="flex items-center gap-2">
-                      <TagIcon size={12} className="text-zinc-300" />
-                      <span>Yüzen CSS &amp; Nitelik Penceresi</span>
-                    </span>
-                    {activePanels.attributesAndCss && <Check size={12} className="text-[#0d99ff]" />}
-                  </button>
+                  {resolvedMenuPanels.map((panel) => {
+                    const PanelIcon = MENU_PANEL_ICON_MAP[panel.icon] || Sliders;
+                    const isPanelActive = Boolean(activePanels?.[panel.id]);
+                    return (
+                      <React.Fragment key={panel.id}>
+                        {panel.dividerBefore && <div className="h-px bg-[#27272d] my-1 mx-1" />}
+                        <button
+                          type="button"
+                          data-window-menu-panel={panel.id}
+                          onClick={() => { togglePanel(panel.id); setOpenMenu(null); }}
+                          className="w-full text-left px-2.5 py-1.5 rounded hover:bg-[#23232a] flex items-center justify-between text-zinc-200 transition-colors"
+                        >
+                          <span className="flex items-center gap-2">
+                            <PanelIcon size={12} className="text-zinc-300" />
+                            <span>{panel.label}</span>
+                          </span>
+                          {panel.shortcutHint ? (
+                            <span className="flex items-center gap-1.5">
+                              <kbd className="text-[9.5px] font-mono text-zinc-500">{panel.shortcutHint}</kbd>
+                              {isPanelActive && <Check size={12} className="text-[#0d99ff]" />}
+                            </span>
+                          ) : (
+                            isPanelActive && <Check size={12} className="text-[#0d99ff]" />
+                          )}
+                        </button>
+                      </React.Fragment>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -411,10 +400,47 @@ export default function TopMenuBar({
               </button>
             )}
           </div>
+
+          {/* Studio Mode Switcher: Tasarım | Backend */}
+          {onSelectStudioMode && (
+            <div
+              role="tablist"
+              aria-label="Atölye modu seçici"
+              data-studio-mode-switcher
+              className="flex items-center gap-0.5 bg-[#101013] p-0.5 rounded border border-[#27272d] shrink-0"
+            >
+              {STUDIO_MODE_LIST.map((modeItem) => {
+                const isModeActive = activeMode === modeItem.id;
+                const ModeIcon = modeItem.id === 'backend' ? Workflow : Palette;
+                return (
+                  <button
+                    key={modeItem.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={isModeActive}
+                    data-studio-mode={modeItem.id}
+                    onClick={() => onSelectStudioMode(modeItem.id)}
+                    title={modeItem.description}
+                    className={`px-2.5 py-1 rounded-sm flex items-center gap-1.5 text-[11px] font-medium transition-colors ${
+                      isModeActive
+                        ? modeItem.id === 'backend'
+                          ? 'bg-[#14261f] text-emerald-300 border border-emerald-500/40'
+                          : 'bg-[#25252c] text-white border border-[#3a3a44]'
+                        : 'text-zinc-400 hover:text-zinc-100 border border-transparent'
+                    }`}
+                  >
+                    <ModeIcon size={11} />
+                    <span>{modeItem.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Center: Responsive Device Switcher */}
-        <div className="flex items-center gap-0.5 bg-[#101013] p-0.5 rounded border border-[#27272d] shrink-0">
+        {showViewportSwitcher ? (
+          <div className="flex items-center gap-0.5 bg-[#101013] p-0.5 rounded border border-[#27272d] shrink-0">
           <button
             type="button"
             onClick={() => setViewportMode('desktop')}
@@ -461,6 +487,9 @@ export default function TopMenuBar({
             )}
           </button>
         </div>
+        ) : (
+          <div />
+        )}
 
         {/* Right: Quick History, Zoom, AI, Tutorial, Preview & Publish */}
         <div className="flex items-center gap-1.5 shrink-0">
@@ -569,6 +598,7 @@ export default function TopMenuBar({
       </div>
 
       {/* 2. Document Tabs Bar + Contextual Selection Strip */}
+      {showPageTabsBar && (
       <div className="flex items-center justify-between h-8 bg-[#141417] px-3 gap-2">
         {/* Left: Page Tabs */}
         <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">
@@ -686,6 +716,7 @@ export default function TopMenuBar({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

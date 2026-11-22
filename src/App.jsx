@@ -44,6 +44,7 @@ import {
 import AttributesCssInspectorModal from './components/AttributesCssInspectorModal';
 import FunctionEditorModal from './components/FunctionEditorModal';
 import StudioRightDock from './components/StudioRightDock';
+import BackendWorkspaceSkeleton from './components/BackendWorkspaceSkeleton';
 import ProtoApp from './proto/ProtoApp';
 import { useSelection } from './hooks/useSelection';
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
@@ -53,8 +54,11 @@ import { useProjectIO } from './hooks/useProjectIO';
 import { useShortcuts } from './hooks/useShortcuts';
 
 function CraftStudioApp() {
-  // 1. Workspace Layout (panels, docks, modals, toasts)
+  // 1. Workspace Layout (panels, docks, modals, toasts, studio mode)
   const {
+    activeMode,
+    currentModeConfig,
+    setStudioMode,
     effectiveActivePanels,
     showWelcomeScreen,
     leftSidebarTab,
@@ -162,6 +166,7 @@ function CraftStudioApp() {
   } = useCanvasView({
     showWelcomeScreen,
     previewMode,
+    activeMode,
     leftSidebarTab,
     rightDockOpen,
     rightDockWidth,
@@ -276,9 +281,14 @@ function CraftStudioApp() {
     document.title = `${prefix}${projectMeta.name || 'CraftStudio Projesi'} — CraftStudio`;
   }, [showWelcomeScreen, hasUnsavedChanges, projectMeta.name]);
 
-  // Expose programmatic test/inspection hook for E2E & smoke verification of backend state
+  // Expose programmatic test/inspection hook ONLY in dev mode or when explicitly requested via ?test=1
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
+    const isTestOrDev = Boolean(import.meta.env?.DEV)
+      || new URLSearchParams(window.location.search).get('test') === '1';
+    if (!isTestOrDev) {
+      return undefined;
+    }
     window.__craftStudioTestHook = {
       getProjectBackend: () => projectBackend,
       updateProjectBackend,
@@ -288,6 +298,18 @@ function CraftStudioApp() {
       delete window.__craftStudioTestHook;
     };
   }, [projectBackend, updateProjectBackend, setProjectBackend]);
+
+  const handleSelectStudioMode = useCallback((nextMode) => {
+    if (previewMode) {
+      setPreviewMode(false);
+      setPreviewRuntimeOverrides({});
+      triggerFit();
+    }
+    setStudioMode(nextMode, {
+      setEditingGroupId,
+      setActiveTool,
+    });
+  }, [previewMode, setStudioMode, setEditingGroupId, triggerFit]);
 
   // Direct element modification in active viewport for current selection
   const handleUpdateElement = (updates) => {
@@ -1107,6 +1129,9 @@ function CraftStudioApp() {
             onAlignVerticalCenter={handleAlignVerticalCenter}
             onGroupSelected={handleGroupSelected}
             onUngroupSelected={handleUngroupSelected}
+            activeMode={activeMode}
+            onSelectStudioMode={handleSelectStudioMode}
+            modeConfig={currentModeConfig}
           />
 
           {/* Main Workspace (Toolbar + Canvas + Docked Panels) */}
@@ -1116,6 +1141,9 @@ function CraftStudioApp() {
               <StudioLeftSidebar
                 activeTab={leftSidebarTab}
                 setActiveTab={setLeftSidebarTab}
+                activeMode={activeMode}
+                modeConfig={currentModeConfig}
+                projectBackend={projectBackend}
                 elements={elements}
                 selectedIds={selectedIds}
                 onSelectElement={(id) => handleSelectElements([id])}
@@ -1170,64 +1198,68 @@ function CraftStudioApp() {
 
             {/* Center Canvas Column + Bottom-Center Floating AI Chat Dock */}
             <div className="relative flex-1 min-w-0 h-full flex flex-col overflow-hidden">
-              <Canvas
-                elements={elements}
-                selectedIds={selectedIds}
-                onSelectElements={handleSelectElements}
-                onToggleElementSelection={handleToggleElementSelection}
-                onUpdateElement={handleUpdateElement}
-                onUpdateMultipleElements={handleUpdateMultipleElements}
-                onAltDuplicateElements={handleAltDuplicateElements}
-                onCommitHistory={handleCommitHistory}
-                onReparentElement={handleReparentElement}
-                onSelectParent={handleSelectParent}
-                onSelectChild={handleSelectChild}
-                activeTool={activeTool}
-                setActiveTool={setActiveTool}
-                zoom={zoom}
-                setZoom={setZoom}
-                panOffset={panOffset}
-                setPanOffset={setPanOffset}
-                canvasSettings={canvasSettings}
-                onUpdateCanvasSettings={setCanvasSettings}
-                previewMode={previewMode}
-                previewRuntimeOverrides={previewRuntimeOverrides}
-                onPreviewExecuteEvent={handlePreviewExecuteEvent}
-                onPreviewInputChange={handlePreviewInputChange}
-                primaryColor={primaryColor}
-                setPrimaryColor={setPrimaryColor}
-                secondaryColor={secondaryColor}
-                onAddElementAt={handleAddElementAt}
-                editingGroupId={editingGroupId}
-                setEditingGroupId={setEditingGroupId}
-                viewportMode={viewportMode}
-                onResetViewportFromDesktop={handleResetViewportFromDesktop}
-                aiHighlightedIds={aiHighlightedIds}
-                showLayoutGrid={showLayoutGrid}
-                setShowLayoutGrid={setShowLayoutGrid}
-                showRulers={showRulers}
-                setShowRulers={setShowRulers}
-                copiedStyle={copiedElementStyle}
-                onCopyStyle={handleCopyElementStyle}
-                onPasteStyle={handlePasteElementStyle}
-                onDuplicateSelected={handleDuplicateSelected}
-                onDeleteSelected={handleDeleteSelected}
-                onCopySelected={handleCopy}
-                onCutSelected={handleCut}
-                onPasteFromClipboard={handlePaste}
-                canPasteClipboard={Boolean(clipboard)}
-                onGroupSelected={handleGroupSelected}
-                onUngroupSelected={handleUngroupSelected}
-                onZOrderSelected={handleZOrderSelected}
-                onToggleLockSelected={handleToggleLockSelected}
-                onToggleHideSelected={handleToggleHideSelected}
-                onAlignHorizontalCenter={handleAlignHorizontalCenter}
-                onAlignVerticalCenter={handleAlignVerticalCenter}
-                onResetZoom={handleResetZoom}
-                onNotify={showToastMessage}
-              />
+              {activeMode === 'backend' ? (
+                <BackendWorkspaceSkeleton projectBackend={projectBackend} />
+              ) : (
+                <Canvas
+                  elements={elements}
+                  selectedIds={selectedIds}
+                  onSelectElements={handleSelectElements}
+                  onToggleElementSelection={handleToggleElementSelection}
+                  onUpdateElement={handleUpdateElement}
+                  onUpdateMultipleElements={handleUpdateMultipleElements}
+                  onAltDuplicateElements={handleAltDuplicateElements}
+                  onCommitHistory={handleCommitHistory}
+                  onReparentElement={handleReparentElement}
+                  onSelectParent={handleSelectParent}
+                  onSelectChild={handleSelectChild}
+                  activeTool={activeTool}
+                  setActiveTool={setActiveTool}
+                  zoom={zoom}
+                  setZoom={setZoom}
+                  panOffset={panOffset}
+                  setPanOffset={setPanOffset}
+                  canvasSettings={canvasSettings}
+                  onUpdateCanvasSettings={setCanvasSettings}
+                  previewMode={previewMode}
+                  previewRuntimeOverrides={previewRuntimeOverrides}
+                  onPreviewExecuteEvent={handlePreviewExecuteEvent}
+                  onPreviewInputChange={handlePreviewInputChange}
+                  primaryColor={primaryColor}
+                  setPrimaryColor={setPrimaryColor}
+                  secondaryColor={secondaryColor}
+                  onAddElementAt={handleAddElementAt}
+                  editingGroupId={editingGroupId}
+                  setEditingGroupId={setEditingGroupId}
+                  viewportMode={viewportMode}
+                  onResetViewportFromDesktop={handleResetViewportFromDesktop}
+                  aiHighlightedIds={aiHighlightedIds}
+                  showLayoutGrid={showLayoutGrid}
+                  setShowLayoutGrid={setShowLayoutGrid}
+                  showRulers={showRulers}
+                  setShowRulers={setShowRulers}
+                  copiedStyle={copiedElementStyle}
+                  onCopyStyle={handleCopyElementStyle}
+                  onPasteStyle={handlePasteElementStyle}
+                  onDuplicateSelected={handleDuplicateSelected}
+                  onDeleteSelected={handleDeleteSelected}
+                  onCopySelected={handleCopy}
+                  onCutSelected={handleCut}
+                  onPasteFromClipboard={handlePaste}
+                  canPasteClipboard={Boolean(clipboard)}
+                  onGroupSelected={handleGroupSelected}
+                  onUngroupSelected={handleUngroupSelected}
+                  onZOrderSelected={handleZOrderSelected}
+                  onToggleLockSelected={handleToggleLockSelected}
+                  onToggleHideSelected={handleToggleHideSelected}
+                  onAlignHorizontalCenter={handleAlignHorizontalCenter}
+                  onAlignVerticalCenter={handleAlignVerticalCenter}
+                  onResetZoom={handleResetZoom}
+                  onNotify={showToastMessage}
+                />
+              )}
 
-              {!previewMode && (
+              {!previewMode && currentModeConfig.centerView?.supportsFloatingAiDock !== false && (
                 <FloatingAIChatDock
                   aiChat={aiChat}
                   isMinimized={aiDockMinimized}
@@ -1251,6 +1283,8 @@ function CraftStudioApp() {
                 onToggleCollapse={() => setRightDockOpen((prev) => !prev)}
                 onOpenFloatingInspector={() => setShowAttributesInspectorModal((prev) => !prev)}
                 isFloatingInspectorOpen={showAttributesInspectorModal}
+                activeMode={activeMode}
+                modeConfig={currentModeConfig}
                 propertiesContent={(
                   <PropertiesPanel
                     selectedIds={selectedIds}

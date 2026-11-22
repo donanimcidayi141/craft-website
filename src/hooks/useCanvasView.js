@@ -19,6 +19,7 @@ const INITIAL_PAN_OFFSET = { x: 24, y: 48 };
 export function useCanvasView({
   showWelcomeScreen = true,
   previewMode = false,
+  activeMode = 'design',
   leftSidebarTab = null,
   rightDockOpen = true,
   rightDockWidth = 336,
@@ -30,6 +31,10 @@ export function useCanvasView({
   const [zoom, setZoom] = useState(INITIAL_ZOOM);
   const [panOffset, setPanOffset] = useState(INITIAL_PAN_OFFSET);
   const [fitVersion, setFitVersion] = useState(0);
+  const activeModeRef = useRef(activeMode);
+  activeModeRef.current = activeMode;
+  const pendingFitWhileHiddenRef = useRef(false);
+  const lastDesignLayoutKeyRef = useRef(null);
 
   const fitCanvasToViewport = useCallback((overrideWidth = null) => {
     const canvasW = Number(overrideWidth) || Number(canvasWidth) || 1280;
@@ -76,6 +81,11 @@ export function useCanvasView({
   // Fit & center artboard on initial load, tab switch, viewport switch, or fit trigger
   useEffect(() => {
     if (showWelcomeScreen) return undefined;
+    if (activeModeRef.current !== 'design') {
+      pendingFitWhileHiddenRef.current = true;
+      return undefined;
+    }
+    pendingFitWhileHiddenRef.current = false;
     let cancelled = false;
     let raf2 = null;
     const raf1 = requestAnimationFrame(() => {
@@ -90,23 +100,48 @@ export function useCanvasView({
     };
   }, [showWelcomeScreen, fitVersion, activeTabId, viewportMode, canvasWidth]);
 
-  // Keep artboard horizontally centered whenever sidebars open/close or window resizes
+  // Keep artboard horizontally centered whenever sidebars open/close, window resizes, or returning to design mode
   useEffect(() => {
-    if (showWelcomeScreen || previewMode) return undefined;
-    const rafId = requestAnimationFrame(() => centerHorizRef.current?.());
+    if (showWelcomeScreen || previewMode || activeMode !== 'design') return undefined;
+    const designLayoutKey = `${leftSidebarTab ?? ''}|${rightDockOpen}|${rightDockWidth}`;
+    const didDesignLayoutChange =
+      lastDesignLayoutKeyRef.current !== null && lastDesignLayoutKeyRef.current !== designLayoutKey;
+    lastDesignLayoutKeyRef.current = designLayoutKey;
+
+    let rafId = null;
+    let raf2 = null;
+    if (pendingFitWhileHiddenRef.current) {
+      pendingFitWhileHiddenRef.current = false;
+      rafId = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => fitCanvasRef.current?.());
+      });
+    } else if (didDesignLayoutChange) {
+      rafId = requestAnimationFrame(() => {
+        centerHorizRef.current?.();
+      });
+    }
+
     const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
+    let lastWrapperWidth = wrapperEl?.clientWidth || 0;
     const ro = wrapperEl && typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(() => centerHorizRef.current?.())
+      ? new ResizeObserver(() => {
+          const nextWidth = wrapperEl.clientWidth || 0;
+          if (nextWidth > 0 && Math.abs(nextWidth - lastWrapperWidth) > 1) {
+            lastWrapperWidth = nextWidth;
+            centerHorizRef.current?.();
+          }
+        })
       : null;
     if (ro && wrapperEl) ro.observe(wrapperEl);
     const onResize = () => centerHorizRef.current?.();
     window.addEventListener('resize', onResize);
     return () => {
-      cancelAnimationFrame(rafId);
+      if (rafId) cancelAnimationFrame(rafId);
+      if (raf2) cancelAnimationFrame(raf2);
       ro?.disconnect();
       window.removeEventListener('resize', onResize);
     };
-  }, [showWelcomeScreen, previewMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
+  }, [showWelcomeScreen, previewMode, activeMode, leftSidebarTab, rightDockOpen, rightDockWidth]);
 
   const handleResetZoom = useCallback(() => {
     fitCanvasToViewport();
@@ -117,6 +152,8 @@ export function useCanvasView({
   }, []);
 
   const reset = useCallback(({ fit = true } = {}) => {
+    lastDesignLayoutKeyRef.current = null;
+    pendingFitWhileHiddenRef.current = false;
     setZoom(INITIAL_ZOOM);
     setPanOffset(INITIAL_PAN_OFFSET);
     if (fit) {
