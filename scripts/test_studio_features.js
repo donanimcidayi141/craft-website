@@ -79,6 +79,25 @@ import {
   isToolSupportedInMode,
 } from '../src/data/studioModesRegistry.js';
 import {
+  PANEL_REGISTRY,
+  PANEL_LIST,
+  VALID_PANEL_ZONES,
+  MOVABLE_PANEL_ZONES,
+  WORKSPACE_PRESETS,
+  WORKSPACE_PRESET_LIST,
+  DEFAULT_WORKSPACE_PRESET_ID,
+  isValidPanelId,
+  getPanelConfig,
+  isPanelAllowedInMode,
+  isPanelAllowedInZone,
+  getPanelsForMode,
+  getLeftPanelsForMode,
+  getMenuPanelsForMode,
+  isValidWorkspacePreset,
+  getWorkspacePreset,
+  resolvePresetModeLayout,
+} from '../src/data/panelRegistry.js';
+import {
   createInitialWorkspaceLayout,
   updateActiveModeLeftDrawerTab,
   updateActiveModeLeftDrawerWidth,
@@ -3609,6 +3628,94 @@ test('useShortcuts keeps canvas shortcuts and Escape active when floating CSS in
     'tool:rectangle'
   );
   assert.deepEqual(focusCalls, ['undo', 'redo', 'tool:rectangle']);
+});
+
+test('PANEL_REGISTRY defines valid zones, mode filters, and presets consistent with studioModesRegistry without duplicate definitions', () => {
+  assert.ok(PANEL_LIST.length >= 11, `Expected >=11 panels in PANEL_REGISTRY, got ${PANEL_LIST.length}`);
+  const seenIds = new Set();
+
+  for (const panel of PANEL_LIST) {
+    assert.ok(panel.id && !seenIds.has(panel.id), `Duplicate or missing panel.id: ${panel.id}`);
+    seenIds.add(panel.id);
+    assert.equal(isValidPanelId(panel.id), true);
+    assert.ok(typeof panel.title === 'string' && panel.title.length > 0);
+    assert.ok(Array.isArray(panel.modes) && panel.modes.length > 0);
+    for (const m of panel.modes) {
+      assert.equal(isValidStudioMode(m), true, `Panel "${panel.id}" references invalid mode "${m}"`);
+      assert.equal(isPanelAllowedInMode(panel.id, m), true);
+    }
+
+    // Zone validation: defaultZone must be in allowedZones and VALID_PANEL_ZONES
+    assert.ok(
+      VALID_PANEL_ZONES.includes(panel.defaultZone),
+      `Panel "${panel.id}" has invalid defaultZone "${panel.defaultZone}"`
+    );
+    assert.ok(
+      Array.isArray(panel.allowedZones) && panel.allowedZones.includes(panel.defaultZone),
+      `Panel "${panel.id}" allowedZones must include defaultZone "${panel.defaultZone}"`
+    );
+    for (const z of panel.allowedZones) {
+      assert.ok(VALID_PANEL_ZONES.includes(z), `Panel "${panel.id}" has invalid allowedZone "${z}"`);
+      assert.equal(isPanelAllowedInZone(panel.id, z), true);
+    }
+    assert.equal(isPanelAllowedInZone(panel.id, 'top'), false);
+    assert.equal(isPanelAllowedInZone(panel.id, 'bottom'), false);
+
+    // Movable panels support left, right, floating; aiAgent is pinned to bottomCenter
+    if (panel.id === 'aiAgent') {
+      assert.deepEqual(panel.allowedZones, ['bottomCenter']);
+      assert.equal(panel.canFloat, false);
+    } else {
+      assert.deepEqual(panel.allowedZones, MOVABLE_PANEL_ZONES);
+      assert.equal(panel.canFloat, true);
+    }
+
+    // Size limits validation
+    const lim = panel.sizeLimits;
+    assert.ok(lim && lim.minWidth > 0 && lim.defaultWidth >= lim.minWidth && lim.maxWidth >= lim.defaultWidth);
+  }
+
+  // Verify mode filters and exact consistency with STUDIO_MODES
+  assert.equal(isPanelAllowedInMode('layers', 'design'), true);
+  assert.equal(isPanelAllowedInMode('layers', 'backend'), false);
+  assert.equal(isPanelAllowedInMode('flows', 'backend'), true);
+  assert.equal(isPanelAllowedInMode('flows', 'design'), false);
+  assert.equal(isPanelAllowedInMode('aiAgent', 'design'), true);
+  assert.equal(isPanelAllowedInMode('aiAgent', 'backend'), true);
+  assert.equal(getPanelConfig('assets')?.id, 'templates');
+
+  assert.deepEqual(STUDIO_MODES.design.leftPanels, getLeftPanelsForMode('design'));
+  assert.deepEqual(STUDIO_MODES.design.menuPanels, getMenuPanelsForMode('design'));
+  assert.deepEqual(STUDIO_MODES.backend.leftPanels, getLeftPanelsForMode('backend'));
+  assert.deepEqual(STUDIO_MODES.backend.menuPanels, getMenuPanelsForMode('backend'));
+
+  // Validate workspace presets (Standart, Tasarım Odaklı, Geniş Tuval)
+  assert.deepEqual(
+    WORKSPACE_PRESET_LIST.map((p) => p.id),
+    ['standard', 'design_focused', 'wide_canvas']
+  );
+  assert.equal(DEFAULT_WORKSPACE_PRESET_ID, 'standard');
+  assert.equal(isValidWorkspacePreset('standard'), true);
+  assert.equal(isValidWorkspacePreset('design_focused'), true);
+  assert.equal(isValidWorkspacePreset('wide_canvas'), true);
+  assert.equal(isValidWorkspacePreset('unknown_preset'), false);
+  assert.equal(getWorkspacePreset('unknown_preset').id, 'standard');
+
+  const stdDesign = resolvePresetModeLayout('standard', 'design');
+  assert.equal(stdDesign.leftDrawer.activeTab, null);
+  assert.equal(stdDesign.rightDock.isOpen, true);
+  assert.equal(stdDesign.rightDock.propertiesTab, 'layout');
+  assert.equal(stdDesign.aiDock.isMinimized, false);
+
+  const focusedDesign = resolvePresetModeLayout('design_focused', 'design');
+  assert.equal(focusedDesign.leftDrawer.activeTab, 'layers');
+  assert.equal(focusedDesign.rightDock.isOpen, true);
+  assert.equal(focusedDesign.rightDock.propertiesTab, 'style');
+
+  const wideDesign = resolvePresetModeLayout('wide_canvas', 'design');
+  assert.equal(wideDesign.leftDrawer.activeTab, null);
+  assert.equal(wideDesign.rightDock.isOpen, false);
+  assert.equal(wideDesign.aiDock.isMinimized, true);
 });
 
 // -----------------------------------------------------------------------------

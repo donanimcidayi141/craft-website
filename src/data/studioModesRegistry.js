@@ -3,14 +3,35 @@
  * Adding a future studio mode only requires registering a new mode definition here.
  */
 
+import {
+  DEFAULT_LEFT_DRAWER_WIDTH,
+  DEFAULT_BACKEND_LEFT_DRAWER_WIDTH,
+  MIN_LEFT_DRAWER_WIDTH,
+  MAX_LEFT_DRAWER_WIDTH,
+  MIN_AI_LEFT_DRAWER_WIDTH,
+  LEFT_RAIL_WIDTH,
+  DEFAULT_RIGHT_DOCK_WIDTH,
+  MIN_RIGHT_DOCK_WIDTH,
+  MAX_RIGHT_DOCK_WIDTH,
+  RIGHT_RAIL_WIDTH,
+  getLeftPanelsForMode,
+  getMenuPanelsForMode,
+  resolvePresetModeLayout,
+} from './panelRegistry.js';
+
 export const DEFAULT_STUDIO_MODE = 'design';
-export const DEFAULT_LEFT_DRAWER_WIDTH = 248;
-export const MIN_LEFT_DRAWER_WIDTH = 220;
-export const MAX_LEFT_DRAWER_WIDTH = 440;
-export const MIN_AI_LEFT_DRAWER_WIDTH = 296;
-export const LEFT_RAIL_WIDTH = 52;
-export const DEFAULT_RIGHT_DOCK_WIDTH = 336;
-export const RIGHT_RAIL_WIDTH = 40;
+export {
+  DEFAULT_LEFT_DRAWER_WIDTH,
+  DEFAULT_BACKEND_LEFT_DRAWER_WIDTH,
+  MIN_LEFT_DRAWER_WIDTH,
+  MAX_LEFT_DRAWER_WIDTH,
+  MIN_AI_LEFT_DRAWER_WIDTH,
+  LEFT_RAIL_WIDTH,
+  DEFAULT_RIGHT_DOCK_WIDTH,
+  MIN_RIGHT_DOCK_WIDTH,
+  MAX_RIGHT_DOCK_WIDTH,
+  RIGHT_RAIL_WIDTH,
+};
 
 export const STUDIO_MODES = {
   design: {
@@ -58,13 +79,7 @@ export const STUDIO_MODES = {
       showArrangeActions: true,
     },
 
-    leftPanels: [
-      { id: 'layers', title: 'Katmanlar & DOM Ağacı', menuLabel: 'Katmanlar (Layers)', icon: 'Layers', minWidth: 220, defaultWidth: 248 },
-      { id: 'templates', title: 'Şablonlar & Hazır Bloklar', menuLabel: 'Assetler & Şablonlar', icon: 'LayoutTemplate', minWidth: 220, defaultWidth: 248 },
-      { id: 'elements', title: 'HTML Etiketleri', menuLabel: null, icon: 'Tag', minWidth: 220, defaultWidth: 248 },
-      { id: 'code', title: 'Canlı Kod (JSX & CSS)', menuLabel: null, icon: 'Code2', minWidth: 220, defaultWidth: 248 },
-      { id: 'ai', title: 'AI Tasarım Asistanı', menuLabel: null, icon: 'Sparkles', minWidth: 296, defaultWidth: 296 },
-    ],
+    leftPanels: getLeftPanelsForMode('design'),
 
     centerView: {
       componentKey: 'design_canvas',
@@ -83,48 +98,11 @@ export const STUDIO_MODES = {
     rightDockHeaderTitle: 'Özellikler & Tasarım',
     supportsFloatingAttributesInspector: true,
 
-    menuPanels: [
-      {
-        id: 'properties',
-        label: 'Özellikler & Hizalama',
-        icon: 'Sliders',
-        target: { area: 'rightDock' },
-      },
-      {
-        id: 'assets',
-        label: 'Assetler & Şablonlar',
-        icon: 'Box',
-        target: { area: 'leftDrawer', tabId: 'templates', activeMatchTabs: ['templates', 'elements'] },
-      },
-      {
-        id: 'layers',
-        label: 'Katmanlar (Layers)',
-        icon: 'Layers',
-        target: { area: 'leftDrawer', tabId: 'layers', activeMatchTabs: ['layers'] },
-      },
-      {
-        id: 'aiAgent',
-        label: 'AI Sohbet Çubuğu',
-        icon: 'Sparkles',
-        shortcutHint: 'Ctrl+K',
-        target: { area: 'aiDock' },
-      },
-      {
-        id: 'attributesAndCss',
-        label: 'Yüzen CSS & Nitelik Penceresi',
-        icon: 'Tag',
-        dividerBefore: true,
-        target: { area: 'modal', modalKey: 'attributesInspector' },
-      },
-    ],
+    menuPanels: getMenuPanelsForMode('design'),
 
     shortcutsProfile: 'design',
 
-    defaultLayout: {
-      leftDrawer: { activeTab: null, width: DEFAULT_LEFT_DRAWER_WIDTH },
-      rightDock: { isOpen: true, propertiesTab: 'layout', width: 336 },
-      aiDock: { isMinimized: false },
-    },
+    defaultLayout: resolvePresetModeLayout('standard', 'design'),
   },
 
   backend: {
@@ -156,11 +134,7 @@ export const STUDIO_MODES = {
       showArrangeActions: false,
     },
 
-    leftPanels: [
-      { id: 'flows', title: 'Olay & İş Akışları', menuLabel: 'İş Akışları (Flows)', icon: 'Workflow', minWidth: 220, defaultWidth: 256 },
-      { id: 'dataModels', title: 'Veri Kutuları & Tablolar', menuLabel: 'Veri Kutuları', icon: 'Database', minWidth: 220, defaultWidth: 256 },
-      { id: 'triggers', title: 'Sayfa Tetikleyicileri', menuLabel: 'Tetikleyiciler', icon: 'Zap', minWidth: 220, defaultWidth: 256 },
-    ],
+    leftPanels: getLeftPanelsForMode('backend'),
 
     centerView: {
       componentKey: 'backend_canvas_skeleton',
@@ -176,41 +150,11 @@ export const STUDIO_MODES = {
     rightDockHeaderTitle: 'Akış & Veri Özellikleri',
     supportsFloatingAttributesInspector: false,
 
-    menuPanels: [
-      {
-        id: 'backendInspector',
-        label: 'Akış & Adım Özellikleri',
-        icon: 'Sliders',
-        target: { area: 'rightDock' },
-      },
-      {
-        id: 'flows',
-        label: 'İş Akışları (Flows)',
-        icon: 'Workflow',
-        target: { area: 'leftDrawer', tabId: 'flows', activeMatchTabs: ['flows'] },
-      },
-      {
-        id: 'dataModels',
-        label: 'Veri Kutuları',
-        icon: 'Database',
-        target: { area: 'leftDrawer', tabId: 'dataModels', activeMatchTabs: ['dataModels'] },
-      },
-      {
-        id: 'aiAgent',
-        label: 'AI Sohbet Çubuğu',
-        icon: 'Sparkles',
-        shortcutHint: 'Ctrl+K',
-        target: { area: 'aiDock' },
-      },
-    ],
+    menuPanels: getMenuPanelsForMode('backend'),
 
     shortcutsProfile: 'backend',
 
-    defaultLayout: {
-      leftDrawer: { activeTab: 'flows', width: 256 },
-      rightDock: { isOpen: true, propertiesTab: 'stepConfig', width: 336 },
-      aiDock: { isMinimized: false },
-    },
+    defaultLayout: resolvePresetModeLayout('standard', 'backend'),
   },
 };
 
