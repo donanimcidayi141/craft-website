@@ -2129,18 +2129,18 @@ async function main() {
           return origSetItem.call(this, key, val);
         };
         s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: startX, clientY: startY }));
-        requestAnimationFrame(() => {
+        setTimeout(() => {
           for (let i = 1; i <= 60; i++) {
             const dx = Math.round((80 * i) / 60);
             window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: startX + dx, clientY: startY }));
           }
-          requestAnimationFrame(() => {
+          setTimeout(() => {
             const writesDuringMove = settingsWrites;
             window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: startX + 80, clientY: startY }));
             Storage.prototype.setItem = origSetItem;
             resolve({ ok: true, writesDuringMove, totalWritesAfterUp: settingsWrites });
-          });
-        });
+          }, 30);
+        }, 30);
       })
     `);
     assert.equal(dragWriteResult.ok, true, 'Splitter 60 hareket testi başlatılamadı.');

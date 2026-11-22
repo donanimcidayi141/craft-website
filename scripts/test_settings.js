@@ -247,4 +247,52 @@ await test('subscribe değişiklikleri aynı oturum içinde bildirir', () => {
   assert.equal(calls, 2);
 });
 
-console.log(`\n🎉 Toplam ${passed}/6 settingsStore testi başarıyla geçti!\n`);
+await test('v2 -> v3 kayıpsız göç, çok bölgeli panelZones/tabs/floatingPanels kaydı ve okuma anı ekran kırpması', () => {
+  assert.equal(SETTINGS_SCHEMA_VERSION, 3);
+  const v2Storage = createMemoryStorage({
+    [SETTINGS_STORAGE_KEY]: JSON.stringify({
+      version: 2,
+      defaultModel: 'gemini-3-flash-preview',
+      defaultDevice: 'desktop',
+      showAmbientBg: true,
+      reduceMotion: false,
+      workspaceLayoutsByMode: {
+        design: {
+          presetId: 'custom',
+          leftDrawer: { activeTab: 'layers', width: 340 },
+          rightDock: { isOpen: true, propertiesTab: 'css', width: 420 },
+          aiDock: { isMinimized: false },
+          floatingRect: { x: 980, y: 110, width: 700, height: 520 },
+        },
+        backend: {
+          presetId: 'custom',
+          leftDrawer: { activeTab: 'dataModels', width: 312 },
+          rightDock: { isOpen: false, propertiesTab: 'testRun', width: 360 },
+          aiDock: { isMinimized: true },
+        },
+      },
+    }),
+  });
+
+  const migrated = getSettings(v2Storage);
+  assert.equal(migrated.version, 3);
+  assert.equal(migrated.workspaceLayoutsByMode.design.leftDrawer.width, 340);
+  assert.equal(migrated.workspaceLayoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.deepEqual(migrated.workspaceLayoutsByMode.design.leftDrawer.tabs, ['layers']);
+  assert.equal(migrated.workspaceLayoutsByMode.design.rightDock.width, 420);
+  assert.equal(migrated.workspaceLayoutsByMode.design.rightDock.propertiesTab, 'css');
+  assert.deepEqual(migrated.workspaceLayoutsByMode.design.rightDock.tabs, ['properties']);
+  assert.deepEqual(migrated.workspaceLayoutsByMode.design.floatingPanels.attributesAndCss.rect, {
+    x: 980,
+    y: 110,
+    width: 700,
+    height: 520,
+  });
+  assert.equal(migrated.workspaceLayoutsByMode.backend.leftDrawer.width, 312);
+  assert.deepEqual(migrated.workspaceLayoutsByMode.backend.leftDrawer.tabs, ['dataModels']);
+  assert.equal(migrated.workspaceLayoutsByMode.backend.rightDock.isOpen, false);
+  assert.equal(migrated.workspaceLayoutsByMode.backend.rightDock.propertiesTab, 'testRun');
+  assert.equal(migrated.workspaceLayoutsByMode.backend.aiDock.isMinimized, true);
+});
+
+console.log(`\n🎉 Toplam ${passed}/7 settingsStore testi başarıyla geçti!\n`);

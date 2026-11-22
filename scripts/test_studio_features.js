@@ -3766,7 +3766,7 @@ test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken J
   assert.equal(fromBroken.version, SETTINGS_SCHEMA_VERSION);
   assert.deepEqual(fromBroken.workspaceLayoutsByMode, DEFAULT_WORKSPACE_LAYOUTS_BY_MODE);
 
-  // 2. Legacy v0 / v1 settings record migrates to version 2 with safe default workspaceLayoutsByMode
+  // 2. Legacy v0 / v1 settings record migrates to version 3 with safe default workspaceLayoutsByMode
   memStore.setItem(
     SETTINGS_STORAGE_KEY,
     JSON.stringify({
@@ -3778,25 +3778,99 @@ test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken J
     })
   );
   const fromLegacyV1 = getSettings(memStore);
-  assert.equal(fromLegacyV1.version, 2);
+  assert.equal(fromLegacyV1.version, SETTINGS_SCHEMA_VERSION);
+  assert.equal(SETTINGS_SCHEMA_VERSION, 3);
   assert.equal(fromLegacyV1.defaultDevice, 'mobile');
   assert.equal(fromLegacyV1.showAmbientBg, false);
   assert.equal(fromLegacyV1.reduceMotion, true);
   assert.deepEqual(fromLegacyV1.workspaceLayoutsByMode, DEFAULT_WORKSPACE_LAYOUTS_BY_MODE);
 
-  // 3. Unknown panel IDs, cross-mode panel IDs, excessive widths, and off-screen floatingRects are silently sanitized
+  // 2b. Real v2 settings record migrates LOSSLESSLY to v3 (preserving widths, open panels, tabs, and legacy floatingRect)
+  const realV2Record = {
+    version: 2,
+    defaultModel: 'gemini-3-flash-preview',
+    defaultDevice: 'desktop',
+    showAmbientBg: false,
+    reduceMotion: true,
+    workspaceLayoutsByMode: {
+      design: {
+        presetId: 'custom',
+        leftDrawer: { activeTab: 'layers', width: 328 },
+        rightDock: { isOpen: true, propertiesTab: 'style', width: 384 },
+        aiDock: { isMinimized: false },
+        floatingRect: { x: 420, y: 96, width: 720, height: 540 },
+      },
+      backend: {
+        presetId: 'custom',
+        leftDrawer: { activeTab: 'dataModels', width: 316 },
+        rightDock: { isOpen: false, propertiesTab: 'dataBinding', width: 392 },
+        aiDock: { isMinimized: true },
+      },
+    },
+  };
+  memStore.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(realV2Record));
+  const migratedFromV2 = getSettings(memStore);
+  assert.equal(migratedFromV2.version, 3);
+  assert.equal(migratedFromV2.showAmbientBg, false);
+  assert.equal(migratedFromV2.reduceMotion, true);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.leftDrawer.activeTab, 'layers');
+  assert.deepEqual(migratedFromV2.workspaceLayoutsByMode.design.leftDrawer.tabs, ['layers']);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.leftDrawer.width, 328);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.rightDock.isOpen, true);
+  assert.deepEqual(migratedFromV2.workspaceLayoutsByMode.design.rightDock.tabs, ['properties']);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.rightDock.activeTab, 'properties');
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.rightDock.propertiesTab, 'style');
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.rightDock.width, 384);
+  assert.deepEqual(migratedFromV2.workspaceLayoutsByMode.design.floatingPanels.attributesAndCss.rect, {
+    x: 420,
+    y: 96,
+    width: 720,
+    height: 540,
+  });
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.panelZones.layers, 'left');
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.panelZones.properties, 'right');
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.design.panelZones.attributesAndCss, 'floating');
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.backend.leftDrawer.activeTab, 'dataModels');
+  assert.deepEqual(migratedFromV2.workspaceLayoutsByMode.backend.leftDrawer.tabs, ['dataModels']);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.backend.leftDrawer.width, 316);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.backend.rightDock.isOpen, false);
+  assert.deepEqual(migratedFromV2.workspaceLayoutsByMode.backend.rightDock.tabs, ['backendInspector']);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.backend.rightDock.propertiesTab, 'dataBinding');
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.backend.rightDock.width, 392);
+  assert.equal(migratedFromV2.workspaceLayoutsByMode.backend.aiDock.isMinimized, true);
+
+  // Loading migrated v2 directly into createInitialWorkspaceLayout satisfies bridge invariant
+  const initialFromV2 = createInitialWorkspaceLayout({ storage: memStore, usePersistedSettings: true });
+  assertWorkspaceLayoutBridgeInvariant(initialFromV2, 'initialFromV2');
+
+  // 3. Unknown panel IDs, cross-mode panel IDs, invalid zones ('top'), excessive widths, and off-screen floating coords are silently sanitized
   const sanitizedCorrupt = sanitizeWorkspaceLayoutsByMode(
     {
       design: {
         presetId: 'nonexistent_preset',
-        leftDrawer: { activeTab: 'unknown_ghost_panel', width: 99999 },
-        rightDock: { isOpen: 'not_a_bool', propertiesTab: 'stepConfig', width: -500 },
+        panelZones: {
+          layers: 'top', // invalid zone -> stays 'left'
+          aiAgent: 'left', // pinned panel -> stays 'bottomCenter'
+          flows: 'right', // backend-only panel -> ignored
+          ghostPanel: 'floating', // unknown panel -> ignored
+          templates: 'right', // valid zone move
+        },
+        leftDrawer: { activeTab: 'unknown_ghost_panel', tabs: ['unknown_ghost_panel', 'flows'], width: 99999 },
+        rightDock: { isOpen: 'not_a_bool', tabs: ['properties', 'templates', 'ghostPanel'], propertiesTab: 'stepConfig', width: -500 },
+        floatingPanels: {
+          attributesAndCss: { isOpen: true, rect: { x: 99999, y: -400, width: 5000, height: 4000 }, zIndex: 99 },
+          flows: { isOpen: true, rect: { x: 10, y: 10, width: 300, height: 300 } }, // cross-mode -> ignored
+          templates: { isOpen: true, rect: { x: 50, y: 50, width: 300, height: 300 } }, // zone is 'right' -> isOpen forced false
+        },
         aiDock: { isMinimized: 'invalid' },
-        floatingRect: { x: 99999, y: -400, width: 5000, height: 4000 },
       },
       backend: {
         presetId: 'wide_canvas',
-        leftDrawer: { activeTab: 'layers', width: 10 }, // 'layers' is a design panel, invalid in backend
+        panelZones: {
+          flows: 'bottom', // invalid -> stays 'left'
+          layers: 'left', // design-only -> ignored
+        },
+        leftDrawer: { activeTab: 'layers', tabs: ['layers'], width: 10 }, // 'layers' is a design panel, invalid in backend
         rightDock: { isOpen: false, propertiesTab: 'unknown_right_tab', width: 8000 },
         aiDock: { isMinimized: true },
       },
@@ -3804,17 +3878,31 @@ test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken J
     { viewportWidth: 1440, viewportHeight: 900 }
   );
   assert.equal(sanitizedCorrupt.design.presetId, 'standard');
+  assert.equal(sanitizedCorrupt.design.panelZones.layers, 'left');
+  assert.equal(sanitizedCorrupt.design.panelZones.aiAgent, 'bottomCenter');
+  assert.equal(sanitizedCorrupt.design.panelZones.templates, 'right');
+  assert.equal('flows' in sanitizedCorrupt.design.panelZones, false);
+  assert.equal('ghostPanel' in sanitizedCorrupt.design.panelZones, false);
   assert.equal(sanitizedCorrupt.design.leftDrawer.activeTab, null);
+  assert.deepEqual(sanitizedCorrupt.design.leftDrawer.tabs, []);
   assert.equal(sanitizedCorrupt.design.leftDrawer.width, 440);
   assert.equal(sanitizedCorrupt.design.rightDock.isOpen, true);
+  assert.deepEqual(sanitizedCorrupt.design.rightDock.tabs, ['properties', 'templates']);
   assert.equal(sanitizedCorrupt.design.rightDock.propertiesTab, 'layout');
   assert.equal(sanitizedCorrupt.design.rightDock.width, 336);
   assert.equal(sanitizedCorrupt.design.aiDock.isMinimized, false);
-  assert.ok(sanitizedCorrupt.design.floatingRect.x + sanitizedCorrupt.design.floatingRect.width <= 1440);
-  assert.ok(sanitizedCorrupt.design.floatingRect.y >= 0);
+  assert.equal(sanitizedCorrupt.design.floatingPanels.attributesAndCss.isOpen, true);
+  assert.equal(sanitizedCorrupt.design.floatingPanels.templates.isOpen, false);
+  assert.equal('flows' in sanitizedCorrupt.design.floatingPanels, false);
+  const clampedAttrRect = sanitizedCorrupt.design.floatingPanels.attributesAndCss.rect;
+  assert.ok(clampedAttrRect.x + clampedAttrRect.width <= 1440);
+  assert.ok(clampedAttrRect.y >= 0);
 
   assert.equal(sanitizedCorrupt.backend.presetId, 'wide_canvas');
+  assert.equal(sanitizedCorrupt.backend.panelZones.flows, 'left');
+  assert.equal('layers' in sanitizedCorrupt.backend.panelZones, false);
   assert.equal(sanitizedCorrupt.backend.leftDrawer.activeTab, 'flows'); // fell back to backend default
+  assert.deepEqual(sanitizedCorrupt.backend.leftDrawer.tabs, ['flows']);
   assert.equal(sanitizedCorrupt.backend.leftDrawer.width, 220); // clamped to MIN_LEFT_DRAWER_WIDTH
   assert.equal(sanitizedCorrupt.backend.rightDock.isOpen, false);
   assert.equal(sanitizedCorrupt.backend.rightDock.propertiesTab, 'stepConfig');
@@ -3915,33 +4003,66 @@ test('settingsStore workspaceLayoutsByMode persists per mode, sanitizes broken J
   assert.equal(afterDesignOnlyReset.layoutsByMode.backend.rightDock.propertiesTab, 'dataBinding');
   assert.equal(afterDesignOnlyReset.layoutsByMode.backend.rightDock.width, 390);
 
-  // 8. Narrow viewport clamping happens ONLY at read/render time and never overwrites saved intrinsic widths in storage
+  // 8. Narrow viewport clamping (dock widths AND floating panel rects) happens ONLY at read/render time and never overwrites saved intrinsic values in storage
   saveWorkspaceLayoutsByMode(
     {
       design: {
         presetId: 'custom',
-        leftDrawer: { activeTab: 'layers', width: 400 },
-        rightDock: { isOpen: true, propertiesTab: 'style', width: 480 },
+        panelZones: { layers: 'left', templates: 'right', attributesAndCss: 'floating' },
+        leftDrawer: { activeTab: 'layers', tabs: ['layers'], width: 400 },
+        rightDock: { isOpen: true, activeTab: 'templates', tabs: ['properties', 'templates'], propertiesTab: 'style', width: 480 },
+        floatingPanels: {
+          attributesAndCss: {
+            isOpen: true,
+            isMinimized: false,
+            rect: { x: 1120, y: 140, width: 760, height: 560 },
+            zIndex: 75,
+          },
+        },
         aiDock: { isMinimized: false },
       },
     },
     memStore
   );
-  // Stored value in memStore remains 400 & 480
+  // Stored values in memStore remain 400, 480, multi-tab docks, and unclamped floating rect (x=1120, width=760)
   const rawStored = getWorkspaceLayoutsByMode(memStore);
   assert.equal(rawStored.design.leftDrawer.width, 400);
   assert.equal(rawStored.design.rightDock.width, 480);
+  assert.deepEqual(rawStored.design.rightDock.tabs, ['properties', 'templates']);
+  assert.equal(rawStored.design.rightDock.activeTab, 'templates');
+  assert.equal(rawStored.design.panelZones.templates, 'right');
+  assert.deepEqual(rawStored.design.floatingPanels.attributesAndCss.rect, {
+    x: 1120,
+    y: 140,
+    width: 760,
+    height: 560,
+  });
 
-  // On a narrow 1000px screen, read-time clamping shrinks effective widths so center >= 360px
-  const clampedNarrow = clampModeLayoutToViewport(rawStored.design, { viewportWidth: 1000, viewportHeight: 720 });
+  // On a narrow 1000x640 screen, read-time clamping shrinks effective widths AND pulls floating rect on-screen
+  const clampedNarrow = clampModeLayoutToViewport(rawStored.design, { viewportWidth: 1000, viewportHeight: 640 });
   assert.ok(clampedNarrow.leftDrawer.width + clampedNarrow.rightDock.width <= 1000 - 52 - 40 - 360);
-  // Storage STILL holds 400 & 480; when screen expands back to 1600px, original 400 & 480 return
+  const narrowFloatRect = clampedNarrow.floatingPanels.attributesAndCss.rect;
+  assert.ok(narrowFloatRect.x >= 12 && narrowFloatRect.x + narrowFloatRect.width <= 1000 - 12);
+  assert.ok(narrowFloatRect.y >= 12 && narrowFloatRect.y + narrowFloatRect.height <= 640 - 12);
+  // Storage STILL holds 400, 480, and { x: 1120, y: 140, width: 760, height: 560 }; expanding back to 1920x1080 restores all originals
   const restoredWide = clampModeLayoutToViewport(getWorkspaceLayoutsByMode(memStore).design, {
-    viewportWidth: 1600,
-    viewportHeight: 960,
+    viewportWidth: 1920,
+    viewportHeight: 1080,
   });
   assert.equal(restoredWide.leftDrawer.width, 400);
   assert.equal(restoredWide.rightDock.width, 480);
+  assert.deepEqual(restoredWide.floatingPanels.attributesAndCss.rect, {
+    x: 1120,
+    y: 140,
+    width: 760,
+    height: 560,
+  });
+
+  // Round-trip v3 persisted multi-zone state back into createInitialWorkspaceLayout passes invariant
+  const reloadedV3 = createInitialWorkspaceLayout({ storage: memStore, usePersistedSettings: true });
+  assertWorkspaceLayoutBridgeInvariant(reloadedV3, 'reloadedV3');
+  assert.equal(reloadedV3.modals.attributesInspector, true);
+  assert.deepEqual(reloadedV3.layoutsByMode.design.rightDock.tabs, ['properties', 'templates']);
 });
 
 test('useWorkspaceLayout multi-zone tabbed panel engine supports multi-tab docks, cross-zone movement, floating rect clamping, z-index ordering, and preset reset', () => {

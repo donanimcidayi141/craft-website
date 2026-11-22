@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import {
   DEFAULT_STUDIO_MODE,
   DEFAULT_LEFT_DRAWER_WIDTH,
@@ -1359,10 +1359,11 @@ export function useWorkspaceLayout(options = {}) {
 
   // Persist per-mode workspace layouts (design & backend) to settingsStore (`craftstudio_settings_v1`).
   // - Discrete panel/tab/preset/reset transitions write immediately (1 write).
-  // - Continuous splitter width drags are debounced (180ms) and flushed once on pointerup/mouseup/beforeunload
+  // - Continuous splitter width / floating rect drags are debounced (180ms) and flushed once on pointerup/mouseup/beforeunload
   //   so 60 pointermove events during a drag produce only 1 storage write instead of 60.
+  // - Uses useLayoutEffect so pendingPersistPayloadRef is populated synchronously before pointerup can arrive.
   // - Always persists the user's intrinsic (unclamped) widths so shrinking & re-expanding the window restores original widths.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const modeId = isValidStudioMode(layout.activeMode) ? layout.activeMode : DEFAULT_STUDIO_MODE;
     const activeModeSlice = layout.layoutsByMode?.[modeId];
     const toPersist = {
@@ -1372,17 +1373,38 @@ export function useWorkspaceLayout(options = {}) {
         aiDock: { isMinimized: Boolean(layout.aiDock?.isMinimized) },
       },
     };
+    const serializeFloatingStructural = (floatMap) => {
+      const summary = {};
+      for (const [id, st] of Object.entries(floatMap || {})) {
+        summary[id] = {
+          o: Boolean(st?.isOpen),
+          m: Boolean(st?.isMinimized),
+          z: Number(st?.zIndex) || 50,
+        };
+      }
+      return summary;
+    };
     const nonWidthKey = JSON.stringify({
       activeMode: modeId,
       designTab: toPersist.design?.leftDrawer?.activeTab ?? null,
+      designLeftTabs: toPersist.design?.leftDrawer?.tabs || [],
       designOpen: Boolean(toPersist.design?.rightDock?.isOpen),
+      designRightActive: toPersist.design?.rightDock?.activeTab ?? null,
+      designRightTabs: toPersist.design?.rightDock?.tabs || [],
       designPropTab: toPersist.design?.rightDock?.propertiesTab ?? 'layout',
       designPreset: toPersist.design?.presetId ?? 'standard',
+      designZones: toPersist.design?.panelZones || {},
+      designFloating: serializeFloatingStructural(toPersist.design?.floatingPanels),
       designAiMin: Boolean(toPersist.design?.aiDock?.isMinimized),
       backendTab: toPersist.backend?.leftDrawer?.activeTab ?? null,
+      backendLeftTabs: toPersist.backend?.leftDrawer?.tabs || [],
       backendOpen: Boolean(toPersist.backend?.rightDock?.isOpen),
+      backendRightActive: toPersist.backend?.rightDock?.activeTab ?? null,
+      backendRightTabs: toPersist.backend?.rightDock?.tabs || [],
       backendPropTab: toPersist.backend?.rightDock?.propertiesTab ?? 'stepConfig',
       backendPreset: toPersist.backend?.presetId ?? 'standard',
+      backendZones: toPersist.backend?.panelZones || {},
+      backendFloating: serializeFloatingStructural(toPersist.backend?.floatingPanels),
       backendAiMin: Boolean(toPersist.backend?.aiDock?.isMinimized),
     });
 

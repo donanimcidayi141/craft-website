@@ -20,7 +20,13 @@ import {
   RIGHT_RAIL_WIDTH,
   DEFAULT_WORKSPACE_PRESET_ID,
   isValidWorkspacePreset,
-  getLeftPanelsForMode,
+  getPanelConfig,
+  resolveCanonicalPanelId,
+  isPanelAllowedInMode,
+  isPanelAllowedInZone,
+  getDefaultRightPanelIdForMode,
+  createDefaultPanelZonesForMode,
+  createDefaultFloatingPanelsForMode,
 } from '../data/panelRegistry.js';
 import { STUDIO_MODES } from '../data/studioModesRegistry.js';
 import { clampFloatingRect } from '../utils/propertySearch.js';
@@ -31,22 +37,57 @@ export const RECENT_PROJECTS_STORAGE_KEY = 'craftstudio.recentProjects.v1';
 export const SAVED_PROJECTS_STORAGE_KEY = 'craftstudio.savedProjects.v1';
 export const AUTOSAVE_STORAGE_KEY = 'craftstudio.autosaveDraft.v1';
 
-export const SETTINGS_SCHEMA_VERSION = 2;
+export const SETTINGS_SCHEMA_VERSION = 3;
 export const MIN_CENTER_WORKSPACE_WIDTH = 360;
 
-export const DEFAULT_WORKSPACE_LAYOUTS_BY_MODE = Object.freeze({
-  design: Object.freeze({
+function deepFreeze(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  Object.freeze(obj);
+  for (const val of Object.values(obj)) {
+    if (val && typeof val === 'object' && !Object.isFrozen(val)) {
+      deepFreeze(val);
+    }
+  }
+  return obj;
+}
+
+export const DEFAULT_WORKSPACE_LAYOUTS_BY_MODE = deepFreeze({
+  design: {
     presetId: DEFAULT_WORKSPACE_PRESET_ID,
-    leftDrawer: Object.freeze({ activeTab: null, width: DEFAULT_LEFT_DRAWER_WIDTH }),
-    rightDock: Object.freeze({ isOpen: true, propertiesTab: 'layout', width: DEFAULT_RIGHT_DOCK_WIDTH }),
-    aiDock: Object.freeze({ isMinimized: false }),
-  }),
-  backend: Object.freeze({
+    panelZones: createDefaultPanelZonesForMode('design'),
+    leftDrawer: {
+      activeTab: null,
+      tabs: [],
+      width: DEFAULT_LEFT_DRAWER_WIDTH,
+    },
+    rightDock: {
+      isOpen: true,
+      activeTab: getDefaultRightPanelIdForMode('design'),
+      tabs: [getDefaultRightPanelIdForMode('design')],
+      propertiesTab: 'layout',
+      width: DEFAULT_RIGHT_DOCK_WIDTH,
+    },
+    floatingPanels: createDefaultFloatingPanelsForMode('design'),
+    aiDock: { isMinimized: false },
+  },
+  backend: {
     presetId: DEFAULT_WORKSPACE_PRESET_ID,
-    leftDrawer: Object.freeze({ activeTab: 'flows', width: DEFAULT_BACKEND_LEFT_DRAWER_WIDTH }),
-    rightDock: Object.freeze({ isOpen: true, propertiesTab: 'stepConfig', width: DEFAULT_RIGHT_DOCK_WIDTH }),
-    aiDock: Object.freeze({ isMinimized: false }),
-  }),
+    panelZones: createDefaultPanelZonesForMode('backend'),
+    leftDrawer: {
+      activeTab: 'flows',
+      tabs: ['flows'],
+      width: DEFAULT_BACKEND_LEFT_DRAWER_WIDTH,
+    },
+    rightDock: {
+      isOpen: true,
+      activeTab: getDefaultRightPanelIdForMode('backend'),
+      tabs: [getDefaultRightPanelIdForMode('backend')],
+      propertiesTab: 'stepConfig',
+      width: DEFAULT_RIGHT_DOCK_WIDTH,
+    },
+    floatingPanels: createDefaultFloatingPanelsForMode('backend'),
+    aiDock: { isMinimized: false },
+  },
 });
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -73,22 +114,42 @@ function normalizeDevice(value) {
   return value === 'mobile' ? 'mobile' : 'desktop';
 }
 
-function getAllowedLeftTabsForMode(modeId) {
-  const resolvedMode = modeId === 'backend' ? 'backend' : 'design';
-  const tabs = new Set(getLeftPanelsForMode(resolvedMode).map((p) => p.id));
-  tabs.add('ai');
-  return tabs;
-}
-
 function getAllowedRightTabsForMode(modeId) {
   const resolvedMode = modeId === 'backend' ? 'backend' : 'design';
   return new Set((STUDIO_MODES[resolvedMode]?.rightTabs || []).map((t) => t.id));
 }
 
+function sanitizeIntrinsicFloatingRect(rawRect, panelId, fallbackRect) {
+  if (!rawRect || typeof rawRect !== 'object' || Array.isArray(rawRect)) {
+    return { ...fallbackRect };
+  }
+  const panelCfg = getPanelConfig(panelId);
+  const minW = panelCfg?.sizeLimits?.minWidth || 220;
+  const maxW = panelCfg?.sizeLimits?.maxWidth || 960;
+  const minH = panelCfg?.sizeLimits?.minHeight || 260;
+  const maxH = panelCfg?.sizeLimits?.maxHeight || 880;
+
+  const rawX = Number(rawRect.x);
+  const rawY = Number(rawRect.y);
+  const rawW = Number(rawRect.width);
+  const rawH = Number(rawRect.height);
+
+  return {
+    x: Number.isFinite(rawX) ? Math.round(rawX) : fallbackRect.x,
+    y: Number.isFinite(rawY) ? Math.round(rawY) : fallbackRect.y,
+    width: Number.isFinite(rawW) && rawW > 0
+      ? Math.max(minW, Math.min(maxW, Math.round(rawW)))
+      : fallbackRect.width,
+    height: Number.isFinite(rawH) && rawH > 0
+      ? Math.max(minH, Math.min(maxH, Math.round(rawH)))
+      : fallbackRect.height,
+  };
+}
+
 /**
- * Clamps a mode's layout slice to fit within a specific viewport/screen size at read/render time
- * WITHOUT mutating the user's saved intrinsic preferences in storage.
- * Ensures at least `MIN_CENTER_WORKSPACE_WIDTH` (360px) remains for the center workspace.
+ * Clamps a mode's layout slice (dock widths AND floating panel rects) to fit within a specific
+ * viewport/screen size at read/render time WITHOUT mutating the user's saved intrinsic preferences
+ * in storage. Ensures at least `MIN_CENTER_WORKSPACE_WIDTH` (360px) remains for the center workspace.
  */
 export function clampModeLayoutToViewport(
   modeSlice,
@@ -137,6 +198,29 @@ export function clampModeLayoutToViewport(
     }
   }
 
+  let nextFloatingPanels = modeSlice.floatingPanels;
+  if (modeSlice.floatingPanels && typeof modeSlice.floatingPanels === 'object' && !Array.isArray(modeSlice.floatingPanels)) {
+    nextFloatingPanels = {};
+    for (const [panelId, floatState] of Object.entries(modeSlice.floatingPanels)) {
+      if (!floatState || typeof floatState !== 'object') continue;
+      const panelCfg = getPanelConfig(panelId);
+      const clampedRect = floatState.rect && typeof floatState.rect === 'object'
+        ? clampFloatingRect(
+            floatState.rect,
+            { width: effectiveViewportW, height: effectiveViewportH },
+            {
+              minWidth: panelCfg?.sizeLimits?.minWidth || 220,
+              minHeight: panelCfg?.sizeLimits?.minHeight || 260,
+            },
+          )
+        : floatState.rect;
+      nextFloatingPanels[panelId] = {
+        ...floatState,
+        rect: clampedRect,
+      };
+    }
+  }
+
   const out = {
     ...modeSlice,
     leftDrawer: {
@@ -147,6 +231,7 @@ export function clampModeLayoutToViewport(
       ...modeSlice.rightDock,
       width: rightWidth,
     },
+    ...(nextFloatingPanels ? { floatingPanels: nextFloatingPanels } : {}),
   };
 
   if (modeSlice.floatingRect && typeof modeSlice.floatingRect === 'object') {
@@ -161,11 +246,12 @@ export function clampModeLayoutToViewport(
 }
 
 /**
- * Sanitizes a single mode's workspace layout slice ('design' | 'backend').
- * Silently replaces unknown panel IDs, invalid types, or out-of-bounds dimensions
- * with safe intrinsic defaults ([220..440] for leftDrawer, [296..540] for rightDock).
- * If `viewportWidth` or `viewportHeight` is explicitly passed in options, also applies
- * read-time viewport clamping via `clampModeLayoutToViewport`.
+ * Sanitizes a single mode's workspace layout slice ('design' | 'backend') to the v3 multi-zone schema.
+ * - Losslessly upgrades v2 slices (preserving widths, open panels, tabs, and legacy floatingRect).
+ * - Silently rejects unknown panel IDs, cross-mode panel IDs, invalid zones (e.g. 'top'),
+ *   or out-of-bounds dimensions with safe intrinsic defaults without crashing.
+ * - Applies screen/viewport clamping ONLY when `viewportWidth` or `viewportHeight` is passed
+ *   (read/render time), never overwriting intrinsic stored values.
  */
 export function sanitizeModeWorkspaceLayout(
   modeId,
@@ -174,6 +260,7 @@ export function sanitizeModeWorkspaceLayout(
 ) {
   const resolvedMode = modeId === 'backend' ? 'backend' : 'design';
   const baseDefault = DEFAULT_WORKSPACE_LAYOUTS_BY_MODE[resolvedMode];
+  const defaultRightId = getDefaultRightPanelIdForMode(resolvedMode);
   const src = rawSlice && typeof rawSlice === 'object' && !Array.isArray(rawSlice) ? rawSlice : {};
 
   const presetId =
@@ -181,42 +268,107 @@ export function sanitizeModeWorkspaceLayout(
       ? src.presetId
       : DEFAULT_WORKSPACE_PRESET_ID;
 
-  // Validate leftDrawer.activeTab against mode's allowed left panels
-  const allowedLeftTabs = getAllowedLeftTabsForMode(resolvedMode);
+  // 1. Validate panelZones against mode & allowedZones
+  const panelZones = createDefaultPanelZonesForMode(resolvedMode);
+  if (src.panelZones && typeof src.panelZones === 'object' && !Array.isArray(src.panelZones)) {
+    for (const [rawId, rawZone] of Object.entries(src.panelZones)) {
+      const canonicalId = resolveCanonicalPanelId(rawId, resolvedMode);
+      if (canonicalId && isPanelAllowedInMode(canonicalId, resolvedMode) && isPanelAllowedInZone(canonicalId, rawZone)) {
+        panelZones[canonicalId] = rawZone;
+      }
+    }
+  }
+
+  // 2. Validate leftDrawer (tabs, activeTab, intrinsic width)
   const rawLeftObj =
     src.leftDrawer && typeof src.leftDrawer === 'object' && !Array.isArray(src.leftDrawer)
       ? src.leftDrawer
       : null;
-  let activeTab = baseDefault.leftDrawer.activeTab;
-  if (rawLeftObj && Object.prototype.hasOwnProperty.call(rawLeftObj, 'activeTab')) {
-    if (rawLeftObj.activeTab === null) {
-      activeTab = null;
-    } else if (typeof rawLeftObj.activeTab === 'string' && allowedLeftTabs.has(rawLeftObj.activeTab)) {
-      activeTab = rawLeftObj.activeTab;
+
+  let leftTabs = [];
+  if (Array.isArray(rawLeftObj?.tabs)) {
+    for (const rawTab of rawLeftObj.tabs) {
+      const canonicalId = resolveCanonicalPanelId(rawTab, resolvedMode);
+      if (canonicalId && panelZones[canonicalId] === 'left' && !leftTabs.includes(canonicalId)) {
+        leftTabs.push(canonicalId);
+      }
     }
   }
 
-  // Validate rightDock.isOpen and rightDock.propertiesTab
-  const allowedRightTabs = getAllowedRightTabsForMode(resolvedMode);
-  const rawRightObj =
-    src.rightDock && typeof src.rightDock === 'object' && !Array.isArray(src.rightDock)
-      ? src.rightDock
-      : null;
-  const isOpen =
-    rawRightObj && typeof rawRightObj.isOpen === 'boolean'
-      ? rawRightObj.isOpen
-      : baseDefault.rightDock.isOpen;
-  const propertiesTab =
-    rawRightObj && typeof rawRightObj.propertiesTab === 'string' && allowedRightTabs.has(rawRightObj.propertiesTab)
-      ? rawRightObj.propertiesTab
-      : baseDefault.rightDock.propertiesTab;
+  let activeTab = baseDefault.leftDrawer.activeTab;
+  if (activeTab && panelZones[activeTab] !== 'left') {
+    activeTab = null;
+  }
 
-  // Validate & clamp intrinsic panel limits ([220..440] and [296..540]) without shrinking by current window.innerWidth
+  if (rawLeftObj && Object.prototype.hasOwnProperty.call(rawLeftObj, 'activeTab')) {
+    if (rawLeftObj.activeTab === null) {
+      activeTab = null;
+      leftTabs = [];
+    } else if (typeof rawLeftObj.activeTab === 'string') {
+      const canonicalActive = resolveCanonicalPanelId(rawLeftObj.activeTab, resolvedMode);
+      if (canonicalActive && panelZones[canonicalActive] === 'left') {
+        activeTab = canonicalActive;
+      } else if (leftTabs.length > 0) {
+        activeTab = leftTabs[0];
+      }
+    } else if (leftTabs.length > 0) {
+      activeTab = leftTabs[0];
+    }
+  } else if (leftTabs.length > 0) {
+    activeTab = leftTabs[0];
+  }
+
+  if (activeTab && !leftTabs.includes(activeTab)) {
+    leftTabs.push(activeTab);
+  }
+  if (!activeTab) {
+    leftTabs = [];
+  }
+
   const rawLeftW = Number(rawLeftObj?.width);
   const leftWidth =
     Number.isFinite(rawLeftW) && rawLeftW > 0
       ? Math.max(MIN_LEFT_DRAWER_WIDTH, Math.min(MAX_LEFT_DRAWER_WIDTH, Math.round(rawLeftW)))
       : baseDefault.leftDrawer.width;
+
+  // 3. Validate rightDock (tabs, activeTab, isOpen, propertiesTab, intrinsic width)
+  const allowedRightTabs = getAllowedRightTabsForMode(resolvedMode);
+  const rawRightObj =
+    src.rightDock && typeof src.rightDock === 'object' && !Array.isArray(src.rightDock)
+      ? src.rightDock
+      : null;
+
+  let rightTabs = [];
+  if (Array.isArray(rawRightObj?.tabs)) {
+    for (const rawTab of rawRightObj.tabs) {
+      const canonicalId = resolveCanonicalPanelId(rawTab, resolvedMode);
+      if (canonicalId && panelZones[canonicalId] === 'right' && !rightTabs.includes(canonicalId)) {
+        rightTabs.push(canonicalId);
+      }
+    }
+  }
+  if (rightTabs.length === 0 && panelZones[defaultRightId] === 'right') {
+    rightTabs = [defaultRightId];
+  }
+
+  const rawRightActive = typeof rawRightObj?.activeTab === 'string'
+    ? resolveCanonicalPanelId(rawRightObj.activeTab, resolvedMode)
+    : null;
+  const rightActiveTab =
+    rawRightActive && rightTabs.includes(rawRightActive)
+      ? rawRightActive
+      : rightTabs[0] || null;
+
+  const rawIsOpen =
+    rawRightObj && typeof rawRightObj.isOpen === 'boolean'
+      ? rawRightObj.isOpen
+      : baseDefault.rightDock.isOpen;
+  const isOpen = rightTabs.length > 0 ? rawIsOpen : false;
+
+  const propertiesTab =
+    rawRightObj && typeof rawRightObj.propertiesTab === 'string' && allowedRightTabs.has(rawRightObj.propertiesTab)
+      ? rawRightObj.propertiesTab
+      : baseDefault.rightDock.propertiesTab;
 
   const rawRightW = Number(rawRightObj?.width);
   const rightWidth =
@@ -224,6 +376,47 @@ export function sanitizeModeWorkspaceLayout(
       ? Math.max(MIN_RIGHT_DOCK_WIDTH, Math.min(MAX_RIGHT_DOCK_WIDTH, Math.round(rawRightW)))
       : baseDefault.rightDock.width;
 
+  // 4. Validate floatingPanels (and migrate legacy v2 top-level `floatingRect` into `attributesAndCss.rect`)
+  const floatingPanels = createDefaultFloatingPanelsForMode(resolvedMode);
+  const rawFloatMap =
+    src.floatingPanels && typeof src.floatingPanels === 'object' && !Array.isArray(src.floatingPanels)
+      ? src.floatingPanels
+      : null;
+
+  if (rawFloatMap) {
+    for (const [rawId, rawState] of Object.entries(rawFloatMap)) {
+      const canonicalId = resolveCanonicalPanelId(rawId, resolvedMode);
+      if (!canonicalId || !floatingPanels[canonicalId] || !rawState || typeof rawState !== 'object' || Array.isArray(rawState)) {
+        continue;
+      }
+      const baseFloat = floatingPanels[canonicalId];
+      const allowedOpen = panelZones[canonicalId] === 'floating';
+      const rawZ = Number(rawState.zIndex);
+      floatingPanels[canonicalId] = {
+        isOpen: allowedOpen && typeof rawState.isOpen === 'boolean' ? rawState.isOpen : false,
+        isMinimized: typeof rawState.isMinimized === 'boolean' ? rawState.isMinimized : baseFloat.isMinimized,
+        rect: sanitizeIntrinsicFloatingRect(rawState.rect, canonicalId, baseFloat.rect),
+        zIndex: Number.isFinite(rawZ) ? Math.max(40, Math.round(rawZ)) : baseFloat.zIndex,
+      };
+    }
+  }
+
+  // v2 -> v3 migration: preserve legacy v2 `floatingRect` on design mode into `floatingPanels.attributesAndCss.rect`
+  if (
+    resolvedMode === 'design' &&
+    src.floatingRect &&
+    typeof src.floatingRect === 'object' &&
+    !Array.isArray(src.floatingRect) &&
+    !(rawFloatMap && rawFloatMap.attributesAndCss && rawFloatMap.attributesAndCss.rect)
+  ) {
+    const baseAttrFloat = floatingPanels.attributesAndCss;
+    floatingPanels.attributesAndCss = {
+      ...baseAttrFloat,
+      rect: sanitizeIntrinsicFloatingRect(src.floatingRect, 'attributesAndCss', baseAttrFloat.rect),
+    };
+  }
+
+  // 5. Validate aiDock
   const rawAiObj =
     src.aiDock && typeof src.aiDock === 'object' && !Array.isArray(src.aiDock) ? src.aiDock : null;
   const aiMinimized =
@@ -233,29 +426,24 @@ export function sanitizeModeWorkspaceLayout(
 
   const sanitized = {
     presetId,
+    panelZones,
     leftDrawer: {
       activeTab,
+      tabs: leftTabs,
       width: leftWidth,
     },
     rightDock: {
       isOpen,
+      activeTab: rightActiveTab,
+      tabs: rightTabs,
       propertiesTab,
       width: rightWidth,
     },
+    floatingPanels,
     aiDock: {
       isMinimized: aiMinimized,
     },
   };
-
-  if (src.floatingRect && typeof src.floatingRect === 'object' && !Array.isArray(src.floatingRect)) {
-    const fallbackVpW = Number(viewportWidth) > 0 ? Number(viewportWidth) : 1440;
-    const fallbackVpH = Number(viewportHeight) > 0 ? Number(viewportHeight) : 920;
-    sanitized.floatingRect = clampFloatingRect(
-      src.floatingRect,
-      { width: fallbackVpW, height: fallbackVpH },
-      { minWidth: 440, minHeight: 360 },
-    );
-  }
 
   if (Number(viewportWidth) > 0 || Number(viewportHeight) > 0) {
     return clampModeLayoutToViewport(sanitized, { viewportWidth, viewportHeight });
