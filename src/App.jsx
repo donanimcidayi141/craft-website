@@ -58,6 +58,8 @@ function CraftStudioApp() {
   const {
     activeMode,
     currentModeConfig,
+    activeModeLayout,
+    panelActions,
     setStudioMode,
     effectiveActivePanels,
     showWelcomeScreen,
@@ -172,6 +174,7 @@ function CraftStudioApp() {
     showWelcomeScreen,
     previewMode,
     activeMode,
+    activeModeLayout,
     leftSidebarTab,
     leftSidebarWidth,
     rightDockOpen,
@@ -299,11 +302,35 @@ function CraftStudioApp() {
       getProjectBackend: () => projectBackend,
       updateProjectBackend,
       setProjectBackend,
+      panelActions,
+      getWorkspaceLayoutState: () => ({
+        activeMode,
+        activeModeLayout,
+        leftSidebarTab,
+        leftSidebarWidth,
+        rightDockOpen,
+        rightDockWidth,
+        zoom,
+        panOffset,
+      }),
     };
     return () => {
       delete window.__craftStudioTestHook;
     };
-  }, [projectBackend, updateProjectBackend, setProjectBackend]);
+  }, [
+    projectBackend,
+    updateProjectBackend,
+    setProjectBackend,
+    panelActions,
+    activeMode,
+    activeModeLayout,
+    leftSidebarTab,
+    leftSidebarWidth,
+    rightDockOpen,
+    rightDockWidth,
+    zoom,
+    panOffset,
+  ]);
 
   const handleSelectStudioMode = useCallback((nextMode) => {
     if (previewMode) {

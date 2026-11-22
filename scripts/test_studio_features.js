@@ -144,6 +144,8 @@ import {
 } from '../src/settings/settingsStore.js';
 import {
   computeLeftOccupiedWidth,
+  computeRightOccupiedWidth,
+  computeCanvasOccupiedWidths,
 } from '../src/hooks/useCanvasView.js';
 import {
   applyProjectBackendUpdate,
@@ -4296,6 +4298,71 @@ test('panelActions unified API exposes all 8 actions and maintains bridge invari
   panelActions.close('layers');
   assert.equal(state.leftDrawer.activeTab, null);
   assert.deepEqual(state.leftDrawer.tabs, []);
+});
+
+test('useCanvasView excludes zone === floating panels from canvas width and includes panels moved to left/right docks', () => {
+  let state = createInitialWorkspaceLayout();
+  // Close right dock & keep left drawer closed -> only 52px + 40px rails occupy space
+  state = closeWorkspacePanel(state, 'properties');
+  const baseline = computeCanvasOccupiedWidths({
+    activeModeLayout: state.layoutsByMode.design,
+    viewportWidth: 1440,
+  });
+  assert.equal(baseline.leftOccupiedWidth, 52);
+  assert.equal(baseline.rightOccupiedWidth, 40);
+  assert.equal(baseline.availableWidth, 1440 - 92);
+
+  // Move 'layers' to floating & open 'attributesAndCss' (width 760px) as floating -> canvas available width MUST NOT shrink
+  state = moveWorkspacePanelToZone(state, 'layers', 'floating', {
+    floatingRect: { x: 240, y: 120, width: 320, height: 480 },
+  });
+  state = openWorkspacePanel(state, 'attributesAndCss');
+  const withFloating = computeCanvasOccupiedWidths({
+    activeModeLayout: state.layoutsByMode.design,
+    viewportWidth: 1440,
+  });
+  assert.equal(withFloating.leftOccupiedWidth, 52);
+  assert.equal(withFloating.rightOccupiedWidth, 40);
+  assert.equal(withFloating.availableWidth, baseline.availableWidth);
+
+  // Move 'layers' into right dock -> right dock opens (40 + 336 = 376px) and availableWidth shrinks by 336px
+  state = moveWorkspacePanelToZone(state, 'layers', 'right');
+  const withRightDocked = computeCanvasOccupiedWidths({
+    activeModeLayout: state.layoutsByMode.design,
+    viewportWidth: 1440,
+  });
+  assert.equal(withRightDocked.leftOccupiedWidth, 52);
+  assert.equal(withRightDocked.rightOccupiedWidth, 40 + 336);
+  assert.equal(withRightDocked.availableWidth, baseline.availableWidth - 336);
+
+  // Move 'layers' into left dock -> right dock closes (no open right tab left if properties closed) and left dock occupies 52 + 248 = 300px
+  state = moveWorkspacePanelToZone(state, 'layers', 'left');
+  const withLeftDocked = computeCanvasOccupiedWidths({
+    activeModeLayout: state.layoutsByMode.design,
+    viewportWidth: 1440,
+  });
+  assert.equal(withLeftDocked.leftOccupiedWidth, 52 + 248);
+  assert.equal(withLeftDocked.rightOccupiedWidth, 40);
+  assert.equal(withLeftDocked.availableWidth, baseline.availableWidth - 248);
+
+  // Explicit guard: computeLeftOccupiedWidth / computeRightOccupiedWidth ignore panels whose zone is 'floating'
+  assert.equal(
+    computeLeftOccupiedWidth({
+      leftSidebarTab: 'layers',
+      leftSidebarWidth: 320,
+      panelZones: { layers: 'floating' },
+    }),
+    52
+  );
+  assert.equal(
+    computeRightOccupiedWidth({
+      rightDockOpen: true,
+      rightDockWidth: 360,
+      rightDockTabs: ['properties'],
+      panelZones: { properties: 'floating' },
+    }),
+    40
+  );
 });
 
 // -----------------------------------------------------------------------------

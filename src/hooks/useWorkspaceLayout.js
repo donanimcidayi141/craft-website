@@ -936,7 +936,9 @@ export function moveWorkspacePanelToZone(
     }
     nextLeftActiveTab = canonicalId;
   } else if (targetZone === 'right') {
-    if (!nextRightTabs.includes(canonicalId)) {
+    if (!curSlice.rightDock.isOpen) {
+      nextRightTabs = [canonicalId];
+    } else if (!nextRightTabs.includes(canonicalId)) {
       nextRightTabs = [...nextRightTabs, canonicalId];
     }
     nextRightActiveTab = canonicalId;

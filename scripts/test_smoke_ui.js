@@ -2203,6 +2203,132 @@ async function main() {
     );
     console.log('  ✓ Adım 2b: Moda göre düzenin settingsStore kaydı (60 hareket -> 1 yazma), sayfa yenilemede korunması, Hazır Düzenler, aktif mod Düzeni sıfırla ve Kaydedilmedi rozeti izolasyonu doğrulandı');
 
+    // 15c. Adım 3b: settingsStore v3 + panelActions + useCanvasView (yüzen panel tuvali kaydırmaz, sağ dock'a taşıma tuvali daraltıp yeniden ortalar, Kaydedilmedi yanmaz)
+    await cdp.evaluate(`
+      (() => {
+        window.__craftStudioTestHook?.panelActions?.close('properties');
+        const zoomOutBtn = document.querySelector('button[title^="Uzaklaştır"]');
+        for (let i = 0; i < 3; i++) zoomOutBtn?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(window.__craftStudioTestHook?.getWorkspaceLayoutState && !window.__craftStudioTestHook.getWorkspaceLayoutState().rightDockOpen)`
+      ),
+      'Adım 3b testi öncesi sağ dock kapatılamadı.'
+    );
+    await new Promise((r) => setTimeout(r, 150));
+
+    const beforeFloatMetrics = await cdp.evaluate(`
+      (() => {
+        const st = window.__craftStudioTestHook.getWorkspaceLayoutState();
+        const wrapW = document.getElementById('canvas-wrapper')?.clientWidth || 0;
+        const transform = document.getElementById('artboard-canvas')?.parentElement?.style?.transform || '';
+        return { zoom: st.zoom, panX: st.panOffset.x, wrapW, transform };
+      })()
+    `);
+
+    // 1) Programatik olarak 'layers' panelini yüzen (floating) yap -> zoom, panOffset.x ve canvas-wrapper genişliği DEĞİŞMEMELİ
+    await cdp.evaluate(`
+      window.__craftStudioTestHook.panelActions.moveToZone('layers', 'floating', {
+        floatingRect: { x: 260, y: 120, width: 320, height: 480 },
+      })
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `window.__craftStudioTestHook.getWorkspaceLayoutState().activeModeLayout?.panelZones?.layers === 'floating'`
+      ),
+      'Programatik moveToZone("layers", "floating") panelZones durumunu güncellemedi.'
+    );
+    await new Promise((r) => setTimeout(r, 150));
+
+    const afterFloatMetrics = await cdp.evaluate(`
+      (() => {
+        const st = window.__craftStudioTestHook.getWorkspaceLayoutState();
+        const wrapW = document.getElementById('canvas-wrapper')?.clientWidth || 0;
+        const transform = document.getElementById('artboard-canvas')?.parentElement?.style?.transform || '';
+        const rawSettings = JSON.parse(localStorage.getItem('craftstudio_settings_v1') || '{}');
+        return {
+          zoom: st.zoom,
+          panX: st.panOffset.x,
+          wrapW,
+          transform,
+          floatOpen: Boolean(st.activeModeLayout?.floatingPanels?.layers?.isOpen),
+          settingsVersion: rawSettings.version,
+          persistedZone: rawSettings.workspaceLayoutsByMode?.design?.panelZones?.layers,
+          isSavedBadge: document.body.innerText.includes('✓ Kaydedildi'),
+          hasUnsavedBadge: document.body.innerText.includes('● Kaydedilmedi'),
+        };
+      })()
+    `);
+    assert.equal(afterFloatMetrics.floatOpen, true, 'Yüzen yapılan layers paneli açık işaretlenmedi.');
+    assert.equal(afterFloatMetrics.settingsVersion, 3, `settingsStore v3 yazılmalıydı (gelen: ${afterFloatMetrics.settingsVersion}).`);
+    assert.equal(afterFloatMetrics.persistedZone, 'floating', 'v3 kaydında layers bölgesi "floating" olarak saklanmadı.');
+    assert.equal(afterFloatMetrics.wrapW, beforeFloatMetrics.wrapW, 'Yüzen panel açıldığında #canvas-wrapper genişliği değişti!');
+    assert.equal(afterFloatMetrics.zoom, beforeFloatMetrics.zoom, 'Yüzen panel açıldığında tuval zoom oranı değişti!');
+    assert.equal(afterFloatMetrics.panX, beforeFloatMetrics.panX, 'Yüzen panel açıldığında tuval yatay ortalaması (panX) kaydı!');
+    assert.equal(afterFloatMetrics.transform, beforeFloatMetrics.transform, 'Yüzen panel açıldığında tuval transform değeri değişti!');
+    assert.equal(afterFloatMetrics.isSavedBadge, true, 'v3 ayar kaydı sırasında "✓ Kaydedildi" rozeti kayboldu!');
+    assert.equal(afterFloatMetrics.hasUnsavedBadge, false, 'v3 ayar kaydı sırasında "● Kaydedilmedi" rozeti yandı!');
+
+    // 2) Programatik olarak 'layers' panelini sağ dock'a taşı -> #canvas-wrapper daralmalı, zoom korunmalı, tuval yeniden ortalanmalı
+    await cdp.evaluate(`window.__craftStudioTestHook.panelActions.moveToZone('layers', 'right')`);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `(() => {
+          const st = window.__craftStudioTestHook.getWorkspaceLayoutState();
+          const wrapW = document.getElementById('canvas-wrapper')?.clientWidth || 0;
+          return st.rightDockOpen && st.activeModeLayout?.panelZones?.layers === 'right' && wrapW < ${beforeFloatMetrics.wrapW} - 250;
+        })()`
+      ),
+      'Programatik moveToZone("layers", "right") sağ docku açıp #canvas-wrapper genişliğini daraltmadı.'
+    );
+    await new Promise((r) => setTimeout(r, 150));
+
+    const afterRightMetrics = await cdp.evaluate(`
+      (() => {
+        const st = window.__craftStudioTestHook.getWorkspaceLayoutState();
+        const wrapW = document.getElementById('canvas-wrapper')?.clientWidth || 0;
+        const canvasW = document.getElementById('artboard-canvas')?.offsetWidth || 1280;
+        const rawSettings = JSON.parse(localStorage.getItem('craftstudio_settings_v1') || '{}');
+        return {
+          zoom: st.zoom,
+          panX: st.panOffset.x,
+          wrapW,
+          canvasW,
+          rightTabs: st.activeModeLayout?.rightDock?.tabs || [],
+          persistedZone: rawSettings.workspaceLayoutsByMode?.design?.panelZones?.layers,
+          persistedRightTabs: rawSettings.workspaceLayoutsByMode?.design?.rightDock?.tabs || [],
+          isSavedBadge: document.body.innerText.includes('✓ Kaydedildi'),
+          hasUnsavedBadge: document.body.innerText.includes('● Kaydedilmedi'),
+        };
+      })()
+    `);
+    assert.ok(afterRightMetrics.rightTabs.includes('layers'), 'Sağ dock sekmelerine layers eklenmedi.');
+    assert.equal(afterRightMetrics.persistedZone, 'right', 'v3 kaydında layers bölgesi "right" olarak saklanmadı.');
+    assert.ok(afterRightMetrics.persistedRightTabs.includes('layers'), 'v3 kaydında rightDock.tabs layers içermiyor.');
+    assert.equal(afterRightMetrics.zoom, beforeFloatMetrics.zoom, 'Sağ docka panel taşınırken tuval zoom oranı sıçradı!');
+    assert.ok(
+      afterRightMetrics.wrapW < beforeFloatMetrics.wrapW - 250,
+      `Sağ dock açıldığında tuval daralmadı (${beforeFloatMetrics.wrapW} -> ${afterRightMetrics.wrapW}).`
+    );
+    const expectedRightCenteredX = Math.max(20, Math.round((afterRightMetrics.wrapW - afterRightMetrics.canvasW * afterRightMetrics.zoom) / 2));
+    assert.ok(
+      Math.abs(afterRightMetrics.panX - expectedRightCenteredX) <= 3 && afterRightMetrics.panX < beforeFloatMetrics.panX - 100,
+      `Sağ docka panel taşındığında tuval daralan alanda yeniden ortalanmadı (panX=${afterRightMetrics.panX}, beklenen=${expectedRightCenteredX}, önceki=${beforeFloatMetrics.panX}).`
+    );
+    assert.equal(afterRightMetrics.isSavedBadge, true, 'Sağ docka taşıma v3 kaydında "✓ Kaydedildi" rozeti kayboldu!');
+    assert.equal(afterRightMetrics.hasUnsavedBadge, false, 'Sağ docka taşıma v3 kaydında "● Kaydedilmedi" rozeti yandı!');
+
+    // Temizlik: Standart düzene ve sığdırılmış görünüme dön
+    await clickWindowMenuItem(cdp, 'Düzeni sıfırla');
+    await sendCtrlShortcut(cdp, '0', 'Digit0', 48);
+    await new Promise((r) => setTimeout(r, 120));
+    console.log('  ✓ Adım 3b: settingsStore v3, panelActions ve useCanvasView (yüzen panel tuvali kaydırmadı, sağ docka taşıma tuvali daraltıp ortaladı, Kaydedilmedi yanmadı) doğrulandı');
+
     // 16. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
     await cdp.evaluate(`
       (() => {
