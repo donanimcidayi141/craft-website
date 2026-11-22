@@ -1180,6 +1180,56 @@ async function main() {
     );
     console.log('  ✓ Klavye kısayolları (V/H/R/O/T, input koruması, Ctrl+C/V, Ctrl+D, Delete, Ctrl+Z/Y, Ctrl+S) doğrulandı');
 
+    // Madde 4: Sağ tık menüsü açıkken Escape yalnızca menüyü kapatmalı, aktif aracı veya seçimi değiştirmemeli
+    await sendSingleKey(cdp, 'h', 'KeyH', 72);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="hand"][aria-pressed="true"]'))`),
+      'Sağ tık Escape testi öncesi El (H) aracına geçilemedi.'
+    );
+    const openedCtxMenu = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id]');
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: Math.round(r.left + 20),
+          clientY: Math.round(r.top + 20),
+          button: 2,
+        }));
+        return true;
+      })()
+    `);
+    assert.ok(openedCtxMenu, 'Tuval elemanı üzerinde sağ tık olayı tetiklenemedi.');
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('[data-canvas-context-menu]')) && document.body.innerText.includes('1 seçili')`
+      ),
+      'Sağ tık bağlam menüsü açılmadı veya hedef elemanı seçmedi.'
+    );
+
+    // Escape'e bas -> yalnızca sağ tık menüsü kapanmalı; El (hand) aracı ve "1 seçili" durumu korunmalı
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    assert.ok(
+      await waitFor(cdp, `!document.querySelector('[data-canvas-context-menu]')`),
+      'Escape tuşu sağ tık bağlam menüsünü kapatmadı.'
+    );
+    const afterCtxEscState = await cdp.evaluate(`
+      (() => ({
+        isHandActive: Boolean(document.querySelector('button[data-tool-id="hand"][aria-pressed="true"]')),
+        hasSelection: document.body.innerText.includes('1 seçili'),
+      }))()
+    `);
+    assert.deepEqual(
+      afterCtxEscState,
+      { isHandActive: true, hasSelection: true },
+      `Sağ tık menüsü açıkken Escape aktif aracı veya seçimi değiştirdi: ${JSON.stringify(afterCtxEscState)}`
+    );
+    await sendSingleKey(cdp, 'v', 'KeyV', 86);
+    console.log('  ✓ Sağ tık menüsü açıkken Escape tuşunun yalnızca menüyü kapattığı (araç/seçim değiştirmediği) doğrulandı');
+
     // 14. .craft.json dosyasını tarayıcı file-input yoluyla içe aktar (cdp.setFileInputFiles)
     const craftJsonFixturePath = path.join(ROOT_DIR, 'scripts', 'fixtures', 'import', 'project.craft.json');
     assert.ok(fs.existsSync(craftJsonFixturePath), 'project.craft.json fixture dosyası bulunamadı.');

@@ -1201,16 +1201,21 @@ export default function Canvas({
   useEffect(() => {
     if (!contextMenu) return undefined;
     const closeMenu = (ev) => {
-      if (ev?.type === 'keydown' && ev.key !== 'Escape') return;
+      if (ev?.type === 'keydown') {
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation?.();
+      }
       if (ev?.type === 'mousedown' && ev.target?.closest?.('[data-canvas-context-menu]')) return;
       setContextMenu(null);
     };
     window.addEventListener('mousedown', closeMenu);
-    window.addEventListener('keydown', closeMenu);
+    window.addEventListener('keydown', closeMenu, true);
     window.addEventListener('wheel', closeMenu, { passive: true });
     return () => {
       window.removeEventListener('mousedown', closeMenu);
-      window.removeEventListener('keydown', closeMenu);
+      window.removeEventListener('keydown', closeMenu, true);
       window.removeEventListener('wheel', closeMenu);
     };
   }, [contextMenu]);
