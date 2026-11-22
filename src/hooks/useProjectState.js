@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { DEFAULT_UNIVERSAL_PROJECT } from '../constants';
-import { findNodeAndParent } from '../utils/treeUtils';
+import { DEFAULT_UNIVERSAL_PROJECT } from '../constants.js';
+import { findNodeAndParent } from '../utils/treeUtils.js';
 import {
   createDefaultCanvasByViewport,
   resolveTreeForViewport,
@@ -8,9 +8,25 @@ import {
   applyMultipleUpdatesForViewport,
   ensureViewportAdapted,
   getViewportPreset,
-} from '../utils/responsiveUtils';
-import { slugifyTabRoute } from '../utils/projectStorage';
-import { buildTabState } from '../utils/projectAssemblyUtils';
+} from '../utils/responsiveUtils.js';
+import {
+  slugifyTabRoute,
+  createDefaultProjectBackend,
+  normalizeProjectBackend,
+} from '../utils/projectStorage.js';
+import { buildTabState } from '../utils/projectAssemblyUtils.js';
+
+export function applyProjectBackendUpdate(prevBackend, updaterOrPartial) {
+  const current = normalizeProjectBackend(prevBackend);
+  const rawNext = typeof updaterOrPartial === 'function'
+    ? updaterOrPartial(current)
+    : { ...current, ...(updaterOrPartial && typeof updaterOrPartial === 'object' ? updaterOrPartial : {}) };
+  return normalizeProjectBackend(rawNext);
+}
+
+export function resolveResetProjectBackend(nextState = {}) {
+  return normalizeProjectBackend(nextState?.backend ?? nextState?.projectBackend ?? null);
+}
 
 const INITIAL_PROJECT_META = {
   id: 'proj-initial',
@@ -88,6 +104,7 @@ export function useProjectState() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [projectFunctions, setProjectFunctions] = useState([]);
   const [pageLinks, setPageLinks] = useState([]);
+  const [projectBackend, setProjectBackend] = useState(createDefaultProjectBackend);
 
   const [historyByTab, setHistoryByTab] = useState(createInitialHistoryByTab);
   const currentTabHistory = historyByTab[activeTab.id] || {
@@ -443,6 +460,11 @@ export function useProjectState() {
     setHasUnsavedChanges(true);
   }, []);
 
+  const updateProjectBackend = useCallback((updaterOrPartial) => {
+    setProjectBackend((prev) => applyProjectBackendUpdate(prev, updaterOrPartial));
+    setHasUnsavedChanges(true);
+  }, []);
+
   const reset = useCallback((nextState = {}) => {
     const resolvedTabs = Array.isArray(nextState.tabs) && nextState.tabs.length > 0
       ? nextState.tabs
@@ -471,6 +493,7 @@ export function useProjectState() {
     setHasUnsavedChanges(Boolean(nextState.hasUnsavedChanges));
     setProjectFunctions(Array.isArray(nextState.projectFunctions) ? nextState.projectFunctions : []);
     setPageLinks(Array.isArray(nextState.pageLinks) ? nextState.pageLinks : []);
+    setProjectBackend(resolveResetProjectBackend(nextState));
   }, []);
 
   return {
@@ -493,6 +516,9 @@ export function useProjectState() {
     setProjectFunctions,
     pageLinks,
     setPageLinks,
+    projectBackend,
+    setProjectBackend,
+    updateProjectBackend,
     historyByTab,
     setHistoryByTab,
     history,

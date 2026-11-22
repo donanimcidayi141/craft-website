@@ -87,6 +87,10 @@ import {
   applyStudioModeTransition,
   applyWorkspaceLayoutReset,
 } from '../src/hooks/useWorkspaceLayout.js';
+import {
+  applyProjectBackendUpdate,
+  resolveResetProjectBackend,
+} from '../src/hooks/useProjectState.js';
 import { DEFAULT_UNIVERSAL_PROJECT, PRESET_ASSETS } from '../src/constants.js';
 import { CONTENT_PACK_ASSETS } from '../src/data/contentPacks.js';
 import {
@@ -3208,6 +3212,68 @@ test('useWorkspaceLayout isolates layoutsByMode per mode, drives menuPanels from
   assert.equal(state.rightDock.isOpen, true);
   assert.equal(state.rightDock.propertiesTab, 'layout');
   assert.equal(state.rightDock.width, 410);
+});
+
+test('useProjectState & useProjectIO backend primitives update, persist across save/open/autosave/recents, default on legacy files, and clear on new project', () => {
+  const memStore = (() => {
+    const map = new Map();
+    return {
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => map.set(k, String(v)),
+      removeItem: (k) => map.delete(k),
+    };
+  })();
+
+  // 1. Update primitive merges partial or updater function and normalizes
+  let backendState = createDefaultProjectBackend();
+  backendState = applyProjectBackendUpdate(backendState, {
+    flows: [{ id: 'flow-checkout', name: 'Ödeme Akışı', steps: ['validate', 'charge'] }],
+  });
+  backendState = applyProjectBackendUpdate(backendState, (prev) => ({
+    ...prev,
+    dataModels: [{ id: 'tbl-orders', name: 'Siparişler', fields: ['id', 'total'] }],
+    triggers: [{ id: 'trig-pay', event: 'onClick', targetId: 'btn-pay', flowId: 'flow-checkout' }],
+  }));
+  assert.equal(backendState.flows.length, 1);
+  assert.equal(backendState.dataModels.length, 1);
+  assert.equal(backendState.triggers.length, 1);
+
+  // 2. Save to web storage, autosave draft, and recent projects -> reopen and verify exact match
+  const savedSchema = buildSerializableProjectSchema({
+    id: 'proj-backend-full',
+    name: 'Backend Test Projesi',
+    backend: backendState,
+  });
+  saveProjectToWebStorage(savedSchema, memStore);
+  saveAutosaveDraft(savedSchema, memStore);
+  upsertRecentProject(savedSchema, memStore);
+
+  const reopenedFromStorage = parseAndMigrateLoadedProject(loadProjectFromWebStorage('proj-backend-full', memStore));
+  assert.deepEqual(reopenedFromStorage.backend, backendState);
+
+  const reopenedFromAutosave = parseAndMigrateLoadedProject(loadAutosaveDraft(memStore));
+  assert.deepEqual(reopenedFromAutosave.backend, backendState);
+
+  const recentList = loadRecentProjects(memStore);
+  assert.equal(recentList.length, 1);
+  assert.deepEqual(recentList[0].snapshot.backend, backendState);
+
+  // 3. Legacy file without backend field opens with clean empty default
+  const legacyLoaded = parseAndMigrateLoadedProject({
+    id: 'proj-legacy-no-backend',
+    name: 'Eski Dosya',
+    tabs: [{ id: 'tab-1', name: 'Anasayfa.craft', elements: [] }],
+  });
+  assert.deepEqual(legacyLoaded.backend, createDefaultProjectBackend());
+  assert.deepEqual(resolveResetProjectBackend({ backend: legacyLoaded.backend }), createDefaultProjectBackend());
+
+  // 4. Starting a new project resets backend state so old backend data never leaks
+  const afterNewProjectReset = resolveResetProjectBackend({
+    tabs: [{ id: 'tab-new', name: 'Yeni-Tasarim.craft', elements: [] }],
+    projectFunctions: [],
+    pageLinks: [],
+  });
+  assert.deepEqual(afterNewProjectReset, createDefaultProjectBackend());
 });
 
 // -----------------------------------------------------------------------------

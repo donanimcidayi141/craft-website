@@ -109,6 +109,9 @@ function CraftStudioApp() {
     setHasUnsavedChanges,
     projectFunctions,
     pageLinks,
+    projectBackend,
+    setProjectBackend,
+    updateProjectBackend,
     history,
     historyIndex,
     updateElementsWithHistory,
@@ -243,6 +246,7 @@ function CraftStudioApp() {
       viewportMode,
       projectFunctions,
       pageLinks,
+      projectBackend,
       hasUnsavedChanges,
       showWelcomeScreen,
       importReportData,
@@ -271,6 +275,19 @@ function CraftStudioApp() {
     const prefix = hasUnsavedChanges ? '● ' : '';
     document.title = `${prefix}${projectMeta.name || 'CraftStudio Projesi'} — CraftStudio`;
   }, [showWelcomeScreen, hasUnsavedChanges, projectMeta.name]);
+
+  // Expose programmatic test/inspection hook for E2E & smoke verification of backend state
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    window.__craftStudioTestHook = {
+      getProjectBackend: () => projectBackend,
+      updateProjectBackend,
+      setProjectBackend,
+    };
+    return () => {
+      delete window.__craftStudioTestHook;
+    };
+  }, [projectBackend, updateProjectBackend, setProjectBackend]);
 
   // Direct element modification in active viewport for current selection
   const handleUpdateElement = (updates) => {

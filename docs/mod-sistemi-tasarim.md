@@ -434,3 +434,8 @@ Her adımdan sonra `node scripts/test_studio_features.js`, `node scripts/test_im
 5. **Yüzen AI Sohbet Kutusu (`FloatingAIChatDock`) Görünürlüğü (Karar: A):**
    - Yüzen AI sohbet kutusu (`supportsFloatingAiDock: true`) her iki modda da görünür kalır.
 
+### 9.1 Açık Soru: Backend Modu İçin Undo / Redo (`Ctrl+Z` / `Ctrl+Y`)
+- Şu anki aşamada (Adım 2b) Backend verisi (`flows`, `dataModels`, `triggers`) için Undo/Redo geçmişi **bulunmamaktadır** (`historyByTab` yalnızca Tasarım modundaki sekme bazlı `elements` ve `canvasByViewport` durumunu izler).
+- **Kararınızı Bekleyen Açık Soru:** İleride Backend moduna görsel akış düzenleme eklendiğinde Backend verisi (`flows`, `dataModels`, `triggers`) için ayrı bir `backendHistory` yığını mı tutulmalı, yoksa tüm proje için birleşik bir geçmiş yığını mı kullanılmalı?
+
+

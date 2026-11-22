@@ -1260,7 +1260,101 @@ async function main() {
     );
     console.log('  ✓ .craft.json dosyası tarayıcı file-input (setFileInputFiles) yoluyla içe aktarıldı');
 
-    // 14. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
+    // 15. Backend verisini programatik doldur -> otomatik taslağın taşıdığını, sayfa yenileyip "Geri Yükle" ile geldiğini ve Son Projeler'den açınca korunduğunu doğrula
+    const expectedBackendPayload = {
+      version: 1,
+      flows: [{ id: 'flow-smoke-1', name: 'İletişim Formu Gönder' }],
+      dataModels: [{ id: 'model-smoke-1', name: 'Mesajlar' }],
+      triggers: [{ id: 'trig-smoke-1', event: 'onClick', targetElementId: 'btn-submit', flowId: 'flow-smoke-1' }],
+    };
+    const hookCalled = await cdp.evaluate(`
+      (() => {
+        if (!window.__craftStudioTestHook?.updateProjectBackend) return false;
+        window.__craftStudioTestHook.updateProjectBackend(${JSON.stringify(expectedBackendPayload)});
+        return true;
+      })()
+    `);
+    assert.ok(hookCalled, 'window.__craftStudioTestHook.updateProjectBackend bulunamadı.');
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('● Kaydedilmedi')`),
+      'Backend verisi değiştiğinde hasUnsavedChanges (● Kaydedilmedi) aktif olmadı.'
+    );
+    const appliedBackend = await cdp.evaluate(`window.__craftStudioTestHook?.getProjectBackend?.()`);
+    assert.deepEqual(
+      appliedBackend,
+      expectedBackendPayload,
+      'Test kancası üzerinden backend verisi güncellenemedi.'
+    );
+
+    // 1500ms otomatik taslak debounce'u için 2 saniye bekle ve localStorage taslağında backend verisini doğrula
+    await new Promise((r) => setTimeout(r, 2000));
+    const draftBackendInStorage = await cdp.evaluate(`
+      (() => {
+        const raw = localStorage.getItem('craftstudio.autosaveDraft.v1');
+        return raw ? JSON.parse(raw).backend : null;
+      })()
+    `);
+    assert.deepEqual(
+      draftBackendInStorage,
+      expectedBackendPayload,
+      'Otomatik taslak (autosaveDraft) backend verisini localStorage içine taşımadı!'
+    );
+
+    // Sayfayı yenile -> karşılama ekranında "Kaydedilmemiş Taslak"tan geri yükle -> backend verisinin geri geldiğini doğrula
+    await cdp.navigate(preview.url);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('.welcome-project-row--draft'))`),
+      'Backend taslak testi sırasında sayfa yenilenince Kaydedilmemiş Taslak satırı görünmedi.'
+    );
+    await cdp.evaluate(`document.querySelector('.welcome-project-row--draft .welcome-project-row__main')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Backend taslağı geri yüklenirken atölye tuvali açılmadı.'
+    );
+    const restoredDraftBackend = await cdp.evaluate(`window.__craftStudioTestHook?.getProjectBackend?.()`);
+    assert.deepEqual(
+      restoredDraftBackend,
+      expectedBackendPayload,
+      'Otomatik taslaktan Geri Yükle sonrası backend verisi korunmadı!'
+    );
+
+    // Projeyi kaydet (Ctrl+S), Karşılama ekranına dön ve Son Projeler'den tekrar aç -> backend verisi korunmalı
+    await sendCtrlShortcut(cdp, 's', 'KeyS', 83);
+    assert.ok(
+      await waitFor(cdp, `document.body.innerText.includes('✓ Kaydedildi')`),
+      'Backend verili proje Ctrl+S ile kaydedilemedi.'
+    );
+    await cdp.evaluate(`
+      (() => {
+        const homeBtn = Array.from(document.querySelectorAll('button')).find(
+          (b) => b.textContent && b.textContent.trim() === 'Projeler'
+        );
+        homeBtn?.click();
+      })()
+    `);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft)').length > 0`
+      ),
+      'Karşılama ekranında Son Projeler listesi görünmedi.'
+    );
+    await cdp.evaluate(`
+      document.querySelector('#welcome-recent .welcome-project-row:not(.welcome-project-row--draft) .welcome-project-row__main')?.click()
+    `);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.getElementById('artboard-canvas'))`),
+      'Son Projeler listesinden proje tekrar açılamadı.'
+    );
+    const reopenedRecentBackend = await cdp.evaluate(`window.__craftStudioTestHook?.getProjectBackend?.()`);
+    assert.deepEqual(
+      reopenedRecentBackend,
+      expectedBackendPayload,
+      'Son Projeler listesinden açılan projede backend verisi korunmadı!'
+    );
+    console.log('  ✓ Backend verisinin otomatik taslak, Geri Yükle ve Son Projeler kaydet/aç akışında korunduğu doğrulandı');
+
+    // 16. Son Projeler'den bir projeyi sil ve listeden kaybolduğunu doğrula
     await cdp.evaluate(`
       (() => {
         const homeBtn = Array.from(document.querySelectorAll('button')).find(
