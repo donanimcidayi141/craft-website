@@ -100,6 +100,7 @@ export function useProjectState() {
   // Synchronous ref snapshot + loop guard kept private inside the project state capsule
   const latestTabSnapshotRef = useRef({});
   const autoAdaptedPairsRef = useRef(new Set());
+  const tabIdSeqRef = useRef(0);
 
   useEffect(() => {
     latestTabSnapshotRef.current[activeTab.id] = {
@@ -265,7 +266,8 @@ export function useProjectState() {
   }, [activeTab.id, history, historyIndex]);
 
   const handleAddTab = useCallback(() => {
-    const newTabId = `tab-${Date.now()}`;
+    tabIdSeqRef.current += 1;
+    const newTabId = `tab-${Date.now()}-${tabIdSeqRef.current}`;
     const newTab = buildTabState(newTabId, `Sayfa-${tabs.length + 1}.craft`, []);
     setTabs((prevTabs) => [...prevTabs, newTab]);
     setTabHistory(newTabId, { elements: [], canvasByViewport: newTab.canvasByViewport });
@@ -276,6 +278,19 @@ export function useProjectState() {
   const handleCloseTab = useCallback((tabId) => {
     if (tabs.length <= 1) return;
     const remaining = tabs.filter((t) => t.id !== tabId);
+    if (remaining.length === tabs.length) return;
+    delete latestTabSnapshotRef.current[tabId];
+    for (const key of Array.from(autoAdaptedPairsRef.current)) {
+      if (key.startsWith(`${tabId}:`)) {
+        autoAdaptedPairsRef.current.delete(key);
+      }
+    }
+    setHistoryByTab((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, tabId)) return prev;
+      const next = { ...prev };
+      delete next[tabId];
+      return next;
+    });
     setTabs(remaining);
     if (activeTabId === tabId) {
       setActiveTabId(remaining[0].id);

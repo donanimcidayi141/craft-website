@@ -725,6 +725,201 @@ async function main() {
     assert.ok(reopened, 'Kaydedilen proje tekrar açıldığında sekmeler veya eleman sayısı eşleşmedi.');
     console.log('  ✓ Proje kaydedilip son projelerden tekrar açıldı');
 
+    // 9. Yeniden açılan projede Tablette düzenlenmiş elemanın tablet değerinin korunduğunu ve masaüstünün değişmediğini doğrula
+    await cdp.evaluate(`document.querySelector('div[title^="Sayfa-2.craft"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]'))`),
+      'Yeniden açılan projede Sayfa-2.craft sekmesine geçilemedi.'
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    const reopenedDesktopGeo = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return el ? { left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height } : null;
+      })()
+    `);
+    assert.deepEqual(
+      reopenedDesktopGeo,
+      desktopGeoBefore,
+      `Kaydet/Yeniden Aç sonrası masaüstü geometrisi değişti! Beklenen: ${JSON.stringify(desktopGeoBefore)}, Gelen: ${JSON.stringify(reopenedDesktopGeo)}`
+    );
+
+    await cdp.evaluate(`document.querySelector('button[title^="Tablet Tasarımı"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '768px'`),
+      'Yeniden açılan projede Tablet viewport geçişi başarısız.'
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    const reopenedTabletGeo = await cdp.evaluate(`
+      (() => {
+        const el = document.querySelector('#artboard-canvas > [data-element-id="${tab2ElInitial.id}"]');
+        return el ? { left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height } : null;
+      })()
+    `);
+    assert.deepEqual(
+      reopenedTabletGeo,
+      tabletGeoAfter,
+      `Kaydet/Yeniden Aç sonrası tablet override değeri korunmadı! Beklenen: ${JSON.stringify(tabletGeoAfter)}, Gelen: ${JSON.stringify(reopenedTabletGeo)}`
+    );
+    console.log('  ✓ Kaydet ve yeniden aç sonrası Tablet override korundu, Masaüstü değişmedi');
+
+    // 10. Sekme kapat, Ctrl+Z ile geri gelmediğini doğrula, yeniden sekme açıp Tablete geçişte doğru adapte olduğunu doğrula
+    await cdp.evaluate(`document.querySelector('button[title^="Masaüstü Tasarımı"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '1280px'`),
+      'Sekme kapatma testi öncesi masaüstüne dönülemedi.'
+    );
+    const closedTabClicked = await cdp.evaluate(`
+      (() => {
+        const tabDiv = document.querySelector('div[title^="Sayfa-2.craft"]');
+        const closeBtn = tabDiv?.querySelector('button');
+        if (!closeBtn) return false;
+        closeBtn.click();
+        return true;
+      })()
+    `);
+    assert.ok(closedTabClicked, 'Sayfa-2.craft sekme kapatma butonu bulunamadı.');
+    assert.ok(
+      await waitFor(cdp, `!document.querySelector('div[title^="Sayfa-2.craft"]')`),
+      'Sayfa-2.craft sekmesi kapatılamadı.'
+    );
+
+    // Ctrl+Z sekme kapatmayı geri almamalı (history sekme bazlı AST geçmişidir)
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    await new Promise((r) => setTimeout(r, 150));
+    const tabStillClosedAfterUndo = await cdp.evaluate(`!document.querySelector('div[title^="Sayfa-2.craft"]')`);
+    assert.ok(tabStillClosedAfterUndo, 'Ctrl+Z kapatılan sekmeyi beklenmedik şekilde geri getirdi.');
+
+    // Yeniden sekme aç (yine Sayfa-2.craft adını alır), masaüstünde geniş bir kutu çiz ve Tablete geçince adapte olduğunu doğrula
+    await cdp.evaluate(`document.querySelector('button[title="Yeni Sayfa Sekmesi Ekle"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('div[title^="Sayfa-2.craft"]')) && document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 0`),
+      'Kapatılan sekme sonrası yeni Sayfa-2.craft sekmesi açılamadı.'
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    await cdp.evaluate(`document.querySelector('button[data-tool-id="rectangle"]')?.click()`);
+    const reopenedTabDrawOrigin = await cdp.evaluate(`
+      (() => {
+        const art = document.getElementById('artboard-canvas');
+        const r = art?.getBoundingClientRect();
+        return r ? { x: Math.round(r.left + Math.min(r.width * 0.65, r.width - 120)), y: Math.round(r.top + 90) } : null;
+      })()
+    `);
+    assert.ok(reopenedTabDrawOrigin, 'Yeniden açılan sekmede çizim başlangıç noktası alınamadı.');
+    await dragOnScreen(cdp, reopenedTabDrawOrigin.x, reopenedTabDrawOrigin.y, 110, 65);
+    assert.ok(
+      await waitFor(cdp, `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 1`),
+      'Yeniden açılan sekmede eleman çizilemedi.'
+    );
+    await cdp.evaluate(`document.querySelector('button[data-tool-id="select"]')?.click()`);
+
+    await cdp.evaluate(`document.querySelector('button[title^="Tablet Tasarımı"]')?.click()`);
+    assert.ok(
+      await waitFor(cdp, `document.getElementById('artboard-canvas')?.style.width === '768px'`),
+      'Kapatılıp yeniden açılan sekmede Tablet geçişi başarısız.'
+    );
+    await new Promise((r) => setTimeout(r, 250));
+    const reopenedTabAdaptation = await cdp.evaluate(`
+      (() => {
+        const art = document.getElementById('artboard-canvas');
+        const wrap = document.getElementById('canvas-wrapper');
+        const el = document.querySelector('#artboard-canvas > [data-element-id]');
+        if (!art || !wrap || !el) return null;
+        const artRect = art.getBoundingClientRect();
+        const wrapRect = wrap.getBoundingClientRect();
+        const left = parseFloat(el.style.left) || 0;
+        const width = parseFloat(el.style.width) || 0;
+        return {
+          artW: parseFloat(art.style.width) || 0,
+          artH: parseFloat(art.style.height) || 0,
+          elRight: left + width,
+          fitsCanvasH: artRect.height <= wrapRect.height,
+          fitsCanvasW: artRect.width <= wrapRect.width,
+        };
+      })()
+    `);
+    assert.ok(reopenedTabAdaptation, 'Yeniden açılan sekmede tablet adaptasyon ölçümü alınamadı.');
+    assert.ok(
+      reopenedTabAdaptation.artW === 768 &&
+      reopenedTabAdaptation.elRight <= 768 &&
+      reopenedTabAdaptation.fitsCanvasH &&
+      reopenedTabAdaptation.fitsCanvasW,
+      `Kapatılıp açılan sekme tablette doğru adapte olmadı: ${JSON.stringify(reopenedTabAdaptation)}`
+    );
+    console.log('  ✓ Sekme kapatılıp yeniden açıldığında yeni sekmenin Tablete doğru adapte olduğu doğrulandı');
+
+    // 11. Bir elemanı düzenle, "Yeni Boş Proje" başlat, eski elemanların/sekmelerin/seçimin/geçmişin (Ctrl+Z) temizlendiğini doğrula
+    const preNewProjTarget = await findVisiblePointForElement(cdp, null);
+    assert.ok(preNewProjTarget, 'Yeni proje öncesi düzenlenecek eleman bulunamadı.');
+    await dragOnScreen(cdp, preNewProjTarget.cx, preNewProjTarget.cy, 25, 20);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[title="Geri Al (Ctrl+Z)"]:not([disabled])'))`),
+      'Yeni proje öncesi eleman düzenlemesi history yığınına girmedi.'
+    );
+
+    const clickedNewBlankProject = await cdp.evaluate(`
+      (() => {
+        const dosyaBtn = Array.from(document.querySelectorAll('button')).find(
+          (b) => b.textContent && b.textContent.trim() === 'Dosya'
+        );
+        if (!dosyaBtn) return false;
+        dosyaBtn.click();
+        return true;
+      })()
+    `);
+    assert.ok(clickedNewBlankProject, 'Dosya menüsü açılamadı.');
+    assert.ok(
+      await waitFor(cdp, `
+        (() => {
+          const item = Array.from(document.querySelectorAll('button')).find(
+            (b) => b.textContent && b.textContent.includes('Yeni Boş Proje')
+          );
+          if (!item) return false;
+          item.click();
+          return true;
+        })()
+      `),
+      'Dosya > Yeni Boş Proje menü öğesi tıklanamadı.'
+    );
+
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.querySelectorAll('#artboard-canvas > [data-element-id]').length === 0 && Boolean(document.querySelector('div[title^="Yeni-Tasarim.craft"]'))`
+      ),
+      'Yeni Boş Proje başlatıldığında tuval veya sekme sıfırlanmadı.'
+    );
+
+    // Ctrl+Z hiçbir eski elemanı geri getirmemeli
+    await sendCtrlShortcut(cdp, 'z', 'KeyZ', 90);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const cleanProjectState = await cdp.evaluate(`
+      (() => {
+        const elementCount = document.querySelectorAll('#artboard-canvas [data-element-id]').length;
+        const hasOldTab1 = Boolean(document.querySelector('div[title^="Anasayfa.craft"]'));
+        const hasOldTab2 = Boolean(document.querySelector('div[title^="Sayfa-2.craft"]'));
+        const hasNewTab = Boolean(document.querySelector('div[title^="Yeni-Tasarim.craft"]'));
+        const undoDisabled = Boolean(document.querySelector('button[title="Geri Al (Ctrl+Z)"]')?.disabled);
+        const hasSelectionBadge = document.body.innerText.includes('seçili');
+        return { elementCount, hasOldTab1, hasOldTab2, hasNewTab, undoDisabled, hasSelectionBadge };
+      })()
+    `);
+    assert.deepEqual(
+      cleanProjectState,
+      {
+        elementCount: 0,
+        hasOldTab1: false,
+        hasOldTab2: false,
+        hasNewTab: true,
+        undoDisabled: true,
+        hasSelectionBadge: false,
+      },
+      `Yeni Boş Proje sonrası eski elemanlar, sekmeler, seçim veya geçmiş temizlenmedi: ${JSON.stringify(cleanProjectState)}`
+    );
+    console.log('  ✓ Yeni Boş Proje başlatıldığında eski elemanların, sekmelerin, seçimin ve Ctrl+Z geçmişinin temizlendiği doğrulandı');
+
     await new Promise((r) => setTimeout(r, 250));
 
     assert.deepEqual(uncaughtExceptions, [], `Yakalanmayan JS hatası oluştu: ${uncaughtExceptions.join(' | ')}`);
