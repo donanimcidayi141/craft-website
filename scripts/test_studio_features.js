@@ -99,11 +99,17 @@ import {
 } from '../src/data/panelRegistry.js';
 import {
   createInitialWorkspaceLayout,
+  validateWorkspaceLayoutBridgeInvariant,
+  assertWorkspaceLayoutBridgeInvariant,
   updateActiveModeLeftDrawerTab,
   updateActiveModeLeftDrawerWidth,
   clampLeftDrawerWidth,
   resolveEffectiveLeftDrawerWidth,
   updateActiveModeRightDock,
+  applyRightDockTargetSelection,
+  updateActiveModeAiDockMinimized,
+  updateWorkspaceAttributesInspectorModal,
+  dockWorkspaceFloatingInspector,
   getWorkspacePanelZone,
   isWorkspacePanelOpen,
   openWorkspacePanel,
@@ -4049,6 +4055,55 @@ test('useWorkspaceLayout multi-zone tabbed panel engine supports multi-tab docks
   assert.equal(state.layoutsByMode.design.floatingPanels.templates.isOpen, false);
   assert.equal(state.layoutsByMode.design.floatingPanels.attributesAndCss.isOpen, false);
   assert.equal(state.modals.attributesInspector, false);
+});
+
+test('useWorkspaceLayout bridge invariant holds after every open/close/move/tab-close/legacy-bridge/mode-switch/preset/reset transition', () => {
+  const steps = [
+    ['init', () => createInitialWorkspaceLayout()],
+    ['open layers', (s) => openWorkspacePanel(s, 'layers')],
+    ['open assets (templates)', (s) => openWorkspacePanel(s, 'assets')],
+    ['switch left active tab to layers', (s) => setWorkspaceDockActiveTab(s, 'left', 'layers')],
+    ['close layers tab -> fallback to templates', (s) => closeWorkspacePanel(s, 'layers')],
+    ['move layers to right dock', (s) => moveWorkspacePanelToZone(s, 'layers', 'right')],
+    ['move properties to floating', (s) => moveWorkspacePanelToZone(s, 'properties', 'floating')],
+    ['close layers in right dock (last tab -> rightDock closes)', (s) => closeWorkspacePanel(s, 'layers')],
+    ['legacy setRightDockOpen(true) recovers default right panel', (s) => updateActiveModeRightDock(s, { isOpen: true, propertiesTab: 'style' })],
+    ['open attributesAndCss via legacy modal bridge', (s) => updateWorkspaceAttributesInspectorModal(s, true)],
+    ['dock attributesAndCss into right via legacy bridge', (s) => dockWorkspaceFloatingInspector(s, 'css')],
+    ['move attributesAndCss to left dock', (s) => moveWorkspacePanelToZone(s, 'attributesAndCss', 'left')],
+    ['re-open attributesAndCss via legacy modal bridge -> returns to floating', (s) => updateWorkspaceAttributesInspectorModal(s, true)],
+    ['minimize floating attributesAndCss', (s) => toggleWorkspaceFloatingPanelMinimized(s, 'attributesAndCss')],
+    ['update floating rect', (s) => updateWorkspaceFloatingPanelRect(s, 'attributesAndCss', { x: 120, y: 90, width: 640, height: 480 })],
+    ['bring templates floating front after moving to floating', (s) => bringWorkspaceFloatingPanelToFront(moveWorkspacePanelToZone(s, 'templates', 'floating'), 'templates')],
+    ['legacy setLeftSidebarTab(templates) moves templates back to left', (s) => updateActiveModeLeftDrawerTab(s, 'templates')],
+    ['legacy setAiDockMinimized(true)', (s) => updateActiveModeAiDockMinimized(s, true)],
+    ['toggle aiAgent via toggleWorkspacePanel', (s) => toggleWorkspacePanel(s, 'aiAgent')],
+    ['right dock target selection subTab', (s) => applyRightDockTargetSelection(s, 'properties', 'attr')],
+    ['switch to backend mode', (s) => applyStudioModeTransition(s, 'backend').layout],
+    ['open dataModels in backend', (s) => openWorkspacePanel(s, 'dataModels')],
+    ['move flows to floating in backend', (s) => moveWorkspacePanelToZone(s, 'flows', 'floating')],
+    ['apply wide_canvas preset in backend', (s) => applyWorkspacePresetToLayout(s, 'wide_canvas', 'backend')],
+    ['switch back to design mode', (s) => applyStudioModeTransition(s, 'design').layout],
+    ['apply design_focused preset in design', (s) => applyWorkspacePresetToLayout(s, 'design_focused', 'design')],
+    ['reset active mode layout (design)', (s) => resetModeWorkspaceLayout(s, 'design')],
+    ['full workspace layout reset (project reload)', (s) => applyWorkspaceLayoutReset(s, { showWelcomeScreen: false, leftTab: 'layers', aiMinimized: true })],
+    ['legacy close left drawer (null)', (s) => updateActiveModeLeftDrawerTab(s, null)],
+  ];
+
+  let state = null;
+  for (const [label, fn] of steps) {
+    state = fn(state);
+    assertWorkspaceLayoutBridgeInvariant(state, label);
+  }
+
+  // Negative check: invariant detector must catch artificial bridge divergence
+  const corrupted = {
+    ...state,
+    modals: { ...state.modals, attributesInspector: true },
+  };
+  const checkCorrupt = validateWorkspaceLayoutBridgeInvariant(corrupted);
+  assert.equal(checkCorrupt.ok, false);
+  assert.ok(checkCorrupt.errors.some((e) => e.includes('attributesInspector')));
 });
 
 // -----------------------------------------------------------------------------

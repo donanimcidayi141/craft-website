@@ -66,7 +66,7 @@ function buildNormalizedModeLayoutSlice(modeId, override = {}) {
     }
   }
 
-  const leftActiveTab = override?.leftDrawer?.activeTab !== undefined
+  const rawLeftActive = override?.leftDrawer?.activeTab !== undefined
     ? override.leftDrawer.activeTab
     : modeDefault.leftDrawer.activeTab;
 
@@ -79,14 +79,24 @@ function buildNormalizedModeLayoutSlice(modeId, override = {}) {
       }
     }
   }
+  const canonicalLeftActive = rawLeftActive ? resolveCanonicalPanelId(rawLeftActive, resolvedMode) : null;
+  let leftActiveTab = canonicalLeftActive && panelZones[canonicalLeftActive] === 'left'
+    ? canonicalLeftActive
+    : null;
+
   if (leftActiveTab && !leftTabs.includes(leftActiveTab)) {
     leftTabs.push(leftActiveTab);
   }
-  if (!leftActiveTab && !Array.isArray(override?.leftDrawer?.tabs)) {
-    leftTabs = [];
+  if (!leftActiveTab) {
+    if (rawLeftActive === null) {
+      leftTabs = [];
+    } else if (leftTabs.length > 0) {
+      leftActiveTab = leftTabs[0];
+    } else {
+      leftTabs = [];
+    }
   }
 
-  const rightIsOpen = Boolean(override?.rightDock?.isOpen ?? modeDefault.rightDock.isOpen);
   let rightTabs = [];
   if (Array.isArray(override?.rightDock?.tabs)) {
     for (const t of override.rightDock.tabs) {
@@ -104,6 +114,9 @@ function buildNormalizedModeLayoutSlice(modeId, override = {}) {
     requestedRightActive && rightTabs.includes(requestedRightActive)
       ? requestedRightActive
       : rightTabs[0] || null;
+  const rightIsOpen = rightTabs.length > 0
+    ? Boolean(override?.rightDock?.isOpen ?? modeDefault.rightDock.isOpen)
+    : false;
 
   const floatingPanels = createDefaultFloatingPanelsForMode(resolvedMode);
   if (override?.floatingPanels && typeof override.floatingPanels === 'object' && !Array.isArray(override.floatingPanels)) {
@@ -113,17 +126,20 @@ function buildNormalizedModeLayoutSlice(modeId, override = {}) {
       const baseFloat = floatingPanels[canonicalId];
       const panelCfg = getPanelConfig(canonicalId);
       const nextRect = rawState.rect && typeof rawState.rect === 'object'
-        ? clampFloatingRect(
-            rawState.rect,
-            { width: 1440, height: 920 },
-            {
-              minWidth: panelCfg?.sizeLimits?.minWidth || 220,
-              minHeight: panelCfg?.sizeLimits?.minHeight || 260,
-            },
-          )
+        ? {
+            x: Number.isFinite(Number(rawState.rect.x)) ? Math.round(Number(rawState.rect.x)) : baseFloat.rect.x,
+            y: Number.isFinite(Number(rawState.rect.y)) ? Math.round(Number(rawState.rect.y)) : baseFloat.rect.y,
+            width: Number.isFinite(Number(rawState.rect.width))
+              ? Math.max(panelCfg?.sizeLimits?.minWidth || 220, Math.min(panelCfg?.sizeLimits?.maxWidth || 960, Math.round(Number(rawState.rect.width))))
+              : baseFloat.rect.width,
+            height: Number.isFinite(Number(rawState.rect.height))
+              ? Math.max(panelCfg?.sizeLimits?.minHeight || 260, Math.min(panelCfg?.sizeLimits?.maxHeight || 880, Math.round(Number(rawState.rect.height))))
+              : baseFloat.rect.height,
+          }
         : baseFloat.rect;
+      const isAllowedOpenFloating = panelZones[canonicalId] === 'floating';
       floatingPanels[canonicalId] = {
-        isOpen: typeof rawState.isOpen === 'boolean' ? rawState.isOpen : baseFloat.isOpen,
+        isOpen: isAllowedOpenFloating && typeof rawState.isOpen === 'boolean' ? rawState.isOpen : false,
         isMinimized: typeof rawState.isMinimized === 'boolean' ? rawState.isMinimized : baseFloat.isMinimized,
         rect: nextRect,
         zIndex: Number.isFinite(Number(rawState.zIndex)) ? Math.max(40, Math.round(Number(rawState.zIndex))) : baseFloat.zIndex,
@@ -184,7 +200,11 @@ export function createInitialWorkspaceLayout({ storage = null, usePersistedSetti
       tutorial: false,
       export: false,
       addTag: false,
-      attributesInspector: false,
+      attributesInspector: Boolean(
+        activeMode === 'design' &&
+        currentSlice.panelZones?.attributesAndCss === 'floating' &&
+        currentSlice.floatingPanels?.attributesAndCss?.isOpen,
+      ),
       importReport: false,
       importReportData: null,
       functionEditor: INITIAL_FUNCTION_EDITOR_STATE,
@@ -200,12 +220,155 @@ function syncActiveModeSlice(nextLayout, modeId, nextModeSlice) {
     [modeId]: nextModeSlice,
   };
   const currentActiveSlice = nextLayoutsByMode[nextLayout.activeMode];
+  const isDesignMode = nextLayout.activeMode === 'design';
+  const attrZone = currentActiveSlice.panelZones?.attributesAndCss || 'floating';
+  const attrFloatOpen = Boolean(currentActiveSlice.floatingPanels?.attributesAndCss?.isOpen);
   return {
     ...nextLayout,
     layoutsByMode: nextLayoutsByMode,
     leftDrawer: currentActiveSlice.leftDrawer,
     rightDock: currentActiveSlice.rightDock,
+    aiDock: {
+      ...nextLayout.aiDock,
+      isMinimized: Boolean(currentActiveSlice.aiDock?.isMinimized),
+    },
+    modals: {
+      ...nextLayout.modals,
+      attributesInspector: isDesignMode && attrZone === 'floating' ? attrFloatOpen : false,
+    },
   };
+}
+
+/**
+ * Validates that all legacy bridge fields (`leftDrawer.activeTab`, `leftDrawer.width`,
+ * `rightDock.isOpen`, `rightDock.propertiesTab`, `rightDock.width`, `aiDock.isMinimized`,
+ * `modals.attributesInspector`, `computeEffectiveActivePanels`) are 100% consistent with
+ * the multi-zone tabbed panel model (`panelZones`, `leftDrawer.tabs`, `rightDock.tabs`,
+ * `rightDock.activeTab`, `floatingPanels`).
+ * Returns `{ ok: true, errors: [] }` or `{ ok: false, errors: [...] }`.
+ */
+export function validateWorkspaceLayoutBridgeInvariant(layout) {
+  const errors = [];
+  if (!layout || typeof layout !== 'object') {
+    return { ok: false, errors: ['Layout state is null or not an object'] };
+  }
+
+  const modeId = isValidStudioMode(layout.activeMode) ? layout.activeMode : DEFAULT_STUDIO_MODE;
+  const activeSlice = layout.layoutsByMode?.[modeId];
+  if (!activeSlice) {
+    errors.push(`Missing layoutsByMode slice for activeMode "${modeId}"`);
+    return { ok: false, errors };
+  }
+
+  // 1. Top-level compatibility aliases must match active mode slice
+  if (layout.leftDrawer !== activeSlice.leftDrawer) {
+    errors.push('layout.leftDrawer reference does not match layoutsByMode[activeMode].leftDrawer');
+  }
+  if (layout.rightDock !== activeSlice.rightDock) {
+    errors.push('layout.rightDock reference does not match layoutsByMode[activeMode].rightDock');
+  }
+  if (Boolean(layout.aiDock?.isMinimized) !== Boolean(activeSlice.aiDock?.isMinimized)) {
+    errors.push(
+      `layout.aiDock.isMinimized (${layout.aiDock?.isMinimized}) !== activeSlice.aiDock.isMinimized (${activeSlice.aiDock?.isMinimized})`,
+    );
+  }
+
+  // 2. Left drawer tabs vs activeTab vs panelZones
+  const leftTabs = Array.isArray(activeSlice.leftDrawer?.tabs) ? activeSlice.leftDrawer.tabs : [];
+  const leftActive = activeSlice.leftDrawer?.activeTab ?? null;
+  if (leftActive === null && leftTabs.length !== 0) {
+    errors.push(`leftDrawer.activeTab is null but leftDrawer.tabs is non-empty: ${JSON.stringify(leftTabs)}`);
+  }
+  if (leftActive !== null && !leftTabs.includes(leftActive)) {
+    errors.push(`leftDrawer.activeTab "${leftActive}" is not included in leftDrawer.tabs ${JSON.stringify(leftTabs)}`);
+  }
+  if (new Set(leftTabs).size !== leftTabs.length) {
+    errors.push(`leftDrawer.tabs contains duplicate panel IDs: ${JSON.stringify(leftTabs)}`);
+  }
+  for (const tabId of leftTabs) {
+    if (!isPanelAllowedInMode(tabId, modeId)) {
+      errors.push(`leftDrawer.tabs contains panel "${tabId}" not allowed in mode "${modeId}"`);
+    }
+    if (activeSlice.panelZones?.[tabId] !== 'left') {
+      errors.push(
+        `leftDrawer.tabs contains "${tabId}" whose panelZones entry is "${activeSlice.panelZones?.[tabId]}" instead of "left"`,
+      );
+    }
+  }
+
+  // 3. Right dock tabs vs activeTab vs isOpen vs panelZones
+  const rightTabs = Array.isArray(activeSlice.rightDock?.tabs) ? activeSlice.rightDock.tabs : [];
+  const rightActive = activeSlice.rightDock?.activeTab ?? null;
+  const rightOpen = Boolean(activeSlice.rightDock?.isOpen);
+  if (new Set(rightTabs).size !== rightTabs.length) {
+    errors.push(`rightDock.tabs contains duplicate panel IDs: ${JSON.stringify(rightTabs)}`);
+  }
+  if (rightOpen && rightTabs.length === 0) {
+    errors.push('rightDock.isOpen is true but rightDock.tabs is empty');
+  }
+  if (rightOpen && (!rightActive || !rightTabs.includes(rightActive))) {
+    errors.push(
+      `rightDock.isOpen is true but rightDock.activeTab "${rightActive}" is not in rightDock.tabs ${JSON.stringify(rightTabs)}`,
+    );
+  }
+  for (const tabId of rightTabs) {
+    if (!isPanelAllowedInMode(tabId, modeId)) {
+      errors.push(`rightDock.tabs contains panel "${tabId}" not allowed in mode "${modeId}"`);
+    }
+    if (activeSlice.panelZones?.[tabId] !== 'right') {
+      errors.push(
+        `rightDock.tabs contains "${tabId}" whose panelZones entry is "${activeSlice.panelZones?.[tabId]}" instead of "right"`,
+      );
+    }
+  }
+
+  // 4. Floating panels & showAttributesInspectorModal consistency
+  const floatMap = activeSlice.floatingPanels || {};
+  for (const [panelId, floatState] of Object.entries(floatMap)) {
+    if (floatState?.isOpen) {
+      if (activeSlice.panelZones?.[panelId] !== 'floating') {
+        errors.push(
+          `floatingPanels["${panelId}"].isOpen is true but panelZones["${panelId}"] is "${activeSlice.panelZones?.[panelId]}"`,
+        );
+      }
+      if (leftTabs.includes(panelId) || rightTabs.includes(panelId)) {
+        errors.push(`Floating open panel "${panelId}" also appears in dock tabs`);
+      }
+    }
+  }
+
+  const expectedAttrModal =
+    modeId === 'design' &&
+    activeSlice.panelZones?.attributesAndCss === 'floating' &&
+    Boolean(floatMap.attributesAndCss?.isOpen);
+  if (Boolean(layout.modals?.attributesInspector) !== expectedAttrModal) {
+    errors.push(
+      `modals.attributesInspector (${layout.modals?.attributesInspector}) !== expected (${expectedAttrModal})`,
+    );
+  }
+
+  // 5. computeEffectiveActivePanels vs isWorkspacePanelOpen
+  const effectiveMap = computeEffectiveActivePanels(layout);
+  const modeConfig = getStudioModeConfig(modeId);
+  for (const item of modeConfig.menuPanels || []) {
+    const expectedOpen = isWorkspacePanelOpen(layout, item.id);
+    if (Boolean(effectiveMap[item.id]) !== expectedOpen) {
+      errors.push(
+        `computeEffectiveActivePanels["${item.id}"] (${effectiveMap[item.id]}) !== isWorkspacePanelOpen (${expectedOpen})`,
+      );
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+export function assertWorkspaceLayoutBridgeInvariant(layout, contextLabel = '') {
+  const result = validateWorkspaceLayoutBridgeInvariant(layout);
+  if (!result.ok) {
+    const prefix = contextLabel ? `[BridgeInvariant: ${contextLabel}] ` : '[BridgeInvariant] ';
+    throw new Error(`${prefix}${result.errors.join(' | ')}`);
+  }
+  return true;
 }
 
 export function getActiveModeLayoutSlice(layout) {
@@ -281,21 +444,40 @@ export function updateActiveModeLeftDrawerTab(prevLayout, nextOrUpdater) {
     : nextOrUpdater;
   if (nextTab === curSlice.leftDrawer.activeTab) return prevLayout;
 
+  if (!nextTab) {
+    return syncActiveModeSlice(prevLayout, modeId, {
+      ...curSlice,
+      leftDrawer: {
+        ...curSlice.leftDrawer,
+        activeTab: null,
+        tabs: [],
+      },
+    });
+  }
+
+  const canonicalId = resolveCanonicalPanelId(nextTab, modeId);
+  if (!canonicalId || !isPanelAllowedInZone(canonicalId, 'left')) {
+    return prevLayout;
+  }
+
+  const currentZone = curSlice.panelZones?.[canonicalId] || getPanelConfig(canonicalId)?.defaultZone;
+  if (currentZone !== 'left') {
+    return moveWorkspacePanelToZone(prevLayout, canonicalId, 'left');
+  }
+
   const curTabs = Array.isArray(curSlice.leftDrawer.tabs) ? curSlice.leftDrawer.tabs : [];
   let nextTabs = curTabs;
-  if (!nextTab) {
-    nextTabs = [];
-  } else if (curTabs.length <= 1) {
-    nextTabs = [nextTab];
-  } else if (!curTabs.includes(nextTab)) {
-    nextTabs = [...curTabs, nextTab];
+  if (curTabs.length <= 1) {
+    nextTabs = [canonicalId];
+  } else if (!curTabs.includes(canonicalId)) {
+    nextTabs = [...curTabs, canonicalId];
   }
 
   return syncActiveModeSlice(prevLayout, modeId, {
     ...curSlice,
     leftDrawer: {
       ...curSlice.leftDrawer,
-      activeTab: nextTab,
+      activeTab: canonicalId,
       tabs: nextTabs,
     },
   });
@@ -320,7 +502,7 @@ export function updateActiveModeRightDock(prevLayout, updaterOrPartial) {
   const curDock = curSlice.rightDock;
   const patch = typeof updaterOrPartial === 'function' ? updaterOrPartial(curDock) : updaterOrPartial;
   if (!patch || typeof patch !== 'object') return prevLayout;
-  const nextDock = { ...curDock, ...patch };
+  let nextDock = { ...curDock, ...patch };
   if (
     nextDock.isOpen === curDock.isOpen &&
     nextDock.activeTab === curDock.activeTab &&
@@ -330,6 +512,36 @@ export function updateActiveModeRightDock(prevLayout, updaterOrPartial) {
   ) {
     return prevLayout;
   }
+
+  // Ensure rightDock.isOpen === true always has at least one valid right-zone tab & activeTab
+  if (nextDock.isOpen) {
+    const validRightTabs = (Array.isArray(nextDock.tabs) ? nextDock.tabs : []).filter(
+      (t) => isPanelAllowedInMode(t, modeId) && curSlice.panelZones?.[t] === 'right',
+    );
+    if (validRightTabs.length === 0) {
+      const defaultRightId = getDefaultRightPanelIdForMode(modeId);
+      const movedBack = moveWorkspacePanelToZone(prevLayout, defaultRightId, 'right');
+      const movedSlice = getActiveModeLayoutSlice(movedBack);
+      return syncActiveModeSlice(movedBack, modeId, {
+        ...movedSlice,
+        rightDock: {
+          ...movedSlice.rightDock,
+          propertiesTab: nextDock.propertiesTab || movedSlice.rightDock.propertiesTab,
+          width: nextDock.width || movedSlice.rightDock.width,
+        },
+      });
+    }
+    const resolvedActive =
+      nextDock.activeTab && validRightTabs.includes(nextDock.activeTab)
+        ? nextDock.activeTab
+        : validRightTabs[0];
+    nextDock = {
+      ...nextDock,
+      tabs: validRightTabs,
+      activeTab: resolvedActive,
+    };
+  }
+
   return syncActiveModeSlice(prevLayout, modeId, {
     ...curSlice,
     rightDock: nextDock,
@@ -341,16 +553,31 @@ export function applyRightDockTargetSelection(prevLayout, _moduleName, subTab = 
   const curSlice = getActiveModeLayoutSlice(prevLayout);
   const curDock = curSlice.rightDock;
   const defaultRightId = getDefaultRightPanelIdForMode(modeId);
-  const curTabs = Array.isArray(curDock.tabs) && curDock.tabs.length > 0 ? curDock.tabs : [defaultRightId];
 
   if (!curDock.isOpen) {
+    const validRightTabs = (Array.isArray(curDock.tabs) ? curDock.tabs : []).filter(
+      (t) => isPanelAllowedInMode(t, modeId) && curSlice.panelZones?.[t] === 'right',
+    );
+    if (validRightTabs.length === 0) {
+      const movedBack = moveWorkspacePanelToZone(prevLayout, defaultRightId, 'right');
+      const movedSlice = getActiveModeLayoutSlice(movedBack);
+      return syncActiveModeSlice(movedBack, modeId, {
+        ...movedSlice,
+        rightDock: {
+          ...movedSlice.rightDock,
+          propertiesTab: subTab || movedSlice.rightDock.propertiesTab,
+        },
+      });
+    }
     return syncActiveModeSlice(prevLayout, modeId, {
       ...curSlice,
       rightDock: {
         ...curDock,
         isOpen: true,
-        tabs: curTabs,
-        activeTab: curDock.activeTab || curTabs[0] || defaultRightId,
+        tabs: validRightTabs,
+        activeTab: curDock.activeTab && validRightTabs.includes(curDock.activeTab)
+          ? curDock.activeTab
+          : validRightTabs[0],
         propertiesTab: subTab || curDock.propertiesTab,
       },
     });
@@ -370,6 +597,49 @@ export function applyRightDockTargetSelection(prevLayout, _moduleName, subTab = 
       ...curDock,
       isOpen: false,
     },
+  });
+}
+
+export function updateActiveModeAiDockMinimized(prevLayout, nextOrUpdater) {
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  const curVal = Boolean(prevLayout?.aiDock?.isMinimized);
+  const nextVal = Boolean(typeof nextOrUpdater === 'function' ? nextOrUpdater(curVal) : nextOrUpdater);
+  if (nextVal === curVal && Boolean(curSlice.aiDock?.isMinimized) === nextVal) {
+    return prevLayout;
+  }
+  return syncActiveModeSlice(prevLayout, modeId, {
+    ...curSlice,
+    aiDock: { isMinimized: nextVal },
+  });
+}
+
+export function updateWorkspaceAttributesInspectorModal(prevLayout, nextOrUpdater) {
+  const curOpen = Boolean(prevLayout?.modals?.attributesInspector);
+  const nextOpen = Boolean(typeof nextOrUpdater === 'function' ? nextOrUpdater(curOpen) : nextOrUpdater);
+  const modeId = isValidStudioMode(prevLayout?.activeMode) ? prevLayout.activeMode : DEFAULT_STUDIO_MODE;
+  if (modeId !== 'design') {
+    return curOpen ? { ...prevLayout, modals: { ...prevLayout.modals, attributesInspector: false } } : prevLayout;
+  }
+  if (nextOpen) {
+    const curSlice = getActiveModeLayoutSlice(prevLayout);
+    if (curSlice.panelZones?.attributesAndCss !== 'floating') {
+      return moveWorkspacePanelToZone(prevLayout, 'attributesAndCss', 'floating');
+    }
+    return openWorkspacePanel(prevLayout, 'attributesAndCss');
+  }
+  const curSlice = getActiveModeLayoutSlice(prevLayout);
+  if (curSlice.panelZones?.attributesAndCss === 'floating') {
+    return closeWorkspacePanel(prevLayout, 'attributesAndCss');
+  }
+  return curOpen ? { ...prevLayout, modals: { ...prevLayout.modals, attributesInspector: false } } : prevLayout;
+}
+
+export function dockWorkspaceFloatingInspector(prevLayout, targetTab = 'css') {
+  const closed = updateWorkspaceAttributesInspectorModal(prevLayout, false);
+  return updateActiveModeRightDock(closed, {
+    isOpen: true,
+    propertiesTab: targetTab || 'css',
   });
 }
 
@@ -908,7 +1178,24 @@ export function applyStudioModeTransition(prevLayout, nextModeId, callbacks = {}
 
   const targetConfig = getStudioModeConfig(nextModeId);
   const defaultToolId = targetConfig.tools?.defaultToolId || 'select';
-  const targetSlice = prevLayout.layoutsByMode?.[nextModeId]
+  const prevDesignSlice = prevLayout.layoutsByMode?.design || INITIAL_WORKSPACE_LAYOUT.layoutsByMode.design;
+  const closedDesignSlice = prevDesignSlice?.floatingPanels?.attributesAndCss?.isOpen
+    ? {
+        ...prevDesignSlice,
+        floatingPanels: {
+          ...prevDesignSlice.floatingPanels,
+          attributesAndCss: {
+            ...prevDesignSlice.floatingPanels.attributesAndCss,
+            isOpen: false,
+          },
+        },
+      }
+    : prevDesignSlice;
+  const nextLayoutsByMode = {
+    ...prevLayout.layoutsByMode,
+    design: closedDesignSlice,
+  };
+  const targetSlice = nextLayoutsByMode[nextModeId]
     || INITIAL_WORKSPACE_LAYOUT.layoutsByMode[nextModeId];
 
   const nextLayout = {
@@ -916,8 +1203,13 @@ export function applyStudioModeTransition(prevLayout, nextModeId, callbacks = {}
     activeMode: nextModeId,
     activeTool: defaultToolId,
     openPopover: null,
+    layoutsByMode: nextLayoutsByMode,
     leftDrawer: targetSlice.leftDrawer,
     rightDock: targetSlice.rightDock,
+    aiDock: {
+      ...prevLayout.aiDock,
+      isMinimized: Boolean(targetSlice.aiDock?.isMinimized),
+    },
     modals: {
       ...prevLayout.modals,
       addTag: false,
@@ -998,6 +1290,7 @@ export function applyWorkspaceLayoutReset(prevLayout, {
         ...STUDIO_MODES.design.defaultLayout.rightDock,
         width: prevDesignWidth,
       },
+      aiDock: { isMinimized: Boolean(aiMinimized) },
     },
     backend: {
       leftDrawer: {
@@ -1008,6 +1301,7 @@ export function applyWorkspaceLayoutReset(prevLayout, {
         ...STUDIO_MODES.backend.defaultLayout.rightDock,
         width: prevBackendWidth,
       },
+      aiDock: { isMinimized: Boolean(aiMinimized) },
     },
   });
 
@@ -1213,12 +1507,7 @@ export function useWorkspaceLayout(options = {}) {
   }, []);
 
   const setAiDockMinimized = useCallback((nextOrUpdater) => {
-    setLayout((prev) => {
-      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev.aiDock.isMinimized) : nextOrUpdater;
-      return next === prev.aiDock.isMinimized
-        ? prev
-        : { ...prev, aiDock: { ...prev.aiDock, isMinimized: next } };
-    });
+    setLayout((prev) => updateActiveModeAiDockMinimized(prev, nextOrUpdater));
   }, []);
 
   const setAiFocusSignal = useCallback((nextOrUpdater) => {
@@ -1258,14 +1547,7 @@ export function useWorkspaceLayout(options = {}) {
   }, []);
 
   const setShowAttributesInspectorModal = useCallback((nextOrUpdater) => {
-    setLayout((prev) => {
-      const next = typeof nextOrUpdater === 'function'
-        ? nextOrUpdater(prev.modals.attributesInspector)
-        : nextOrUpdater;
-      return next === prev.modals.attributesInspector
-        ? prev
-        : { ...prev, modals: { ...prev.modals, attributesInspector: next } };
-    });
+    setLayout((prev) => updateWorkspaceAttributesInspectorModal(prev, nextOrUpdater));
   }, []);
 
   const setShowImportReportModal = useCallback((nextOrUpdater) => {
@@ -1317,19 +1599,7 @@ export function useWorkspaceLayout(options = {}) {
   }, []);
 
   const handleDockFloatingInspector = useCallback((targetTab = 'css') => {
-    setLayout((prev) => {
-      const withClosedModal = {
-        ...prev,
-        modals: {
-          ...prev.modals,
-          attributesInspector: false,
-        },
-      };
-      return updateActiveModeRightDock(withClosedModal, {
-        isOpen: true,
-        propertiesTab: targetTab || 'css',
-      });
-    });
+    setLayout((prev) => dockWorkspaceFloatingInspector(prev, targetTab));
   }, []);
 
   const togglePanel = useCallback((panelName) => {
