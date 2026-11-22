@@ -152,9 +152,10 @@ export function dispatchStudioShortcut(
 
   if (showWelcomeScreen) return null;
 
-  // Universal: Escape -> Close previewMode, reset activeTool to 'select', or (in design mode) step out to parent
+  // Universal: Escape -> Close previewMode, reset activeTool to 'select', or (in design mode) step out to parent.
+  // Blocked when focus is inside the floating CSS inspector so Escape only closes the floating window without changing activeTool or selection.
   if (e.key === 'Escape') {
-    if (isAnyModalOpen) {
+    if (isAnyModalOpen || floatingInspectorFocused || e.defaultPrevented) {
       return null;
     }
     if (previewMode) {

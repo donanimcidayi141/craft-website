@@ -3568,11 +3568,19 @@ test('useShortcuts keeps canvas shortcuts and Escape active when floating CSS in
     { key: 'ArrowDown' },
     { key: 'd', ctrlKey: true },
     { key: 'x', ctrlKey: true },
+    { key: 'Escape' },
   ]) {
     assert.equal(
       dispatchStudioShortcut(
         { ...blockedEvt, preventDefault: () => {} },
-        { state, actions: focusActions, activeElement: floatingBtnFocus }
+        {
+          state: { ...state, activeTool: 'rectangle' },
+          actions: {
+            ...focusActions,
+            handleSelectParent: () => focusCalls.push('escape_parent'),
+          },
+          activeElement: floatingBtnFocus,
+        }
       ),
       null
     );

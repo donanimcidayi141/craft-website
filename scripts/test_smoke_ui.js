@@ -612,12 +612,45 @@ async function main() {
     );
     console.log('  ✓ Odak yüzen CSS penceresi içindeyken Delete/Backspace/Oklar/Ctrl+D/Ctrl+X tuvale gitmedi, V/R araç tuşları çalıştı');
 
-    await cdp.evaluate(`document.querySelector('button[title="Yüzen CSS & Nitelik Penceresi"]')?.click()`);
+    // 4c-(b): Odak yüzen CSS penceresi içindeyken ve aktif araç 'rectangle' (R) + seçim aktifken Escape'e basıldığında
+    // YALNIZCA yüzen pencere kapanmalı; useShortcuts Escape dalı (aracı select yapma veya seçimi kaldırma) ÇALIŞMAMALI
+    await sendSingleKey(cdp, 'r', 'KeyR', 82, { blurFirst: false });
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="rectangle"][aria-pressed="true"]'))`),
+      'Yüzen CSS Escape testi öncesi R aracına geçilemedi.'
+    );
+    const stillFocusedInsideInspector = await cdp.evaluate(`
+      (() => {
+        const inspector = document.querySelector('[data-floating-css-inspector="true"]');
+        return Boolean(inspector && inspector.contains(document.activeElement));
+      })()
+    `);
+    assert.ok(stillFocusedInsideInspector, 'Escape testi öncesi odak yüzen CSS penceresi içinde değil.');
+
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27, { blurFirst: false });
     assert.ok(
       await waitFor(cdp, `!document.querySelector('[data-floating-css-inspector="true"]')`),
-      'Yüzen CSS & Nitelik Penceresi kapatılamadı.'
+      'Odak yüzen CSS penceresi içindeyken Escape pencereyi kapatmadı!'
     );
-    console.log('  ✓ Yüzen CSS & Nitelik penceresi açılıp kapatıldı (pencere açıkken tuval kısayolları çalışıyor, seçim kalkınca pencere kaybolmuyor)');
+    const afterInspectorEscState = await cdp.evaluate(`
+      (() => ({
+        isRectangleToolStillActive: Boolean(document.querySelector('button[data-tool-id="rectangle"][aria-pressed="true"]')),
+        hasSelection: document.body.innerText.includes('seçili'),
+      }))()
+    `);
+    assert.deepEqual(
+      afterInspectorEscState,
+      { isRectangleToolStillActive: true, hasSelection: true },
+      `Yüzen CSS penceresinde Escape pencereyi kapatırken aynı anda tuval aracını veya seçimi de değiştirdi: ${JSON.stringify(afterInspectorEscState)}`
+    );
+
+    // Pencere kapandıktan sonra tuvalde Escape tekrar aracı 'select'e döndürmeli
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]'))`),
+      'Yüzen CSS penceresi kapandıktan sonraki Escape aktif aracı select yapmadı.'
+    );
+    console.log('  ✓ Yüzen CSS & Nitelik penceresi açılıp kapatıldı (pencere açıkken tuval kısayolları çalışıyor, seçim kalkınca pencere kaybolmuyor, pencerede Escape yalnızca pencereyi kapatıyor)');
 
     // 5. Sol ray araçları ve Izgara/Cetvel açma-kapama
     await cdp.evaluate(`

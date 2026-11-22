@@ -186,8 +186,8 @@ export default function AttributesCssInspectorModal({
     };
   }, []);
 
-  // Esc closes palette ONLY when focus/target is inside the floating palette (unless a child search input consumed Esc).
-  // When focus is on the canvas, Esc passes through to useShortcuts so tool reset / parent selection works normally.
+  // Esc closes palette ONLY when focus/target is inside the floating palette (unless the CSS catalog search input has a non-empty query to clear first).
+  // Stops propagation in capture phase so useShortcuts Escape (tool reset / parent selection) never fires simultaneously.
   useEffect(() => {
     if (!isOpen) return undefined;
     const onEsc = (e) => {
@@ -198,7 +198,7 @@ export default function AttributesCssInspectorModal({
         root && ((activeEl && root.contains(activeEl)) || (e.target && root.contains(e.target)))
       );
       if (!isFocusInsidePalette) return;
-      if (activeEl && activeEl === e.target && activeEl.tagName === 'INPUT' && activeEl.value) {
+      if (activeEl && activeEl.dataset?.cssCatalogSearch === 'true' && activeEl.value) {
         return;
       }
       e.preventDefault();
@@ -293,6 +293,14 @@ export default function AttributesCssInspectorModal({
         ref={paletteRef}
         data-floating-css-inspector="true"
         tabIndex={-1}
+        onMouseDownCapture={(e) => {
+          const root = paletteRef.current;
+          if (!root) return;
+          const focusable = e.target?.closest?.('button, input, textarea, select, [tabindex]');
+          if (!focusable || focusable === root) {
+            root.focus();
+          }
+        }}
         style={{
           left: floatingRect.x,
           top: floatingRect.y,
@@ -557,6 +565,7 @@ export default function AttributesCssInspectorModal({
                     <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                     <input
                       type="text"
+                      data-css-catalog-search="true"
                       value={cssSearch}
                       onChange={(e) => setCssSearch(e.target.value)}
                       onKeyDown={(e) => {
@@ -585,6 +594,7 @@ export default function AttributesCssInspectorModal({
                         } else if (e.key === 'Escape') {
                           if (cssSearch) {
                             e.preventDefault();
+                            e.stopPropagation();
                             setCssSearch('');
                           }
                         }
