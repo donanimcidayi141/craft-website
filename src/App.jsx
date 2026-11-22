@@ -72,22 +72,13 @@ import {
 } from './utils/projectStorage';
 import AttributesCssInspectorModal from './components/AttributesCssInspectorModal';
 import FunctionEditorModal from './components/FunctionEditorModal';
-import StudioRightDock, { DEFAULT_RIGHT_DOCK_WIDTH } from './components/StudioRightDock';
+import StudioRightDock from './components/StudioRightDock';
 import ProtoApp from './proto/ProtoApp';
 import { buildTabState } from './utils/projectAssemblyUtils';
 import { useSelection } from './hooks/useSelection';
+import { useWorkspaceLayout } from './hooks/useWorkspaceLayout';
 
 function CraftStudioApp() {
-  const [showWelcomeScreen, setShowWelcomeScreen] = useState(true);
-  const [showTutorial, setShowTutorial] = useState(false);
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [showAddTagModal, setShowAddTagModal] = useState(false);
-  const [showAttributesInspectorModal, setShowAttributesInspectorModal] = useState(false);
-
-  // External Project Import Report State
-  const [importReportData, setImportReportData] = useState(null);
-  const [showImportReportModal, setShowImportReportModal] = useState(false);
-
   // Document Tabs state (each tab carries shared AST + per-viewport canvas geometry)
   const [tabs, setTabs] = useState(() => [
     buildTabState('tab-1', 'Anasayfa.craft', DEFAULT_UNIVERSAL_PROJECT),
@@ -115,31 +106,52 @@ function CraftStudioApp() {
     createdAt: null,
   });
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const {
+    effectiveActivePanels,
+    showWelcomeScreen,
+    setShowWelcomeScreen,
+    leftSidebarTab,
+    setLeftSidebarTab,
+    rightDockOpen,
+    setRightDockOpen,
+    rightPropertiesTab,
+    setRightPropertiesTab,
+    rightDockWidth,
+    setRightDockWidth,
+    aiDockMinimized,
+    setAiDockMinimized,
+    aiFocusSignal,
+    setAiFocusSignal,
+    showTutorial,
+    setShowTutorial,
+    showExportModal,
+    setShowExportModal,
+    showAddTagModal,
+    setShowAddTagModal,
+    showAttributesInspectorModal,
+    setShowAttributesInspectorModal,
+    showImportReportModal,
+    setShowImportReportModal,
+    importReportData,
+    setImportReportData,
+    functionEditorState,
+    setFunctionEditorState,
+    handleOpenFunctionEditor,
+    previewToast,
+    showToastMessage,
+    handleSelectRightDockTarget,
+    handleDockFloatingInspector,
+    togglePanel,
+    reset: resetWorkspaceLayout,
+  } = useWorkspaceLayout({ hasUnsavedChanges, projectName: projectMeta.name });
+
   const [projectFunctions, setProjectFunctions] = useState([]);
   const [pageLinks, setPageLinks] = useState([]);
-  const [functionEditorState, setFunctionEditorState] = useState({
-    isOpen: false,
-    fnObj: null,
-    bindTargetElementId: null,
-  });
   const [previewRuntimeOverrides, setPreviewRuntimeOverrides] = useState({});
-  const [previewToast, setPreviewToast] = useState(null);
-  const previewToastTimerRef = useRef(null);
   const projectFileInputRef = useRef(null);
   const projectFolderInputRef = useRef(null);
   const [recentProjects, setRecentProjects] = useState(() => loadRecentProjects());
   const [autosaveDraft, setAutosaveDraft] = useState(() => loadAutosaveDraft());
-
-  const showToastMessage = useCallback((message, variant = 'info') => {
-    if (!message) return;
-    setPreviewToast({ message: String(message), variant });
-    if (previewToastTimerRef.current) {
-      clearTimeout(previewToastTimerRef.current);
-    }
-    previewToastTimerRef.current = setTimeout(() => {
-      setPreviewToast(null);
-    }, 3500);
-  }, []);
 
   // Per-tab History for Undo / Redo (snapshots preserve elements + per-viewport canvas sizes)
   const [historyByTab, setHistoryByTab] = useState(() => ({
@@ -177,17 +189,7 @@ function CraftStudioApp() {
   const [panOffset, setPanOffset] = useState({ x: 24, y: 48 });
   const [fitVersion, setFitVersion] = useState(0);
 
-  // Unified Left Studio Sidebar tab: 'layers' | 'elements' | 'templates' | 'code' | 'ai' | null
-  const [leftSidebarTab, setLeftSidebarTab] = useState(null);
-
-  // Unified Right Dock state (Adobe resizable inspector palette + vertical rail)
-  const [rightDockOpen, setRightDockOpen] = useState(true);
-  const [rightPropertiesTab, setRightPropertiesTab] = useState('layout'); // 'style' | 'layout' | 'props' | 'css' | 'code'
-  const [rightDockWidth, setRightDockWidth] = useState(DEFAULT_RIGHT_DOCK_WIDTH);
-
-  // Bottom-Center Floating AI Chat Dock state
-  const [aiDockMinimized, setAiDockMinimized] = useState(false);
-  const [aiFocusSignal, setAiFocusSignal] = useState(0);
+  // Bottom-Center Floating AI Highlight & Welcome Prompt State
   const [aiHighlightedIds, setAiHighlightedIds] = useState([]);
   const aiHighlightTimerRef = useRef(null);
   const [pendingWelcomeAiPrompt, setPendingWelcomeAiPrompt] = useState(null);
@@ -515,24 +517,7 @@ function CraftStudioApp() {
     setSelectedIds(restoredIds);
   };
 
-  // ⚡ Project Function Editor & Preview Interactive Runtime Handlers
-  const handleOpenFunctionEditor = (fnObj = null, bindTargetElementId = null) => {
-    const draftFn = fnObj || {
-      id: `fn-${Date.now()}`,
-      _isNew: true,
-      name: 'hesapla',
-      params: '',
-      editorMode: 'formula',
-      formulaSteps: [],
-      code: '',
-    };
-    setFunctionEditorState({
-      isOpen: true,
-      fnObj: draftFn,
-      bindTargetElementId,
-    });
-  };
-
+  // ⚡ Project Function CRUD & Preview Interactive Runtime Handlers
   const handleSaveProjectFunction = (savedFn) => {
     const { _isNew, ...cleanFn } = savedFn;
     setProjectFunctions((prev) => {
@@ -1004,51 +989,6 @@ function CraftStudioApp() {
     fitCanvasToViewport();
   }, [fitCanvasToViewport]);
 
-  const handleSelectRightDockTarget = (_moduleName, subTab = null) => {
-    if (!rightDockOpen) {
-      if (subTab) setRightPropertiesTab(subTab);
-      setRightDockOpen(true);
-      return;
-    }
-    if (subTab && rightPropertiesTab !== subTab) {
-      setRightPropertiesTab(subTab);
-      return;
-    }
-    setRightDockOpen(false);
-  };
-
-  const handleDockFloatingInspector = (targetTab = 'css') => {
-    setShowAttributesInspectorModal(false);
-    setRightPropertiesTab(targetTab || 'css');
-    setRightDockOpen(true);
-  };
-
-  const togglePanel = (panelName) => {
-    if (panelName === 'layers') {
-      setLeftSidebarTab(prev => (prev === 'layers' ? null : 'layers'));
-      return;
-    }
-    if (panelName === 'assets') {
-      setLeftSidebarTab(prev => (prev === 'templates' ? null : 'templates'));
-      return;
-    }
-    if (panelName === 'attributesAndCss') {
-      setShowAttributesInspectorModal(prev => !prev);
-      return;
-    }
-    if (panelName === 'properties') {
-      handleSelectRightDockTarget('properties');
-      return;
-    }
-    if (panelName === 'aiAgent') {
-      setAiDockMinimized((prev) => {
-        const nextMinimized = !prev;
-        if (!nextMinimized) setAiFocusSignal((s) => s + 1);
-        return nextMinimized;
-      });
-    }
-  };
-
   const triggerAiHighlight = useCallback((ids = []) => {
     if (aiHighlightTimerRef.current) clearTimeout(aiHighlightTimerRef.current);
     const valid = (Array.isArray(ids) ? ids : []).filter(Boolean);
@@ -1324,7 +1264,7 @@ function CraftStudioApp() {
     resetSelection();
     setPreviewMode(false);
     setPreviewRuntimeOverrides({});
-    setShowWelcomeScreen(false);
+    resetWorkspaceLayout({ showWelcomeScreen: false });
     setFitVersion((v) => v + 1);
 
     if (!extraMeta.skipRecentUpdate) {
@@ -1335,7 +1275,7 @@ function CraftStudioApp() {
       });
       setRecentProjects(updatedRecent);
     }
-  }, [resetSelection]);
+  }, [resetSelection, resetWorkspaceLayout]);
 
   // Debounced autosave draft in localStorage whenever user edits an open project
   useEffect(() => {
@@ -1357,30 +1297,6 @@ function CraftStudioApp() {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [showWelcomeScreen, hasUnsavedChanges, flushAutosaveDraft]);
-
-  // Reflect project name & dirty dot (`●`) in browser / Electron window title
-  useEffect(() => {
-    if (showWelcomeScreen) {
-      document.title = 'CraftStudio - Web Tasarımcı & React Oluşturucu';
-      return;
-    }
-    if (typeof window !== 'undefined' && window.location.hash && window.location.hash !== '#/editor') {
-      window.location.hash = '#/editor';
-    }
-    const prefix = hasUnsavedChanges ? '● ' : '';
-    document.title = `${prefix}${projectMeta.name || 'CraftStudio Projesi'} — CraftStudio`;
-  }, [showWelcomeScreen, hasUnsavedChanges, projectMeta.name]);
-
-  useEffect(() => {
-    const handleAppHashChange = () => {
-      const h = String(window.location.hash || '').toLowerCase();
-      if (h === '#/ice-aktar' || h === '#ice-aktar' || h === '#/projeler' || h === '#projeler' || h === '#/sablonlar' || h === '#sablonlar' || h === '#/') {
-        setShowWelcomeScreen(true);
-      }
-    };
-    window.addEventListener('hashchange', handleAppHashChange);
-    return () => window.removeEventListener('hashchange', handleAppHashChange);
-  }, []);
 
   // Welcome Screen & New Project actions
   const handleStartNewProject = (type) => {
@@ -1443,7 +1359,7 @@ function CraftStudioApp() {
       setViewportMode('mobile');
       setProjectMeta({ id: newProjId, name: 'Mobil Tasarım Projesi', filePath: null, createdAt: new Date().toISOString() });
     }
-    setShowWelcomeScreen(false);
+    resetWorkspaceLayout({ showWelcomeScreen: false });
     setFitVersion((v) => v + 1);
   };
 
@@ -1601,18 +1517,20 @@ function CraftStudioApp() {
       filePath: null,
       createdAt: new Date().toISOString(),
     });
-    setShowWelcomeScreen(false);
+    const cleanPrompt = String(aiPrompt || '').trim();
+    resetWorkspaceLayout({
+      showWelcomeScreen: false,
+      leftTab: cleanPrompt ? 'ai' : null,
+      aiMinimized: false,
+    });
     setFitVersion((v) => v + 1);
 
-    const cleanPrompt = String(aiPrompt || '').trim();
     if (cleanPrompt) {
-      setAiDockMinimized(false);
-      setLeftSidebarTab('ai');
       setPendingWelcomeAiPrompt(cleanPrompt);
     } else if (assembledElements.length > 0) {
       showToastMessage(`✓ ${assembledElements.length} modüler katman tuvale yerleştirildi`, 'success');
     }
-  }, [setTabHistory, showToastMessage, resetSelection]);
+  }, [setTabHistory, showToastMessage, resetSelection, resetWorkspaceLayout]);
 
   // Karşılama ekranındaki Gemini komut kutusundan boş tuval + ilk AI isteğini başlatır
   const handleStartAiPromptFromWelcome = (promptText, options = null) => {
@@ -2241,14 +2159,6 @@ function CraftStudioApp() {
       handleSwitchViewport(viewportMode);
     }
   }, [activeTabId, viewportMode, activeTab.initializedViewports, handleSwitchViewport]);
-
-  const effectiveActivePanels = {
-    properties: rightDockOpen,
-    aiAgent: !aiDockMinimized,
-    layers: leftSidebarTab === 'layers',
-    assets: leftSidebarTab === 'templates' || leftSidebarTab === 'elements',
-    attributesAndCss: showAttributesInspectorModal,
-  };
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#111113] text-zinc-200 select-none overflow-hidden font-sans relative">
