@@ -3489,6 +3489,60 @@ test('leftDrawer.width state and computeLeftOccupiedWidth pass exact pixel width
   assert.equal(state.layoutsByMode.design.leftDrawer.width, 328);
 });
 
+test('useShortcuts keeps canvas shortcuts and Escape active when floating CSS inspector (showAttributesInspectorModal) is open', () => {
+  const sampleTree = [{ id: 'el-1', type: 'rectangle', x: 100, y: 200, width: 120, height: 80 }];
+  const calls = [];
+  const state = {
+    activeMode: 'design',
+    showWelcomeScreen: false,
+    previewMode: false,
+    activeTool: 'select',
+    selectedIds: ['el-1'],
+    elements: sampleTree,
+    rawElements: sampleTree,
+    viewportMode: 'desktop',
+    showExportModal: false,
+    showTutorial: false,
+    showAddTagModal: false,
+    showImportReportModal: false,
+    showAttributesInspectorModal: true, // Floating CSS window is OPEN
+    functionEditorState: { isOpen: false },
+  };
+  const actions = {
+    setActiveTool: (t) => calls.push(['setActiveTool', t]),
+    handleDeleteSelected: () => calls.push(['handleDeleteSelected']),
+    handleUndo: () => calls.push(['handleUndo']),
+    handleSelectParent: () => calls.push(['handleSelectParent']),
+  };
+
+  assert.equal(
+    dispatchStudioShortcut({ key: 'r', preventDefault: () => {} }, { state, actions, activeElement: null }),
+    'tool:rectangle'
+  );
+  assert.equal(
+    dispatchStudioShortcut({ key: 'Delete', preventDefault: () => {} }, { state, actions, activeElement: null }),
+    'delete'
+  );
+  assert.equal(
+    dispatchStudioShortcut({ key: 'z', ctrlKey: true, preventDefault: () => {} }, { state, actions, activeElement: null }),
+    'undo'
+  );
+  assert.equal(
+    dispatchStudioShortcut({ key: 'Escape', preventDefault: () => {} }, { state, actions, activeElement: null }),
+    'escape_parent'
+  );
+  assert.equal(calls.length, 4);
+
+  // When an input inside the floating CSS window is focused, global canvas shortcuts remain safely blocked
+  assert.equal(
+    dispatchStudioShortcut(
+      { key: 'r', preventDefault: () => {} },
+      { state, actions, activeElement: { tagName: 'INPUT', isContentEditable: false } }
+    ),
+    null
+  );
+});
+
 // -----------------------------------------------------------------------------
 // SUMMARY
 // -----------------------------------------------------------------------------

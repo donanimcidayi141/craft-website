@@ -73,12 +73,13 @@ export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}
     setShowRulers,
   } = actions;
 
+  // Note: showAttributesInspectorModal is a non-blocking floating palette, NOT a modal dialog.
+  // Keeping it out of isAnyModalOpen allows canvas shortcuts (V/R/Delete/Ctrl+Z/Escape) to keep working while the floating inspector is open.
   const isAnyModalOpen = Boolean(
     showExportModal ||
     showTutorial ||
     showAddTagModal ||
     showImportReportModal ||
-    showAttributesInspectorModal ||
     functionEditorState?.isOpen
   );
   const isCtrl = Boolean(e.ctrlKey || e.metaKey);
@@ -144,14 +145,7 @@ export function dispatchStudioShortcut(e, { activeMode: topLevelMode, state = {}
 
   // Universal: Escape -> Close previewMode, reset activeTool to 'select', or (in design mode) step out to parent
   if (e.key === 'Escape') {
-    if (
-      showExportModal ||
-      showTutorial ||
-      showAddTagModal ||
-      showImportReportModal ||
-      showAttributesInspectorModal ||
-      functionEditorState?.isOpen
-    ) {
+    if (isAnyModalOpen) {
       return null;
     }
     if (previewMode) {

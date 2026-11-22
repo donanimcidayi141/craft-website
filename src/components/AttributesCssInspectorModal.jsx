@@ -50,6 +50,7 @@ export default function AttributesCssInspectorModal({
   const [lastAddedCssKey, setLastAddedCssKey] = useState(null);
   const cssValueRefs = useRef({});
   const cssCatalogItemRefs = useRef([]);
+  const paletteRef = useRef(null);
 
   // Floating window geometry (Adobe-like movable & resizable palette)
   const [floatingRect, setFloatingRect] = useState(() => {
@@ -185,24 +186,35 @@ export default function AttributesCssInspectorModal({
     };
   }, []);
 
-  // Esc closes palette unless a child input consumed Esc to clear its search query
+  // Esc closes palette ONLY when focus/target is inside the floating palette (unless a child search input consumed Esc).
+  // When focus is on the canvas, Esc passes through to useShortcuts so tool reset / parent selection works normally.
   useEffect(() => {
     if (!isOpen) return undefined;
     const onEsc = (e) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const root = paletteRef.current;
+      const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+      const isFocusInsidePalette = Boolean(
+        root && ((activeEl && root.contains(activeEl)) || (e.target && root.contains(e.target)))
+      );
+      if (!isFocusInsidePalette) return;
+      if (activeEl && activeEl === e.target && activeEl.tagName === 'INPUT' && activeEl.value) {
+        return;
       }
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation?.();
+      onClose();
     };
-    window.addEventListener('keydown', onEsc);
-    return () => window.removeEventListener('keydown', onEsc);
+    window.addEventListener('keydown', onEsc, true);
+    return () => window.removeEventListener('keydown', onEsc, true);
   }, [isOpen, onClose]);
 
-  if (!isOpen || !element) return null;
+  if (!isOpen) return null;
 
-  const cleanTag = (element.type || 'div').toLowerCase();
-  const validCommonAttrs = getValidAttributesForTag(cleanTag);
+  const hasElement = Boolean(element);
+  const cleanTag = (element?.type || 'div').toLowerCase();
+  const validCommonAttrs = hasElement ? getValidAttributesForTag(cleanTag) : [];
 
   // Handle Style Updates
   const handleUpdateStyle = (property, value, commit = false) => {
@@ -278,13 +290,16 @@ export default function AttributesCssInspectorModal({
   return (
     <div className="fixed inset-0 z-50 pointer-events-none select-none">
       <div
+        ref={paletteRef}
+        data-floating-css-inspector="true"
+        tabIndex={-1}
         style={{
           left: floatingRect.x,
           top: floatingRect.y,
           width: floatingRect.width,
           height: floatingRect.height,
         }}
-        className="fixed pointer-events-auto bg-[#18181b] border border-[#2c2c34] rounded-md shadow-2xl flex flex-col overflow-hidden text-zinc-200 font-sans"
+        className="fixed pointer-events-auto bg-[#18181b] border border-[#2c2c34] rounded-md shadow-2xl flex flex-col overflow-hidden text-zinc-200 font-sans focus:outline-none"
       >
         {/* 1. ADOBE FLOATING PALETTE TITLEBAR (Draggable) */}
         <div
@@ -308,12 +323,20 @@ export default function AttributesCssInspectorModal({
                 <h3 className="text-xs font-semibold text-zinc-100 tracking-wide">
                   CSS &amp; Nitelik Penceresi
                 </h3>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#101013] text-[#7dd3fc] border border-[#27272d] font-semibold">
-                  &lt;{cleanTag}&gt;
-                </span>
-                <span className="text-[11px] text-zinc-400 font-medium truncate">
-                  {element.name || element.id}
-                </span>
+                {hasElement ? (
+                  <>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#101013] text-[#7dd3fc] border border-[#27272d] font-semibold">
+                      &lt;{cleanTag}&gt;
+                    </span>
+                    <span className="text-[11px] text-zinc-400 font-medium truncate">
+                      {element.name || element.id}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#101013] text-zinc-400 border border-[#27272d]">
+                    Öğe seçilmedi
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -388,6 +411,21 @@ export default function AttributesCssInspectorModal({
 
         {/* 3. TAB CONTENT */}
         <div className="flex-1 overflow-hidden p-4">
+          {!hasElement ? (
+            <div
+              data-floating-inspector-empty="true"
+              className="h-full flex flex-col items-center justify-center text-center p-6 bg-[#121215] border border-[#27272d] rounded"
+            >
+              <Sliders size={26} className="text-zinc-500 mb-2.5 opacity-60" />
+              <p className="text-xs font-semibold text-zinc-200 mb-1">
+                Henüz bir bileşen seçilmedi
+              </p>
+              <p className="text-[11px] text-zinc-400 max-w-md leading-relaxed">
+                CSS kurallarını ve HTML özniteliklerini incelemek veya düzenlemek için tuvalden bir öğe seçin. Pencere siz çalışırken açık kalmaya devam eder.
+              </p>
+            </div>
+          ) : (
+            <>
 
           {/* TAB 1: CSS RULES & PROPERTIES */}
           {activeTab === 'css' && (
@@ -798,15 +836,23 @@ export default function AttributesCssInspectorModal({
               />
             </div>
           )}
+            </>
+          )}
 
         </div>
 
         {/* 4. FOOTER STATUS BAR & RESIZE HANDLE */}
         <div className="relative px-4 py-2 bg-[#18181b] border-t border-[#27272d] flex items-center justify-between text-[11px] text-zinc-400 shrink-0 pr-8">
           <div className="flex items-center gap-3 min-w-0">
-            <span className="truncate">Seçili: <strong className="text-zinc-100 font-mono">&lt;{cleanTag}&gt;#{currentAttrs.id || element.id}</strong></span>
-            <span>•</span>
-            <span className="shrink-0 tabular-nums">W: <strong className="text-zinc-100">{element.width}px</strong> × H: <strong className="text-zinc-100">{element.height}px</strong></span>
+            {hasElement ? (
+              <>
+                <span className="truncate">Seçili: <strong className="text-zinc-100 font-mono">&lt;{cleanTag}&gt;#{currentAttrs.id || element.id}</strong></span>
+                <span>•</span>
+                <span className="shrink-0 tabular-nums">W: <strong className="text-zinc-100">{element.width}px</strong> × H: <strong className="text-zinc-100">{element.height}px</strong></span>
+              </>
+            ) : (
+              <span className="truncate text-zinc-500">Seçili öğe yok — tuvalden bir bileşene tıklayın</span>
+            )}
           </div>
           <button
             type="button"

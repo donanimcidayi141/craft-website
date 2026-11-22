@@ -504,15 +504,55 @@ async function main() {
 
     await cdp.evaluate(`document.querySelector('button[title="Yüzen CSS & Nitelik Penceresi"]')?.click()`);
     assert.ok(
-      await waitFor(cdp, `document.body.innerText.includes('CSS & Nitelik Penceresi')`),
+      await waitFor(cdp, `Boolean(document.querySelector('[data-floating-css-inspector="true"]')) && document.body.innerText.includes('CSS & Nitelik Penceresi')`),
       'Yüzen CSS & Nitelik Penceresi açılamadı.'
     );
+
+    // 4b. Yüzen CSS penceresi açıkken tuval kısayolları (R, V, Escape ile seçim kaldırma) çalışmalı ve seçim kalkınca pencere kaybolmamalı
+    await sendSingleKey(cdp, 'r', 'KeyR', 82);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `Boolean(document.querySelector('button[data-tool-id="rectangle"][aria-pressed="true"]')) && Boolean(document.querySelector('[data-floating-css-inspector="true"]'))`
+      ),
+      'Yüzen CSS penceresi açıkken R tuval kısayolu çalışmadı veya pencere kapandı!'
+    );
+    await sendSingleKey(cdp, 'v', 'KeyV', 86);
+    assert.ok(
+      await waitFor(cdp, `Boolean(document.querySelector('button[data-tool-id="select"][aria-pressed="true"]'))`),
+      'Yüzen CSS penceresi açıkken V tuval kısayolu çalışmadı!'
+    );
+
+    // Tuvalde seçimi kaldır -> Yüzen CSS penceresi kaybolmamalı, boş durum mesajı ([data-floating-inspector-empty="true"]) göstermeli
+    await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    await new Promise((r) => setTimeout(r, 80));
+    if (await cdp.evaluate(`document.body.innerText.includes('seçili')`)) {
+      await sendSingleKey(cdp, 'Escape', 'Escape', 27);
+    }
+    assert.ok(
+      await waitFor(
+        cdp,
+        `!document.body.innerText.includes('seçili') && Boolean(document.querySelector('[data-floating-css-inspector="true"]')) && Boolean(document.querySelector('[data-floating-inspector-empty="true"]'))`
+      ),
+      'Eleman seçimi kalktığında Yüzen CSS & Nitelik Penceresi kayboldu veya boş durum görünümüne geçmedi!'
+    );
+
+    // Yüzen CSS penceresi açıkken Ctrl+A tuval kısayolu ile tekrar seçim yapıldığında pencere içeriği anında güncellenmeli
+    await sendCtrlShortcut(cdp, 'a', 'KeyA', 65);
+    assert.ok(
+      await waitFor(
+        cdp,
+        `document.body.innerText.includes('seçili') && Boolean(document.querySelector('[data-floating-css-inspector="true"]')) && !document.querySelector('[data-floating-inspector-empty="true"]')`
+      ),
+      'Yüzen CSS penceresi açıkken Ctrl+A ile tekrar eleman seçildiğinde pencere içeriği güncellenmedi!'
+    );
+
     await cdp.evaluate(`document.querySelector('button[title="Yüzen CSS & Nitelik Penceresi"]')?.click()`);
     assert.ok(
-      await waitFor(cdp, `!document.body.innerText.includes('CSS & Nitelik Penceresi')`),
+      await waitFor(cdp, `!document.querySelector('[data-floating-css-inspector="true"]')`),
       'Yüzen CSS & Nitelik Penceresi kapatılamadı.'
     );
-    console.log('  ✓ Yüzen CSS & Nitelik penceresi açılıp kapatıldı');
+    console.log('  ✓ Yüzen CSS & Nitelik penceresi açılıp kapatıldı (pencere açıkken tuval kısayolları çalışıyor, seçim kalkınca pencere kaybolmuyor)');
 
     // 5. Sol ray araçları ve Izgara/Cetvel açma-kapama
     await cdp.evaluate(`
