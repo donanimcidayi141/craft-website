@@ -53,6 +53,11 @@ import {
   clampCanvasZoom,
 } from './utils/canvasInputUtils';
 import {
+  extractPortableElementStyle,
+  mergePortableStyleOntoNode,
+  computeElementZOrderUpdate,
+} from './utils/canvasToolsUtils';
+import {
   buildSerializableProjectSchema,
   parseAndMigrateLoadedProject,
   detectInitializedViewports,
@@ -198,7 +203,7 @@ function CraftStudioApp() {
   const [fitVersion, setFitVersion] = useState(0);
 
   // Unified Left Studio Sidebar tab: 'layers' | 'elements' | 'templates' | 'code' | 'ai' | null
-  const [leftSidebarTab, setLeftSidebarTab] = useState('layers');
+  const [leftSidebarTab, setLeftSidebarTab] = useState(null);
 
   // Unified Right Dock state (Adobe resizable inspector palette + vertical rail)
   const [rightDockOpen, setRightDockOpen] = useState(true);
@@ -212,8 +217,11 @@ function CraftStudioApp() {
   const aiHighlightTimerRef = useRef(null);
   const [pendingWelcomeAiPrompt, setPendingWelcomeAiPrompt] = useState(null);
 
-  // Preview Mode
+  // Preview Mode & Canvas Helpers
   const [previewMode, setPreviewMode] = useState(false);
+  const [showLayoutGrid, setShowLayoutGrid] = useState(false);
+  const [showRulers, setShowRulers] = useState(false);
+  const [copiedElementStyle, setCopiedElementStyle] = useState(null);
 
   // Clipboard state for Ctrl+C, Ctrl+X, Ctrl+V
   const [clipboard, setClipboard] = useState(null);
@@ -804,7 +812,7 @@ function CraftStudioApp() {
     const canvasW = Number(overrideWidth) || Number(canvasSettings?.width) || 1280;
     const canvasH = Number(canvasSettings?.height) || 1350;
     const wrapperEl = typeof document !== 'undefined' ? document.getElementById('canvas-wrapper') : null;
-    const estLeftW = previewMode ? 0 : (leftSidebarTab ? (leftSidebarTab === 'ai' ? 340 : 292) : 44);
+    const estLeftW = previewMode ? 0 : (leftSidebarTab ? (leftSidebarTab === 'ai' ? 340 : 292) : 52);
     const estRightW = previewMode ? 0 : (rightDockOpen ? rightDockWidth + 40 : 40);
     const availW = wrapperEl?.clientWidth || Math.max(360, (typeof window !== 'undefined' ? window.innerWidth : 1440) - estLeftW - estRightW);
     const availH = wrapperEl?.clientHeight || Math.max(420, (typeof window !== 'undefined' ? window.innerHeight : 920) - 76);
@@ -910,22 +918,26 @@ function CraftStudioApp() {
     updateElementsWithHistory(synced);
   };
 
-  // Add Element at specific location or default center
+  // Add Element at specific location (optionally nested inside parentId)
   const handleAddElementAt = (elementData) => {
+    const { parentId = null, keepActiveTool = false, ...rest } = elementData || {};
     const rawNewElement = computeBaseFromViewportElement(
       {
         id: `elem-${Date.now()}`,
         positionMode: 'normal',
         zIndex: 1,
         children: [],
-        ...elementData,
+        ...rest,
+        parentId: parentId || null,
       },
       viewportMode
     );
-    const newElements = [...rawElements, rawNewElement];
+    const newElements = insertNodeIntoTree(rawElements, parentId || null, rawNewElement);
     updateElementsWithHistory(newElements);
     setSelectedIds([rawNewElement.id]);
-    setActiveTool('select');
+    if (!keepActiveTool) {
+      setActiveTool('select');
+    }
   };
 
   // Quick tool addition from Left Toolbar - direct add if tag specified, else prompt modal
@@ -938,12 +950,51 @@ function CraftStudioApp() {
   };
 
   const handleSelectNewTag = (tag) => {
-    const isFullWidth = ['nav', 'header', 'footer', 'section'].includes(tag);
     const canvasW = canvasSettings?.width || 1280;
+    const defaultY = Math.max(0, Math.round(-panOffset.y / zoom) + 150);
+
+    if (tag === 'checkbox') {
+      const cbEl = createTagElement('input', {
+        name: 'Onay Kutusu',
+        x: 240,
+        y: defaultY,
+        width: 24,
+        height: 24,
+        borderRadius: 6,
+        attrs: { type: 'checkbox', checked: true },
+        style: { accentColor: primaryColor || '#d4af37', backgroundColor: '#ffffff', padding: '0' },
+      });
+      handleAddElementAt(cbEl);
+      setShowAddTagModal(false);
+      return;
+    }
+
+    if (tag === 'frame') {
+      const frameEl = createTagElement('div', {
+        name: 'Çerçeve',
+        x: 180,
+        y: defaultY,
+        width: 480,
+        height: 320,
+        fillColor: '#ffffff',
+        borderWidth: 1,
+        borderRadius: 14,
+        style: {
+          backgroundColor: '#ffffff',
+          border: '1px solid #e2e8f0',
+          borderRadius: '14px',
+          padding: '20px',
+        },
+      });
+      frameEl.type = 'frame';
+      handleAddElementAt(frameEl);
+      setShowAddTagModal(false);
+      return;
+    }
+
+    const isFullWidth = ['nav', 'header', 'footer', 'section'].includes(tag);
     const posX = isFullWidth ? 0 : 200;
-    const posY = isFullWidth && tag === 'nav' 
-      ? 0 
-      : Math.max(0, Math.round(-panOffset.y / zoom) + 150);
+    const posY = isFullWidth && tag === 'nav' ? 0 : defaultY;
 
     const newEl = createTagElement(tag, {
       x: posX,
@@ -952,7 +1003,7 @@ function CraftStudioApp() {
       positionMode: tag === 'nav' ? 'sticky' : 'normal',
       style: {
         backgroundColor: tag === 'button' ? primaryColor : undefined,
-      }
+      },
     });
     handleAddElementAt(newEl);
     setShowAddTagModal(false);
@@ -1047,6 +1098,73 @@ function CraftStudioApp() {
       updates[id] = { fillColor: 'transparent', borderWidth: 0, shadow: 'none' };
     });
     handleUpdateMultipleElements(updates);
+  };
+
+  // Sibling-aware Z-Order adjustment ('front' | 'forward' | 'backward' | 'back')
+  const handleZOrderSelected = (action, targetIds = selectedIds) => {
+    if (!targetIds || targetIds.length === 0) return;
+    const updates = computeElementZOrderUpdate(elements, targetIds, action);
+    if (Object.keys(updates).length > 0) {
+      handleUpdateMultipleElements(updates);
+    }
+  };
+
+  // Lock / Unlock selected elements
+  const handleToggleLockSelected = (targetIds = selectedIds) => {
+    if (!targetIds || targetIds.length === 0) return;
+    const anyUnlocked = targetIds.some((id) => !findNodeAndParent(elements, id)?.node?.isLocked);
+    const updates = {};
+    targetIds.forEach((id) => {
+      updates[id] = { isLocked: anyUnlocked };
+    });
+    handleUpdateMultipleElements(updates);
+    showToastMessage(anyUnlocked ? 'Öğe kilitlendi' : 'Öğe kilidi açıldı', 'info');
+  };
+
+  // Hide / Show selected elements
+  const handleToggleHideSelected = (targetIds = selectedIds) => {
+    if (!targetIds || targetIds.length === 0) return;
+    const anyVisible = targetIds.some((id) => !findNodeAndParent(elements, id)?.node?.isHidden);
+    const updates = {};
+    targetIds.forEach((id) => {
+      updates[id] = { isHidden: anyVisible };
+    });
+    handleUpdateMultipleElements(updates);
+  };
+
+  // Format Painter: Copy & Paste visual style
+  const handleCopyElementStyle = ({ activateTool = true, sourceId = null } = {}) => {
+    const idToSample = sourceId || selectedIds[0];
+    if (!idToSample) {
+      showToastMessage('Stil kopyalamak için önce bir öğe seç', 'info');
+      return;
+    }
+    const found = findNodeAndParent(elements, idToSample);
+    if (!found?.node) return;
+    const extracted = extractPortableElementStyle(found.node);
+    if (!extracted) return;
+    setCopiedElementStyle(extracted);
+    if (activateTool) {
+      setActiveTool('format_paint');
+      showToastMessage('Biçim kopyalandı — uygulamak için hedef öğeye tıkla', 'success');
+    } else {
+      showToastMessage('Biçim panoya kopyalandı (Ctrl+Shift+V)', 'success');
+    }
+  };
+
+  const handlePasteElementStyle = (targetIds = selectedIds) => {
+    if (!copiedElementStyle || !targetIds || targetIds.length === 0) return;
+    const updates = {};
+    targetIds.forEach((id) => {
+      const found = findNodeAndParent(elements, id);
+      if (found?.node) {
+        updates[id] = mergePortableStyleOntoNode(found.node, copiedElementStyle);
+      }
+    });
+    if (Object.keys(updates).length > 0) {
+      handleUpdateMultipleElements(updates);
+      showToastMessage('Biçim uygulandı', 'success');
+    }
   };
 
   // Undo / Redo
@@ -2149,8 +2267,13 @@ function CraftStudioApp() {
         return;
       }
 
-      // 2. Ctrl+C -> Copy
-      if (isCtrl && e.key.toLowerCase() === 'c') {
+      // 2. Ctrl+Shift+C -> Copy Style, Ctrl+C -> Copy
+      if (isCtrl && e.shiftKey && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        handleCopyElementStyle({ activateTool: false });
+        return;
+      }
+      if (isCtrl && !e.shiftKey && e.key.toLowerCase() === 'c') {
         e.preventDefault();
         handleCopy();
         return;
@@ -2163,10 +2286,29 @@ function CraftStudioApp() {
         return;
       }
 
-      // 4. Ctrl+V -> Paste
-      if (isCtrl && e.key.toLowerCase() === 'v') {
+      // 4. Ctrl+Shift+V -> Paste Style, Ctrl+V -> Paste
+      if (isCtrl && e.shiftKey && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        handlePasteElementStyle();
+        return;
+      }
+      if (isCtrl && !e.shiftKey && e.key.toLowerCase() === 'v') {
         e.preventDefault();
         handlePaste();
+        return;
+      }
+
+      // Ctrl+D -> Duplicate Selected
+      if (isCtrl && !e.shiftKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        handleDuplicateSelected();
+        return;
+      }
+
+      // Ctrl+Shift+L -> Toggle Lock Selected
+      if (isCtrl && e.shiftKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        handleToggleLockSelected();
         return;
       }
 
@@ -2246,6 +2388,8 @@ function CraftStudioApp() {
         }
         if (previewMode) {
           handleTogglePreviewMode(false);
+        } else if (activeTool !== 'select') {
+          setActiveTool('select');
         } else {
           handleSelectParent();
         }
@@ -2261,6 +2405,22 @@ function CraftStudioApp() {
       } else if (isCtrl && e.key === '0') {
         e.preventDefault();
         handleResetZoom();
+      } else if (!e.altKey && (e.key === ']' || e.code === 'BracketRight')) {
+        if (selectedIds.length > 0) {
+          e.preventDefault();
+          handleZOrderSelected(isCtrl ? 'front' : 'forward');
+        }
+      } else if (!e.altKey && (e.key === '[' || e.code === 'BracketLeft')) {
+        if (selectedIds.length > 0) {
+          e.preventDefault();
+          handleZOrderSelected(isCtrl ? 'back' : 'backward');
+        }
+      } else if (!isCtrl && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        setShowLayoutGrid((v) => !v);
+      } else if (!isCtrl && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        setShowRulers((v) => !v);
       } else {
         const nextTool = resolveSingleKeyToolShortcut(e.key, {
           isCtrlOrMeta: isCtrl,
@@ -2276,7 +2436,7 @@ function CraftStudioApp() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    showWelcomeScreen, selectedIds, editingGroupId, historyIndex, history, previewMode,
+    showWelcomeScreen, selectedIds, editingGroupId, historyIndex, history, previewMode, activeTool, copiedElementStyle,
     showExportModal, showTutorial, showAddTagModal, showImportReportModal,
     showAttributesInspectorModal, functionEditorState?.isOpen,
     elements, rawElements, viewportMode, clipboard, updateElementsWithHistory,
@@ -2431,8 +2591,21 @@ function CraftStudioApp() {
                 onRenameElement={handleRenameElement}
                 onReparentElement={handleReparentElement}
                 onDeleteSelected={handleDeleteSelected}
+                onDuplicateSelected={handleDuplicateSelected}
                 onGroupSelected={handleGroupSelected}
                 onUngroupSelected={handleUngroupSelected}
+                onZOrderSelected={handleZOrderSelected}
+                onToggleLockSelected={handleToggleLockSelected}
+                onAlignHorizontalCenter={handleAlignHorizontalCenter}
+                onAlignVerticalCenter={handleAlignVerticalCenter}
+                copiedStyle={copiedElementStyle}
+                onCopyStyle={handleCopyElementStyle}
+                onPasteStyle={() => handlePasteElementStyle()}
+                showLayoutGrid={showLayoutGrid}
+                setShowLayoutGrid={setShowLayoutGrid}
+                showRulers={showRulers}
+                setShowRulers={setShowRulers}
+                onResetZoom={handleResetZoom}
                 activeTool={activeTool}
                 setActiveTool={setActiveTool}
                 primaryColor={primaryColor}
@@ -2465,6 +2638,7 @@ function CraftStudioApp() {
                 onSelectParent={handleSelectParent}
                 onSelectChild={handleSelectChild}
                 activeTool={activeTool}
+                setActiveTool={setActiveTool}
                 zoom={zoom}
                 setZoom={setZoom}
                 panOffset={panOffset}
@@ -2476,6 +2650,7 @@ function CraftStudioApp() {
                 onPreviewExecuteEvent={handlePreviewExecuteEvent}
                 onPreviewInputChange={handlePreviewInputChange}
                 primaryColor={primaryColor}
+                setPrimaryColor={setPrimaryColor}
                 secondaryColor={secondaryColor}
                 onAddElementAt={handleAddElementAt}
                 editingGroupId={editingGroupId}
@@ -2483,6 +2658,28 @@ function CraftStudioApp() {
                 viewportMode={viewportMode}
                 onResetViewportFromDesktop={handleResetViewportFromDesktop}
                 aiHighlightedIds={aiHighlightedIds}
+                showLayoutGrid={showLayoutGrid}
+                setShowLayoutGrid={setShowLayoutGrid}
+                showRulers={showRulers}
+                setShowRulers={setShowRulers}
+                copiedStyle={copiedElementStyle}
+                onCopyStyle={handleCopyElementStyle}
+                onPasteStyle={handlePasteElementStyle}
+                onDuplicateSelected={handleDuplicateSelected}
+                onDeleteSelected={handleDeleteSelected}
+                onCopySelected={handleCopy}
+                onCutSelected={handleCut}
+                onPasteFromClipboard={handlePaste}
+                canPasteClipboard={Boolean(clipboard)}
+                onGroupSelected={handleGroupSelected}
+                onUngroupSelected={handleUngroupSelected}
+                onZOrderSelected={handleZOrderSelected}
+                onToggleLockSelected={handleToggleLockSelected}
+                onToggleHideSelected={handleToggleHideSelected}
+                onAlignHorizontalCenter={handleAlignHorizontalCenter}
+                onAlignVerticalCenter={handleAlignVerticalCenter}
+                onResetZoom={handleResetZoom}
+                onNotify={showToastMessage}
               />
 
               {!previewMode && (

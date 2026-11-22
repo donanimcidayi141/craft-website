@@ -4,7 +4,12 @@ import {
   Type, Image as ImageIcon, RectangleHorizontal, Wand2, Plus,
   ArrowRightLeft, Eye, EyeOff, Lock, Unlock, Trash2, Group,
   ChevronRight, ChevronDown, Search, Sparkles, Copy, Check,
-  ChevronsLeft, Info, Link2, Navigation, LayoutGrid, X
+  ChevronsLeft, Info, Link2, Navigation, LayoutGrid, X, Tag as TagIcon,
+  Heading1, Heading2, Pilcrow, PanelTop, PanelBottom, Ungroup, Boxes, Shapes,
+  Circle, Minus, Frame, Pipette, Paintbrush, TextCursorInput, CheckSquare,
+  ListCollapse, Video, SeparatorHorizontal, Grid3x3, Ruler, Maximize2,
+  SlidersHorizontal, CopyPlus, ArrowUpToLine, ArrowDownToLine,
+  AlignCenterHorizontal, AlignCenterVertical
 } from 'lucide-react';
 import { canHaveChildren, isExplicitContainer } from '../utils/treeUtils.js';
 import { PRESET_ASSETS } from '../constants.js';
@@ -27,6 +32,22 @@ function getLayerNodeIcon(type) {
   return Box;
 }
 
+function RailTip({ label, hint }) {
+  return (
+    <span
+      role="tooltip"
+      className="pointer-events-none absolute left-full top-1/2 ml-2.5 -translate-y-1/2 translate-x-[-4px] whitespace-nowrap rounded-md border border-[#34343e] bg-[#0f0f13] px-2 py-1 text-[11px] font-medium text-zinc-100 opacity-0 shadow-xl transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100 z-[80]"
+    >
+      {label}
+      {hint ? (
+        <kbd className="ml-2 rounded border border-[#3a3a46] bg-[#1c1c23] px-1 py-px font-mono text-[10px] text-[#7dd3fc]">
+          {hint}
+        </kbd>
+      ) : null}
+    </span>
+  );
+}
+
 export default function StudioLeftSidebar({
   activeTab = 'layers', // 'layers' | 'elements' | 'templates' | 'code' | 'ai' | null
   setActiveTab,
@@ -41,8 +62,21 @@ export default function StudioLeftSidebar({
   onRenameElement,
   onReparentElement,
   onDeleteSelected,
+  onDuplicateSelected,
   onGroupSelected,
   onUngroupSelected,
+  onZOrderSelected,
+  onToggleLockSelected,
+  onAlignHorizontalCenter,
+  onAlignVerticalCenter,
+  copiedStyle,
+  onCopyStyle,
+  onPasteStyle,
+  showLayoutGrid,
+  setShowLayoutGrid,
+  showRulers,
+  setShowRulers,
+  onResetZoom,
   // Element / Tool props
   activeTool,
   setActiveTool,
@@ -133,15 +167,82 @@ export default function StudioLeftSidebar({
     return () => document.removeEventListener('mousedown', closeOnOutside);
   }, [showColorModal]);
 
-  // Tools definition
-  const tools = [
-    { id: 'select', name: 'Seçim Aracı (V)', icon: MousePointer, shortcut: 'V' },
-    { id: 'rectangle', name: 'Kutu / Dikdörtgen (R)', icon: Square, shortcut: 'R' },
-    { id: 'text', name: 'Metin Aracı (T)', icon: Type, shortcut: 'T' },
-    { id: 'button', name: 'Buton Aracı (B)', icon: RectangleHorizontal, shortcut: 'B' },
-    { id: 'image', name: 'Görsel Aracı (I)', icon: ImageIcon, shortcut: 'I' },
-    { id: 'hand', name: 'El / Pan (H)', icon: Hand, shortcut: 'H' },
+  // Shape flyout options (single slot with corner flyout arrow: R/O/L/F)
+  const shapeTools = [
+    { id: 'rectangle', name: 'Kutu Çiz', desc: 'Dikdörtgen / Kart', icon: Square, shortcut: 'R' },
+    { id: 'circle', name: 'Daire / Elips', desc: 'Yuvarlak şekil', icon: Circle, shortcut: 'O' },
+    { id: 'line', name: 'Çizgi / Ayırıcı', desc: 'Yatay veya dikey çizgi', icon: Minus, shortcut: 'L' },
+    { id: 'frame', name: 'Çerçeve / Bölüm', desc: 'İçine öğe konabilen kutu', icon: Frame, shortcut: 'F' },
   ];
+  const [lastShapeToolId, setLastShapeToolId] = useState('rectangle');
+  useEffect(() => {
+    if (['rectangle', 'circle', 'line', 'frame'].includes(activeTool)) {
+      setLastShapeToolId(activeTool);
+    }
+  }, [activeTool]);
+  const activeShapeTool = shapeTools.find((s) => s.id === lastShapeToolId) || shapeTools[0];
+  const isShapeToolActive = shapeTools.some((s) => s.id === activeTool);
+
+  const addGroups = [
+    {
+      id: 'structure',
+      name: 'Yapı blokları',
+      icon: Boxes,
+      items: [
+        { tag: 'section', name: 'Bölüm', desc: 'Tam genişlik bölüm', icon: LayoutGrid },
+        { tag: 'frame', name: 'Çerçeve', desc: 'Kart / alan kutusu', icon: Frame },
+        { tag: 'div', name: 'Kapsayıcı', desc: 'Esnek kutu', icon: Square },
+        { tag: 'nav', name: 'Üst menü', desc: 'Navigasyon çubuğu', icon: PanelTop },
+        { tag: 'header', name: 'Başlık alanı', desc: 'Sayfa üstlüğü', icon: Navigation },
+        { tag: 'footer', name: 'Alt bilgi', desc: 'Sayfa altlığı', icon: PanelBottom },
+      ],
+    },
+    {
+      id: 'typography',
+      name: 'Yazı öğeleri',
+      icon: Type,
+      items: [
+        { tag: 'h1', name: 'Büyük başlık', desc: 'H1 · hero başlığı', icon: Heading1 },
+        { tag: 'h2', name: 'Alt başlık', desc: 'H2 · bölüm başlığı', icon: Heading2 },
+        { tag: 'p', name: 'Paragraf', desc: 'Açıklama metni', icon: Pilcrow },
+        { tag: 'a', name: 'Bağlantı', desc: 'Sayfa veya dış link', icon: Link2 },
+        { tag: 'span', name: 'Rozet / etiket', desc: 'Küçük vurgu', icon: TagIcon },
+      ],
+    },
+    {
+      id: 'components',
+      name: 'Form & Medya',
+      icon: Shapes,
+      items: [
+        { tag: 'button', name: 'Buton', desc: 'Eylem düğmesi', icon: RectangleHorizontal },
+        { tag: 'img', name: 'Görsel', desc: 'Resim bloğu', icon: ImageIcon },
+        { tag: 'input', name: 'Girdi Kutusu', desc: 'Tek satır form alanı', icon: TextCursorInput },
+        { tag: 'textarea', name: 'Metin Alanı', desc: 'Çok satırlı form', icon: Pilcrow },
+        { tag: 'select', name: 'Açılır Liste', desc: 'Seçenek menüsü', icon: ListCollapse },
+        { tag: 'checkbox', name: 'Onay Kutusu', desc: 'İşaretleme kutusu', icon: CheckSquare },
+        { tag: 'video', name: 'Video', desc: 'Medya oynatıcı', icon: Video },
+        { tag: 'hr', name: 'Ayırıcı', desc: 'İnce yatay çizgi', icon: SeparatorHorizontal },
+      ],
+    },
+  ];
+  const hasSelection = Array.isArray(selectedIds) && selectedIds.length > 0;
+  const [openAddGroup, setOpenAddGroup] = useState(null);
+  const railRef = useRef(null);
+  useEffect(() => {
+    if (!openAddGroup) return undefined;
+    const onDown = (e) => {
+      if (railRef.current && !railRef.current.contains(e.target)) setOpenAddGroup(null);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpenAddGroup(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [openAddGroup]);
 
   // Quick Semantic Tags
   const SEMANTIC_TAGS = [
@@ -412,150 +513,431 @@ export default function StudioLeftSidebar({
 
   const railTabs = [
     { id: 'layers', title: 'Katmanlar & DOM Ağacı', icon: Layers },
-    { id: 'elements', title: 'Bileşenler & Çizim Araçları', icon: Box },
     { id: 'templates', title: 'Şablonlar & Hazır Bloklar', icon: LayoutTemplate },
-    { id: 'code', title: 'Canlı Kod İnceleyici (JSX & CSS)', icon: Code2 },
+    { id: 'elements', title: 'HTML Etiketleri', icon: TagIcon },
+    { id: 'code', title: 'Canlı Kod (JSX & CSS)', icon: Code2 },
   ];
 
   return (
     <aside className="flex h-full bg-[#18181b] border-r border-[#2c2c32] select-none z-30 relative">
-      {/* 1. PRO VERTICAL TOOL RAIL (44px) */}
-      <div className="w-11 bg-[#141417] border-r border-[#27272d] flex flex-col items-center justify-between py-2 z-10 shrink-0">
-        {/* Top Tabs */}
-        <div className="flex flex-col items-center gap-1 w-full px-1">
-          {railTabs.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(isActive ? null : item.id)}
-                title={item.title}
-                className={`relative w-full h-8 flex items-center justify-center rounded transition-colors border ${
-                  isActive
-                    ? 'bg-[#23232b] text-white border-[#383844]'
-                    : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]'
-                }`}
-              >
-                {isActive && (
-                  <span className="absolute -left-1 top-1.5 bottom-1.5 w-0.5 rounded-r bg-[#0d99ff]" />
-                )}
-                <Icon size={15} strokeWidth={1.75} />
-              </button>
-            );
-          })}
+      {/* 1. STUDIO RAIL: Gezinme, Büyüteç, Şekiller, Stil & Boya, Ekle & Düzenle */}
+      <div ref={railRef} className="w-[52px] bg-gradient-to-b from-[#16161a] to-[#111114] border-r border-[#27272d] flex flex-col items-center py-2 z-20 shrink-0">
+        <div className="w-full px-1.5 flex flex-col items-center gap-2.5 overflow-visible">
+          {/* ÇİZİM & GEZİNME CAPSULE */}
+          <div role="toolbar" aria-label="Çizim ve gezinme araçları" className="w-full flex flex-col items-center gap-0.5 rounded-xl border border-[#2a2a33] bg-[#0f0f13] p-1 shadow-inner">
+            {[
+              { id: 'select', name: 'Seçim', icon: MousePointer, shortcut: 'V' },
+              { id: 'hand', name: 'El / Kaydır', icon: Hand, shortcut: 'H' },
+              { id: 'zoom', name: 'Büyüteç (Yakınlaştır)', icon: Search, shortcut: 'Z' },
+            ].map((t) => {
+              const Icon = t.icon;
+              const isActive = activeTool === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  aria-label={t.name}
+                  aria-pressed={isActive}
+                  data-tool-id={t.id}
+                  onClick={() => {
+                    setActiveTool(t.id);
+                    setOpenAddGroup(null);
+                  }}
+                  className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all duration-150 ${
+                    isActive
+                      ? 'bg-gradient-to-br from-[#0d99ff] to-[#6d5cff] text-white shadow-[0_4px_14px_rgba(13,153,255,0.38)]'
+                      : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+                  }`}
+                >
+                  <Icon size={15} strokeWidth={isActive ? 2.3 : 1.9} />
+                  {openAddGroup !== 'shapes' && <RailTip label={t.name} hint={t.shortcut} />}
+                </button>
+              );
+            })}
 
-          <div className="w-4 h-px bg-[#2c2c32] my-1" />
-          <button
-            type="button"
-            data-left-rail-tab="ai"
-            onClick={() => setActiveTab(activeTab === 'ai' ? null : 'ai')}
-            title="Gemini AI Sohbet & Konuşma Geçmişi"
-            className={`relative w-full h-8 flex items-center justify-center rounded transition-colors border ${
-              activeTab === 'ai'
-                ? 'bg-[#1a222b] border-[#2c435a] text-[#7dd3fc]'
-                : 'text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]'
-            }`}
-          >
-            {activeTab === 'ai' && (
-              <span className="absolute -left-1 top-1.5 bottom-1.5 w-0.5 rounded-r bg-[#0d99ff]" />
-            )}
-            <Sparkles size={15} strokeWidth={1.75} className={aiChat?.isLoading ? 'animate-pulse text-[#38bdf8]' : ''} />
-            {activeTab !== 'ai' && ((aiChat?.savedUserTurnsCount || 0) > 0 || (aiChat?.conversations?.length || 0) > 1) && (
-              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
-            )}
-          </button>
-        </div>
+            {/* Shape Flyout Slot (Kutu R, Daire O, Çizgi L, Çerçeve F) */}
+            <div className="relative w-full">
+              {(() => {
+                const ShapeIcon = activeShapeTool.icon;
+                const isFlyoutOpen = openAddGroup === 'shapes';
+                return (
+                  <button
+                    type="button"
+                    aria-label={activeShapeTool.name}
+                    aria-pressed={isShapeToolActive}
+                    aria-expanded={isFlyoutOpen}
+                    data-tool-id={activeShapeTool.id}
+                    onClick={() => {
+                      if (!isShapeToolActive) {
+                        setActiveTool(activeShapeTool.id);
+                        setOpenAddGroup(null);
+                      } else {
+                        setOpenAddGroup(isFlyoutOpen ? null : 'shapes');
+                      }
+                    }}
+                    className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all duration-150 ${
+                      isShapeToolActive
+                        ? 'bg-gradient-to-br from-[#0d99ff] to-[#6d5cff] text-white shadow-[0_4px_14px_rgba(13,153,255,0.38)]'
+                        : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+                    }`}
+                  >
+                    <ShapeIcon size={15} strokeWidth={isShapeToolActive ? 2.3 : 1.9} />
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      aria-label="Şekil seçeneklerini aç"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenAddGroup(isFlyoutOpen ? null : 'shapes');
+                      }}
+                      className="absolute right-0.5 bottom-0.5 flex items-center justify-center w-2.5 h-2.5 opacity-75 hover:opacity-100"
+                    >
+                      <ChevronRight size={8} />
+                    </span>
+                    {!isFlyoutOpen && (
+                      <RailTip label={`${activeShapeTool.name} · Şekiller için tıkla`} hint={activeShapeTool.shortcut} />
+                    )}
+                  </button>
+                );
+              })()}
+              {openAddGroup === 'shapes' && (
+                <div className="absolute left-full top-0 ml-2.5 w-48 rounded-xl border border-[#34343e] bg-[#121216] p-1.5 shadow-2xl z-[90]">
+                  <div className="px-2 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.14em] text-zinc-500 uppercase">Şekiller & Çerçeve</div>
+                  {shapeTools.map((shape) => {
+                    const SIcon = shape.icon;
+                    const active = activeTool === shape.id;
+                    return (
+                      <button
+                        key={shape.id}
+                        type="button"
+                        data-shape-tool={shape.id}
+                        onClick={() => {
+                          setActiveTool(shape.id);
+                          setOpenAddGroup(null);
+                        }}
+                        className={`w-full flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                          active ? 'bg-[#0d99ff]/15 text-white' : 'text-zinc-300 hover:bg-white/[0.06] hover:text-white'
+                        }`}
+                      >
+                        <span className={`w-6 h-6 shrink-0 rounded-md border flex items-center justify-center ${active ? 'bg-[#0d99ff]/20 border-[#0d99ff]/50 text-[#7dd3fc]' : 'bg-[#1d1d24] border-[#2c2c36] text-[#7dd3fc]'}`}>
+                          <SIcon size={13} strokeWidth={1.9} />
+                        </span>
+                        <span className="min-w-0 flex-1 leading-tight">
+                          <span className="block text-[11.5px] font-medium truncate">{shape.name}</span>
+                          <span className="block text-[9.5px] text-zinc-500 truncate">{shape.desc}</span>
+                        </span>
+                        <kbd className="text-[9.5px] font-mono text-zinc-500 px-1 py-0.5 rounded bg-[#1b1b22] border border-[#2d2d37]">{shape.shortcut}</kbd>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
-        {/* Bottom Color Swatches */}
-        <div className="flex flex-col items-center w-full px-1 relative" ref={colorModalRef}>
-          <div className="relative w-7 h-7 mb-1">
+            {/* Metin (T) */}
             <button
               type="button"
+              aria-label="Metin yaz"
+              aria-pressed={activeTool === 'text'}
+              data-tool-id="text"
               onClick={() => {
-                setEditingColorType('secondary');
-                setShowColorModal(true);
+                setActiveTool('text');
+                setOpenAddGroup(null);
               }}
-              title="İkincil / Zemin Rengi"
-              style={{ backgroundColor: secondaryColor }}
-              className="absolute bottom-0 right-0 w-4 h-4 rounded-sm border border-[#141417] ring-1 ring-white/20"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                setEditingColorType('primary');
-                setShowColorModal(true);
-              }}
-              title="Birincil / Vurgu Rengi"
-              style={{ backgroundColor: primaryColor }}
-              className="absolute top-0 left-0 w-4 h-4 rounded-sm border border-white/30 z-10"
-            />
+              className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all duration-150 ${
+                activeTool === 'text'
+                  ? 'bg-gradient-to-br from-[#0d99ff] to-[#6d5cff] text-white shadow-[0_4px_14px_rgba(13,153,255,0.38)]'
+                  : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+              }`}
+            >
+              <Type size={15} strokeWidth={activeTool === 'text' ? 2.3 : 1.9} />
+              <RailTip label="Metin yaz" hint="T" />
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={handleSwapColors}
-            title="Renkleri Değiştir (X)"
-            className="text-zinc-500 hover:text-zinc-200 p-1 rounded hover:bg-white/[0.05] transition-colors"
-          >
-            <ArrowRightLeft size={10} />
-          </button>
+          {/* BOYA & STİL: Damlalık (I) & Biçim Boyacısı */}
+          <div className="w-full flex flex-col items-center gap-1 pt-1 border-t border-[#24242b]">
+            <span className="text-[8px] font-bold tracking-[0.14em] text-zinc-600">STİL</span>
+            <button
+              type="button"
+              aria-label="Renk Damlalığı"
+              aria-pressed={activeTool === 'eyedropper'}
+              data-tool-id="eyedropper"
+              onClick={() => {
+                setActiveTool(activeTool === 'eyedropper' ? 'select' : 'eyedropper');
+                setOpenAddGroup(null);
+              }}
+              className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                activeTool === 'eyedropper'
+                  ? 'bg-gradient-to-br from-[#0d99ff] to-[#6d5cff] text-white shadow-[0_4px_14px_rgba(13,153,255,0.38)]'
+                  : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+              }`}
+            >
+              <Pipette size={14} strokeWidth={1.9} />
+              <RailTip label="Renk damlalığı (Örnekle/Boya)" hint="I" />
+            </button>
 
-          {showColorModal && (
-            <div className="absolute left-12 bottom-2 bg-[#18181b] border border-[#2f2f38] rounded-md p-3 shadow-2xl z-50 w-56 space-y-2.5">
-              <div className="flex justify-between items-center">
-                <span className="text-[11px] font-semibold text-white">
-                  {editingColorType === 'primary' ? 'Birincil Renk' : 'İkincil Renk'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowColorModal(false)}
-                  className="text-zinc-400 hover:text-white p-0.5 rounded hover:bg-white/[0.08]"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-
-              <input
-                type="color"
-                value={editingColorType === 'primary' ? primaryColor : secondaryColor}
-                onChange={(e) => {
-                  if (editingColorType === 'primary') setPrimaryColor(e.target.value);
-                  else setSecondaryColor(e.target.value);
-                }}
-                className="w-full h-8 cursor-pointer rounded border border-[#2c2c34] bg-transparent"
+            <button
+              type="button"
+              aria-label="Biçim Boyacısı"
+              aria-pressed={activeTool === 'format_paint'}
+              data-tool-id="format_paint"
+              onClick={() => {
+                setOpenAddGroup(null);
+                if (activeTool === 'format_paint') {
+                  setActiveTool('select');
+                } else if (hasSelection) {
+                  onCopyStyle?.({ activateTool: true });
+                } else if (copiedStyle) {
+                  setActiveTool('format_paint');
+                } else {
+                  onCopyStyle?.({ activateTool: true });
+                }
+              }}
+              className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                activeTool === 'format_paint'
+                  ? 'bg-gradient-to-br from-emerald-500 to-teal-500 text-white shadow-[0_4px_14px_rgba(16,185,129,0.35)]'
+                  : copiedStyle
+                    ? 'text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20'
+                    : hasSelection
+                      ? 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+                      : 'text-zinc-600 hover:text-zinc-300 hover:bg-white/[0.04]'
+              }`}
+            >
+              <Paintbrush size={14} strokeWidth={1.9} />
+              {copiedStyle && (
+                <span className="absolute right-1 top-1 w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              )}
+              <RailTip
+                label={copiedStyle ? 'Biçim boyacısı (Hazır — hedefe tıkla)' : 'Biçim boyacısı (Stil kopyala)'}
+                hint="Ctrl+Shift+C"
               />
+            </button>
+          </div>
 
-              <div className="flex items-center gap-1.5 bg-[#101013] border border-[#2c2c34] rounded px-2 py-1">
-                <span className="text-[10px] text-zinc-500 font-mono">HEX</span>
-                <input
-                  type="text"
-                  value={editingColorType === 'primary' ? primaryColor : secondaryColor}
-                  onChange={(e) => {
-                    if (editingColorType === 'primary') setPrimaryColor(e.target.value);
-                    else setSecondaryColor(e.target.value);
-                  }}
-                  className="w-full bg-transparent text-xs text-white font-mono focus:outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-5 gap-1.5 pt-1 border-t border-white/[0.07]">
-                {['#f59e0b', '#f8fafc', '#0f172a', '#e2e8f0', '#ffffff', '#ef4444', '#10b981', '#38bdf8', '#8b5cf6', '#ec4899'].map((c) => (
+          {/* EKLE: Yapı, Yazı, Form & Medya, Arka Plan Sil */}
+          <div className="w-full flex flex-col items-center gap-1 pt-1 border-t border-[#24242b]">
+            <span className="text-[8px] font-bold tracking-[0.14em] text-zinc-600">EKLE</span>
+            {addGroups.map((g) => {
+              const GIcon = g.icon;
+              const isOpen = openAddGroup === g.id;
+              return (
+                <div key={g.id} className="relative w-full">
                   <button
-                    key={c}
+                    type="button"
+                    aria-label={g.name}
+                    aria-expanded={isOpen}
+                    data-add-group={g.id}
+                    onClick={() => setOpenAddGroup(isOpen ? null : g.id)}
+                    className={`group relative w-full h-7 flex items-center justify-center rounded-lg border transition-all ${
+                      isOpen
+                        ? 'border-[#0d99ff]/70 bg-[#0d99ff]/15 text-[#7dd3fc]'
+                        : 'border-dashed border-[#32323c] text-zinc-400 hover:text-[#7dd3fc] hover:border-[#0d99ff]/70 hover:bg-[#0d99ff]/10'
+                    }`}
+                  >
+                    <GIcon size={14} strokeWidth={1.9} />
+                    <ChevronRight size={8} className="absolute right-0.5 bottom-0.5 opacity-60" />
+                    {!isOpen && <RailTip label={g.name} />}
+                  </button>
+                  {isOpen && (
+                    <div className="absolute left-full top-0 ml-2.5 w-52 max-h-[340px] overflow-y-auto rounded-xl border border-[#34343e] bg-[#121216] p-1.5 shadow-2xl z-[90]">
+                      <div className="px-2 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.14em] text-zinc-500 uppercase">{g.name}</div>
+                      {g.items.map((item) => {
+                        const IIcon = item.icon;
+                        return (
+                          <button
+                            key={item.tag}
+                            type="button"
+                            data-add-tag={item.tag}
+                            onClick={() => {
+                              onQuickAdd(item.tag);
+                              setOpenAddGroup(null);
+                            }}
+                            className="w-full flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-zinc-300 hover:bg-white/[0.06] hover:text-white transition-colors"
+                          >
+                            <span className="w-6 h-6 shrink-0 rounded-md bg-[#1d1d24] border border-[#2c2c36] flex items-center justify-center text-[#7dd3fc]">
+                              <IIcon size={13} strokeWidth={1.9} />
+                            </span>
+                            <span className="min-w-0 flex-1 leading-tight">
+                              <span className="block text-[11.5px] font-medium truncate">{item.name}</span>
+                              <span className="block text-[9.5px] text-zinc-500 truncate">{item.desc}</span>
+                            </span>
+                            <code className="text-[9px] font-mono text-zinc-600">&lt;{item.tag}&gt;</code>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <button
+              type="button"
+              aria-label="Arka planı kaldır"
+              data-quick-add="remove-bg"
+              onClick={onRemoveBackground}
+              disabled={!selectedElement}
+              className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                selectedElement ? 'text-[#c4b5fd] hover:bg-[#8b5cf6]/15 hover:text-white' : 'text-zinc-700 cursor-not-allowed'
+              }`}
+            >
+              <Wand2 size={14} strokeWidth={1.9} />
+              <RailTip label={selectedElement ? 'Arka planı şeffaf yap' : 'Arka plan silmek için bir öğe seç'} />
+            </button>
+          </div>
+
+          {/* GÖRÜNÜM & DÜZENLE */}
+          <div className="w-full flex flex-col items-center gap-1 pt-1 border-t border-[#24242b]">
+            <span className="text-[8px] font-bold tracking-[0.14em] text-zinc-600">DÜZEN</span>
+
+            {/* View Guides Popover (12-Col Grid, Rulers, Fit) */}
+            <div className="relative w-full">
+              <button
+                type="button"
+                aria-label="Izgara & Cetvel görünümü"
+                aria-expanded={openAddGroup === 'view'}
+                data-rail-popover="view"
+                onClick={() => setOpenAddGroup(openAddGroup === 'view' ? null : 'view')}
+                className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                  openAddGroup === 'view' || showLayoutGrid || showRulers
+                    ? 'bg-[#0d99ff]/15 text-[#7dd3fc] border border-[#0d99ff]/40'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+                }`}
+              >
+                <Grid3x3 size={14} strokeWidth={1.9} />
+                <ChevronRight size={8} className="absolute right-0.5 bottom-0.5 opacity-60" />
+                {openAddGroup !== 'view' && <RailTip label="Görünüm · Izgara & Cetvel" />}
+              </button>
+              {openAddGroup === 'view' && (
+                <div className="absolute left-full bottom-0 ml-2.5 w-52 rounded-xl border border-[#34343e] bg-[#121216] p-1.5 shadow-2xl z-[90]">
+                  <div className="px-2 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.14em] text-zinc-500 uppercase">Tuval Yardımcıları</div>
+                  <button
+                    type="button"
+                    data-toggle-grid
+                    onClick={() => setShowLayoutGrid?.((v) => !v)}
+                    className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] transition-colors ${
+                      showLayoutGrid ? 'bg-[#0d99ff]/15 text-[#7dd3fc]' : 'text-zinc-300 hover:bg-white/[0.06] hover:text-white'
+                    }`}
+                  >
+                    <Grid3x3 size={13} />
+                    <span className="flex-1">12 Sütun Izgara</span>
+                    <kbd className="text-[9px] font-mono text-zinc-500">Shift+G</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    data-toggle-rulers
+                    onClick={() => setShowRulers?.((v) => !v)}
+                    className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] transition-colors ${
+                      showRulers ? 'bg-[#0d99ff]/15 text-[#7dd3fc]' : 'text-zinc-300 hover:bg-white/[0.06] hover:text-white'
+                    }`}
+                  >
+                    <Ruler size={13} />
+                    <span className="flex-1">Piksel Cetvelleri</span>
+                    <kbd className="text-[9px] font-mono text-zinc-500">Shift+R</kbd>
+                  </button>
+                  <button
                     type="button"
                     onClick={() => {
-                      if (editingColorType === 'primary') setPrimaryColor(c);
-                      else setSecondaryColor(c);
+                      onResetZoom?.();
+                      setOpenAddGroup(null);
                     }}
-                    style={{ backgroundColor: c }}
-                    className="w-6 h-6 rounded-md border border-white/15 hover:scale-110 transition-transform"
-                  />
-                ))}
-              </div>
+                    className="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-zinc-300 hover:bg-white/[0.06] hover:text-white transition-colors"
+                  >
+                    <Maximize2 size={13} />
+                    <span className="flex-1">Ekrana Sığdır</span>
+                    <kbd className="text-[9px] font-mono text-zinc-500">Ctrl+0</kbd>
+                  </button>
+                </div>
+              )}
             </div>
-          )}
+
+            {/* Duplicate (Ctrl+D) */}
+            <button
+              type="button"
+              aria-label="Çoğalt"
+              data-edit-action="duplicate"
+              disabled={!hasSelection}
+              onClick={onDuplicateSelected}
+              className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                !hasSelection ? 'text-zinc-700 cursor-not-allowed' : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+              }`}
+            >
+              <CopyPlus size={14} strokeWidth={1.9} />
+              <RailTip label="Çoğalt" hint="Ctrl+D" />
+            </button>
+
+            {/* Arrange & Align Popover (Z-Order, Align, Group, Lock) */}
+            <div className="relative w-full">
+              <button
+                type="button"
+                aria-label="Sırala & Hizala"
+                aria-expanded={openAddGroup === 'arrange'}
+                data-rail-popover="arrange"
+                disabled={!hasSelection}
+                onClick={() => setOpenAddGroup(openAddGroup === 'arrange' ? null : 'arrange')}
+                className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                  !hasSelection
+                    ? 'text-zinc-700 cursor-not-allowed'
+                    : openAddGroup === 'arrange'
+                      ? 'bg-white/[0.12] text-white'
+                      : 'text-zinc-400 hover:text-white hover:bg-white/[0.07]'
+                }`}
+              >
+                <SlidersHorizontal size={14} strokeWidth={1.9} />
+                <ChevronRight size={8} className="absolute right-0.5 bottom-0.5 opacity-60" />
+                {openAddGroup !== 'arrange' && <RailTip label="Sırala, Hizala & Grupla" />}
+              </button>
+              {openAddGroup === 'arrange' && hasSelection && (
+                <div className="absolute left-full bottom-0 ml-2.5 w-52 rounded-xl border border-[#34343e] bg-[#121216] p-1.5 shadow-2xl z-[90]">
+                  <div className="px-2 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.14em] text-zinc-500 uppercase">Sıra, Hiza & Grup</div>
+                  {[
+                    { label: 'Öne Getir', hint: ']', icon: Layers, run: () => onZOrderSelected?.('forward') },
+                    { label: 'En Öne Getir', hint: 'Ctrl+]', icon: ArrowUpToLine, run: () => onZOrderSelected?.('front') },
+                    { label: 'Arkaya Gönder', hint: '[', icon: Layers, run: () => onZOrderSelected?.('backward') },
+                    { label: 'En Arkaya Gönder', hint: 'Ctrl+[', icon: ArrowDownToLine, run: () => onZOrderSelected?.('back') },
+                    { label: 'Yatay Ortala', hint: '', icon: AlignCenterHorizontal, run: onAlignHorizontalCenter },
+                    { label: 'Dikey Ortala', hint: '', icon: AlignCenterVertical, run: onAlignVerticalCenter },
+                    { label: 'Grupla', hint: 'Ctrl+G', icon: Group, run: onGroupSelected },
+                    { label: 'Grubu Çöz', hint: 'Ctrl+Shift+G', icon: Ungroup, run: onUngroupSelected },
+                    { label: selectedElement?.isLocked ? 'Kilidi Aç' : 'Kilitle', hint: 'Ctrl+Shift+L', icon: Lock, run: () => onToggleLockSelected?.() },
+                  ].map((act) => {
+                    const AIcon = act.icon;
+                    return (
+                      <button
+                        key={act.label}
+                        type="button"
+                        onClick={() => {
+                          act.run?.();
+                          setOpenAddGroup(null);
+                        }}
+                        className="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-zinc-300 hover:bg-white/[0.06] hover:text-white transition-colors"
+                      >
+                        <AIcon size={13} className="text-zinc-400 shrink-0" />
+                        <span className="flex-1 truncate">{act.label}</span>
+                        {act.hint && <kbd className="text-[9px] font-mono text-zinc-500">{act.hint}</kbd>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Delete */}
+            <button
+              type="button"
+              aria-label="Sil"
+              data-edit-action="delete"
+              disabled={!hasSelection}
+              onClick={onDeleteSelected}
+              className={`group relative w-full h-7 flex items-center justify-center rounded-lg transition-all ${
+                !hasSelection ? 'text-zinc-700 cursor-not-allowed' : 'text-zinc-400 hover:text-white hover:bg-rose-500/80'
+              }`}
+            >
+              <Trash2 size={14} strokeWidth={1.9} />
+              <RailTip label="Sil" hint="Del" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -656,8 +1038,8 @@ export default function StudioLeftSidebar({
             <div className="flex flex-col h-full min-h-0">
               <div className="px-3 py-2 border-b border-[#27272d] bg-[#141417] flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Box size={13} className="text-[#38bdf8]" />
-                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider">Araçlar &amp; Etiketler</span>
+                  <TagIcon size={13} className="text-[#38bdf8]" />
+                  <span className="font-semibold text-zinc-100 text-[11px] uppercase tracking-wider">HTML Etiketleri</span>
                 </div>
                 <button
                   type="button"
@@ -670,55 +1052,6 @@ export default function StudioLeftSidebar({
               </div>
 
               <div className="flex-1 overflow-y-auto p-3 space-y-4">
-                <div>
-                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block mb-2">
-                    Çizim &amp; Seçim Araçları
-                  </span>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {tools.map((t) => {
-                      const Icon = t.icon;
-                      const isActive = activeTool === t.id;
-                      return (
-                        <button
-                          key={t.id}
-                          type="button"
-                          onClick={() => {
-                            setActiveTool(t.id);
-                            if (['rectangle', 'text', 'button', 'image'].includes(t.id)) {
-                              onQuickAdd(t.id);
-                            }
-                          }}
-                          className={`flex flex-col items-center justify-center p-2 rounded transition-colors border ${
-                            isActive
-                              ? 'bg-[#0d99ff]/18 text-white border-[#0d99ff] font-medium'
-                              : 'bg-[#1c1c21] text-zinc-300 border-[#2a2a32] hover:border-[#3e3e48] hover:text-white'
-                          }`}
-                        >
-                          <Icon size={15} />
-                          <span className="text-[10px] mt-1 font-medium">{t.name.split(' ')[0]}</span>
-                          <kbd className="text-[9px] font-mono text-zinc-500 mt-0.5">{t.shortcut}</kbd>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div>
-                  <button
-                    type="button"
-                    onClick={onRemoveBackground}
-                    disabled={!selectedElement}
-                    className={`w-full py-1.5 px-3 rounded border flex items-center justify-center gap-2 transition-colors ${
-                      selectedElement
-                        ? 'bg-[#202026] border-[#32323c] text-zinc-100 hover:bg-[#282830]'
-                        : 'bg-[#141418] border-[#24242a] text-zinc-600 cursor-not-allowed'
-                    }`}
-                  >
-                    <Wand2 size={12} className="text-[#38bdf8]" />
-                    <span className="font-medium text-[11px]">Arka Planı Kaldır (AI)</span>
-                  </button>
-                </div>
-
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">

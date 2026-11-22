@@ -106,6 +106,15 @@ import {
   applyAiResponseToTree,
 } from '../src/utils/aiAgentUtils.js';
 import { importSiteCodeToProjectSchema } from '../src/utils/codeFileImporter.js';
+import {
+  resolveDrawnBox,
+  extractPortableElementStyle,
+  mergePortableStyleOntoNode,
+  computeElementZOrderUpdate,
+  computeAltMeasureGuides,
+  parseCssColorToHex,
+  computeContrastRatio,
+} from '../src/utils/canvasToolsUtils.js';
 
 let passed = 0;
 let failed = 0;
@@ -2801,6 +2810,106 @@ test('AI prompt system enforces non-cliche creative art direction & higher creat
   assert.ok(prompt.includes('Playfair Display'), 'System prompt must instruct editorial serif + sans pairings');
   assert.ok(!DEFAULT_UNIVERSAL_PROJECT.find((n) => n.id === 'elem-badge')?.textContent?.includes('🚀'), 'Starter badge must be clean editorial copy without cliché emojis');
   assert.ok(flattenTree(DEFAULT_UNIVERSAL_PROJECT).some((n) => n.id === 'elem-hero-visual' && n.type === 'img'), 'Luxury starter must include hero editorial image');
+});
+
+// -----------------------------------------------------------------------------
+// [16] CANVAS STUDIO TOOLBOX (Zoom Z, Shapes O/L/F, Eyedropper I, Format Painter, Z-Order, Alt-Measure)
+// -----------------------------------------------------------------------------
+console.log('\n🧰 [16] Canvas Studio Toolbox & Utility Helpers');
+
+test('resolveSingleKeyToolShortcut maps Zoom (Z), Circle (O), Line (L), Frame (F), Eyedropper (I)', () => {
+  assert.equal(resolveSingleKeyToolShortcut('z', {}), 'zoom');
+  assert.equal(resolveSingleKeyToolShortcut('Z', {}), 'zoom');
+  assert.equal(resolveSingleKeyToolShortcut('o', {}), 'circle');
+  assert.equal(resolveSingleKeyToolShortcut('l', {}), 'line');
+  assert.equal(resolveSingleKeyToolShortcut('f', {}), 'frame');
+  assert.equal(resolveSingleKeyToolShortcut('i', {}), 'eyedropper');
+  assert.equal(resolveSingleKeyToolShortcut('z', { isCtrlOrMeta: true }), null);
+  assert.equal(resolveSingleKeyToolShortcut('i', { shiftKey: true }), null);
+});
+
+test('resolveDrawnBox resolves freeform drag, Shift-constrained square, snapped lines, and click defaults', () => {
+  const rectDrag = resolveDrawnBox({ x: 100, y: 100 }, { x: 240, y: 180 });
+  assert.deepEqual(rectDrag, { x: 100, y: 100, width: 140, height: 80, wasDrag: true, orientation: 'horizontal' });
+
+  const shiftSquare = resolveDrawnBox({ x: 200, y: 200 }, { x: 140, y: 100 }, { shiftKey: true });
+  assert.equal(shiftSquare.width, 100);
+  assert.equal(shiftSquare.height, 100);
+  assert.equal(shiftSquare.x, 100);
+  assert.equal(shiftSquare.y, 100);
+
+  const horizLine = resolveDrawnBox({ x: 50, y: 80 }, { x: 250, y: 92 }, { isLine: true });
+  assert.deepEqual(horizLine, { x: 50, y: 80, width: 200, height: 2, wasDrag: true, orientation: 'horizontal' });
+
+  const vertLine = resolveDrawnBox({ x: 50, y: 80 }, { x: 56, y: 210 }, { isLine: true });
+  assert.deepEqual(vertLine, { x: 50, y: 80, width: 2, height: 130, wasDrag: true, orientation: 'vertical' });
+
+  const singleClick = resolveDrawnBox({ x: 300, y: 200 }, { x: 301, y: 201 }, { defaultSize: { width: 140, height: 140 } });
+  assert.deepEqual(singleClick, { x: 230, y: 130, width: 140, height: 140, wasDrag: false, orientation: 'horizontal' });
+});
+
+test('Format Painter extracts visual styles without leaking layout geometry and merges cleanly', () => {
+  const source = {
+    id: 'src',
+    x: 40,
+    y: 90,
+    width: 300,
+    height: 200,
+    fillColor: '#0d99ff',
+    borderRadius: 18,
+    shadow: '0 8px 24px rgba(0,0,0,0.2)',
+    style: { left: '40px', top: '90px', width: '300px', fontSize: '20px', color: '#ffffff' },
+  };
+  const extracted = extractPortableElementStyle(source);
+  assert.equal(extracted.fillColor, '#0d99ff');
+  assert.equal(extracted.borderRadius, 18);
+  assert.equal(extracted.style.left, undefined);
+  assert.equal(extracted.style.width, undefined);
+  assert.equal(extracted.style.fontSize, '20px');
+
+  const target = { id: 'dst', x: 500, y: 400, width: 120, height: 80, style: { padding: '8px', color: '#000000' } };
+  const merged = mergePortableStyleOntoNode(target, extracted);
+  assert.equal(merged.fillColor, '#0d99ff');
+  assert.equal(merged.x, undefined);
+  assert.equal(merged.style.padding, '8px');
+  assert.equal(merged.style.color, '#ffffff');
+});
+
+test('computeElementZOrderUpdate adjusts sibling zIndex cleanly for front/forward/backward/back', () => {
+  const els = [
+    { id: 'a', zIndex: 1 },
+    { id: 'b', zIndex: 2 },
+    { id: 'c', zIndex: 3 },
+  ];
+  const fwd = computeElementZOrderUpdate(els, ['a'], 'forward');
+  assert.equal(fwd.a.zIndex, 2);
+  assert.equal(fwd.b.zIndex, 1);
+
+  const front = computeElementZOrderUpdate(els, ['a'], 'front');
+  assert.equal(front.a.zIndex, 3);
+  assert.equal(front.b.zIndex, 1);
+  assert.equal(front.c.zIndex, 2);
+
+  const back = computeElementZOrderUpdate(els, ['c'], 'back');
+  assert.equal(back.c.zIndex, 1);
+  assert.equal(back.a.zIndex, 2);
+});
+
+test('computeAltMeasureGuides & Eyedropper contrast helpers calculate gaps and WCAG ratios accurately', () => {
+  const src = { x: 100, y: 100, width: 100, height: 50 };
+  const sibling = { x: 260, y: 110, width: 80, height: 40 };
+  const siblingGuides = computeAltMeasureGuides(src, sibling, { x: 0, y: 0, width: 1280, height: 800 });
+  assert.ok(siblingGuides.some((g) => g.axis === 'x' && g.gap === 60));
+
+  const containerGuides = computeAltMeasureGuides(src, null, { x: 0, y: 0, width: 500, height: 300 });
+  assert.ok(containerGuides.some((g) => g.axis === 'x' && g.gap === 100)); // left gap
+  assert.ok(containerGuides.some((g) => g.axis === 'x' && g.gap === 300)); // right gap
+  assert.ok(containerGuides.some((g) => g.axis === 'y' && g.gap === 100)); // top gap
+  assert.ok(containerGuides.some((g) => g.axis === 'y' && g.gap === 150)); // bottom gap
+
+  assert.equal(parseCssColorToHex('rgb(13, 153, 255)'), '#0D99FF');
+  assert.equal(parseCssColorToHex('rgba(0, 0, 0, 0)'), null);
+  assert.equal(computeContrastRatio('#000000', '#FFFFFF'), 21);
 });
 
 // -----------------------------------------------------------------------------

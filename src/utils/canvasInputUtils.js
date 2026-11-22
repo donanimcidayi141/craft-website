@@ -63,12 +63,17 @@ export function shouldHandleGlobalCanvasShortcut({
 const SINGLE_KEY_TOOL_MAP = {
   v: 'select',
   r: 'rectangle',
+  o: 'circle',
+  l: 'line',
+  f: 'frame',
   h: 'hand',
   t: 'text',
+  z: 'zoom',
+  i: 'eyedropper',
 };
 
 /**
- * Maps unmodified single-key shortcuts ('v', 'r', 'h', 't') to canvas tools.
+ * Maps unmodified single-key shortcuts ('v', 'r', 'o', 'l', 'f', 'h', 't', 'z', 'i') to canvas tools.
  * Rejects modified presses (Ctrl/Cmd/Alt/Shift) so browser or selection combos stay safe.
  */
 export function resolveSingleKeyToolShortcut(key, { isCtrlOrMeta = false, altKey = false, shiftKey = false } = {}) {
