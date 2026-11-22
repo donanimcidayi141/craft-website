@@ -114,6 +114,7 @@ import {
   computeAltMeasureGuides,
   parseCssColorToHex,
   computeContrastRatio,
+  sampleColorAtClientPoint,
 } from '../src/utils/canvasToolsUtils.js';
 import { buildTabState } from '../src/utils/projectAssemblyUtils.js';
 
@@ -2951,6 +2952,60 @@ test('buildTabState merges explicit per-viewport canvas overrides cleanly', () =
   assert.equal(perVpTab.canvasByViewport.mobile.width, 375);
   assert.equal(perVpTab.canvasByViewport.mobile.backgroundColor, '#222222');
   assert.deepEqual(perVpTab.initializedViewports, { desktop: true, tablet: true, mobile: false });
+});
+
+test('sampleColorAtClientPoint safely returns null without DOM and samples background/text colors with DOM', () => {
+  assert.equal(sampleColorAtClientPoint(100, 100), null);
+
+  const prevDocDesc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const prevWinDesc = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const prevGetStyleDesc = Object.getOwnPropertyDescriptor(globalThis, 'getComputedStyle');
+
+  const cardNode = {
+    _style: { backgroundColor: 'rgb(13, 153, 255)', color: 'rgb(255, 255, 255)' },
+    closest: (sel) => (sel === '[data-element-id]' ? { getAttribute: () => 'elem-card-1' } : null),
+  };
+  const hudNode = {
+    _style: { backgroundColor: 'rgb(0, 0, 0)', color: 'rgb(255, 255, 255)' },
+    closest: (sel) => (sel === '[data-eyedropper-hud]' ? {} : null),
+  };
+  const artboardEl = {
+    _style: { backgroundColor: 'rgb(255, 255, 255)', color: 'rgb(0, 0, 0)' },
+    contains: (el) => el === cardNode || el === hudNode,
+    closest: () => null,
+  };
+
+  try {
+    const getComputedStyleStub = (el) => el._style || { backgroundColor: 'transparent', color: 'rgb(0, 0, 0)' };
+    globalThis.getComputedStyle = getComputedStyleStub;
+    globalThis.window = { getComputedStyle: getComputedStyleStub };
+    globalThis.document = {
+      getElementById: (id) => (id === 'artboard-canvas' ? artboardEl : null),
+      elementsFromPoint: () => [hudNode, cardNode, artboardEl],
+    };
+
+    const bgSample = sampleColorAtClientPoint(42, 84, false);
+    assert.equal(bgSample.hex, '#0D99FF');
+    assert.equal(bgSample.targetNodeId, 'elem-card-1');
+    assert.ok(bgSample.contrastWithBg > 1);
+
+    const textSample = sampleColorAtClientPoint(42, 84, true);
+    assert.equal(textSample.hex, '#FFFFFF');
+    assert.equal(textSample.targetNodeId, 'elem-card-1');
+    assert.ok(textSample.contrastWithBg > 2);
+
+    globalThis.document.elementsFromPoint = () => [hudNode];
+    const fallbackSample = sampleColorAtClientPoint(10, 10, false);
+    assert.equal(fallbackSample.hex, '#FFFFFF');
+    assert.equal(fallbackSample.targetNodeId, null);
+  } finally {
+    if (prevDocDesc) Object.defineProperty(globalThis, 'document', prevDocDesc);
+    else delete globalThis.document;
+    if (prevWinDesc) Object.defineProperty(globalThis, 'window', prevWinDesc);
+    else delete globalThis.window;
+    if (prevGetStyleDesc) Object.defineProperty(globalThis, 'getComputedStyle', prevGetStyleDesc);
+    else delete globalThis.getComputedStyle;
+  }
 });
 
 // -----------------------------------------------------------------------------

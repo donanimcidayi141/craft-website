@@ -366,3 +366,60 @@ export function computeContrastRatio(fgColor, bgColor) {
   const darker = Math.min(l1, l2);
   return Number(((lighter + 0.05) / (darker + 0.05)).toFixed(2));
 }
+
+/**
+ * Samples CSS color directly under pointer on artboard for Eyedropper tool.
+ */
+export function sampleColorAtClientPoint(clientX, clientY, preferText = false) {
+  if (typeof document === 'undefined') return null;
+  const artboard = document.getElementById('artboard-canvas');
+  if (!artboard) return null;
+  const stack = document.elementsFromPoint(clientX, clientY);
+  const artBgHex = parseCssColorToHex(getComputedStyle(artboard).backgroundColor) || '#FFFFFF';
+
+  for (const el of stack) {
+    if (!artboard.contains(el) && el !== artboard) continue;
+    if (el.closest?.('[data-eyedropper-hud]')) continue;
+    const computed = window.getComputedStyle(el);
+    const nodeEl = el.closest?.('[data-element-id]');
+    const nodeId = nodeEl?.getAttribute('data-element-id') || null;
+    const textHex = parseCssColorToHex(computed.color);
+    const bgHex = parseCssColorToHex(computed.backgroundColor);
+
+    if (preferText && textHex && nodeId) {
+      return {
+        clientX,
+        clientY,
+        hex: textHex,
+        targetNodeId: nodeId,
+        contrastWithBg: computeContrastRatio(textHex, bgHex || artBgHex),
+      };
+    }
+    if (bgHex) {
+      return {
+        clientX,
+        clientY,
+        hex: bgHex,
+        targetNodeId: nodeId,
+        contrastWithBg: computeContrastRatio(bgHex, artBgHex),
+      };
+    }
+    if (textHex && nodeId) {
+      return {
+        clientX,
+        clientY,
+        hex: textHex,
+        targetNodeId: nodeId,
+        contrastWithBg: computeContrastRatio(textHex, artBgHex),
+      };
+    }
+  }
+
+  return {
+    clientX,
+    clientY,
+    hex: artBgHex,
+    targetNodeId: null,
+    contrastWithBg: 1,
+  };
+}
